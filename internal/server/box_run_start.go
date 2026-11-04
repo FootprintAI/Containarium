@@ -702,7 +702,7 @@ const (
 
 // daemonCapabilities is the list GetSystemInfo reports.
 func daemonCapabilities() []string {
-	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunCommand, DaemonCapRunUsage}
+	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxSkillSets}
 }
 
 // boxRunNameCollidesWithDerivedFile reports whether name would alias a file or

@@ -1813,7 +1813,9 @@ func (x *SweepBoxRunCheckoutsResponse) GetCheckouts() []*BoxRunCheckout {
 // BoxSkillSetChange is what one call did for one skill set.
 type BoxSkillSetChange struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The set id, as in the lock's `set.<id>=` line (for example "qa").
+	// The set id, as in the lock's `set.<id>=` line (for example "qa"). Empty
+	// only in `removed`, for installer-owned skills no set in the daemon's lock
+	// claims (a namespace the lock no longer has) that the installer pruned.
 	SkillSet string `protobuf:"bytes,1,opt,name=skill_set,json=skillSet,proto3" json:"skill_set,omitempty"`
 	// The skill directory names under ~/.claude/skills this set installed or
 	// removed (for example "qa-sprint-verify"), sorted.
@@ -1940,8 +1942,10 @@ type ApplyBoxSkillSetsResponse struct {
 	// The sets the box's manifest records after the call, sorted: the target
 	// list.
 	SkillSets []string `protobuf:"bytes,1,rep,name=skill_sets,json=skillSets,proto3" json:"skill_sets,omitempty"`
-	// The skills this call installed, by set. A set already on the box whose
-	// directories did not change is not listed.
+	// The skills this call installed, by set: the directories now recorded
+	// under the set that were not recorded under it before. A set the
+	// manifest already recorded whose directories did not change is not
+	// listed; a set adopted from before the manifest lists all of its skills.
 	Installed []*BoxSkillSetChange `protobuf:"bytes,2,rep,name=installed,proto3" json:"installed,omitempty"`
 	// The skills this call removed, by set.
 	Removed []*BoxSkillSetChange `protobuf:"bytes,3,rep,name=removed,proto3" json:"removed,omitempty"`
