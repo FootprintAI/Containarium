@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -531,7 +532,11 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 			if len(recipe.PostStart) > 0 {
 				script := buildPostStartScript(recipe, params, gatewayEnv)
 				if err := runPostStart(s.boxOps(), containerName, script); err != nil {
-					log.Printf("[recipe] async post_start failed on %q (recipe %q): %v; ports were not exposed", containerName, recipe.Id, err)
+					note := ""
+					if len(recipe.Ports) > 0 {
+						note = "; ports were not exposed"
+					}
+					log.Printf("[recipe] async post_start failed on %q (recipe %q): %v%s", containerName, recipe.Id, err, note)
 					return
 				}
 			}
@@ -602,8 +607,13 @@ func runPostStart(boxes recipeBoxes, containerName, script string) error {
 }
 
 // onlyOutputCapErr reports whether every leaf of err (descending through
-// errors.Join and %w wrapping) is limitio.ErrTooLarge.
+// errors.Join and %w wrapping) matches limitio.ErrTooLarge. The exec path
+// returns *limitio.TooLargeError, which matches the sentinel through its Is
+// method and has no Unwrap, so each leaf is compared with errors.Is.
 func onlyOutputCapErr(err error) bool {
+	if err == nil {
+		return true
+	}
 	switch e := err.(type) {
 	case interface{ Unwrap() []error }:
 		children := e.Unwrap()
@@ -616,7 +626,7 @@ func onlyOutputCapErr(err error) bool {
 	case interface{ Unwrap() error }:
 		return e.Unwrap() != nil && onlyOutputCapErr(e.Unwrap())
 	default:
-		return err == limitio.ErrTooLarge
+		return errors.Is(err, limitio.ErrTooLarge)
 	}
 }
 

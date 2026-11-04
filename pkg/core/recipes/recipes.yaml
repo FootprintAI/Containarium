@@ -43,7 +43,7 @@ recipes:
     post_start:
       - podman volume create ollama-models
       - podman run -d --name ollama --restart=always --device nvidia.com/gpu=all -p 11434:11434 -v ollama-models:/root/.ollama docker.io/ollama/ollama
-      - 'ready=0; for _ in $(seq 1 60); do if podman exec ollama ollama list >/dev/null 2>&1; then ready=1; break; fi; sleep 2; done; if [ "$ready" != 1 ]; then echo "ollama server not ready after 120s" >&2; exit 1; fi'
+      - 'ready=0; for _ in $(seq 1 60); do if timeout 5 podman exec ollama ollama list >/dev/null 2>&1; then ready=1; break; fi; sleep 2; done; if [ "$ready" != 1 ]; then echo "ollama server not ready after 60 probes (5s timeout each, 2s apart)" >&2; exit 1; fi'
       - 'podman exec ollama ollama pull "$CONTAINARIUM_PARAM_MODEL"'
 
   - id: llamacpp

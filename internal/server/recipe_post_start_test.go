@@ -121,6 +121,9 @@ func (b *exitStatusBoxes) ExecWithExitCode(name string, command []string) (strin
 const failingPostStartYAML = `recipes:
   - id: failing
     image: x
+    ports:
+      - container_port: 8080
+        subdomain: failing
     post_start:
       - podman pull example.invalid/never-published:v0.0.0
 `
@@ -193,6 +196,32 @@ func TestDeployRecipe_AsyncPostStartNonZeroExitIsLogged(t *testing.T) {
 	}
 	if strings.Contains(got, "manifest unknown") {
 		t.Errorf("post_start stderr is not copied into the daemon log:\n%s", got)
+	}
+}
+
+// A recipe with no ports has nothing left unexposed, so the line says nothing
+// about routes.
+func TestDeployRecipe_AsyncPostStartFailureNoPortsNoRouteNote(t *testing.T) {
+	logs := capturePostStartLog(t)
+	srv, _ := newFailingPostStartServer(t, 1)
+	srv.catalog = recipes.New()
+	if err := srv.catalog.LoadFromBytes([]byte("recipes:\n  - id: noports\n    image: x\n    post_start:\n      - false\n")); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tenantWithScopes("alice", auth.ScopeContainersWrite)
+	if _, err := srv.DeployRecipe(ctx, &pb.DeployRecipeRequest{RecipeId: "noports", Name: "alice", Async: true}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(logs.String(), "async post_start failed") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := logs.String()
+	if !strings.Contains(got, "async post_start failed") {
+		t.Fatalf("no failure logged:\n%s", got)
+	}
+	if strings.Contains(got, "ports were not exposed") {
+		t.Errorf("a recipe without ports should not claim unexposed ports:\n%s", got)
 	}
 }
 

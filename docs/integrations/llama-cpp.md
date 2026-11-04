@@ -33,6 +33,12 @@ podman run -d --name llamacpp --restart=always --device nvidia.com/gpu=all \
     -hf "$CONTAINARIUM_PARAM_HF_REPO" --host 0.0.0.0 --port 8080
 ```
 
+`post_start` runs under `set -euo pipefail`, and a step that exits non-zero
+fails the deploy. When it fails, the daemon does **not** expose the recipe's
+ports (fail closed): a synchronous deploy returns the error, and an
+asynchronous deploy leaves the box running with no route and logs
+`post_start failed ...; ports were not exposed` in the daemon journal.
+
 `llama-server` downloads the GGUF named by `-hf` into the `/models` volume on
 first start, so the model survives container restarts.
 
