@@ -419,7 +419,9 @@ enum BoxSkillSetsRefusal {
 
 // BoxSkillSetChange is what one call did for one skill set.
 message BoxSkillSetChange {
-  // The set id, as in the lock's `set.<id>=` line (for example "qa").
+  // The set id, as in the lock's `set.<id>=` line (for example "qa"). Empty
+  // only in `removed`, for installer-owned skills no set in the daemon's lock
+  // claims (a namespace the lock no longer has) that the installer pruned.
   string skill_set = 1;
   // The skill directory names under ~/.claude/skills this set installed or
   // removed (for example "qa-sprint-verify"), sorted.
@@ -445,8 +447,10 @@ message ApplyBoxSkillSetsResponse {
   // The sets the box's manifest records after the call, sorted: the target
   // list.
   repeated string skill_sets = 1;
-  // The skills this call installed, by set. A set already on the box whose
-  // directories did not change is not listed.
+  // The skills this call installed, by set: the directories now recorded
+  // under the set that were not recorded under it before. A set the
+  // manifest already recorded whose directories did not change is not
+  // listed; a set adopted from before the manifest lists all of its skills.
   repeated BoxSkillSetChange installed = 2;
   // The skills this call removed, by set.
   repeated BoxSkillSetChange removed = 3;

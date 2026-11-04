@@ -11614,7 +11614,7 @@
             "type": "object",
             "$ref": "#/definitions/BoxSkillSetChange"
           },
-          "description": "The skills this call installed, by set. A set already on the box whose\ndirectories did not change is not listed."
+          "description": "The skills this call installed, by set: the directories now recorded\nunder the set that were not recorded under it before. A set the\nmanifest already recorded whose directories did not change is not\nlisted; a set adopted from before the manifest lists all of its skills."
         },
         "removed": {
           "type": "array",
@@ -12180,7 +12180,7 @@
       "properties": {
         "skillSet": {
           "type": "string",
-          "description": "The set id, as in the lock's `set.\u003cid\u003e=` line (for example \"qa\")."
+          "description": "The set id, as in the lock's `set.\u003cid\u003e=` line (for example \"qa\"). Empty\nonly in `removed`, for installer-owned skills no set in the daemon's lock\nclaims (a namespace the lock no longer has) that the installer pruned."
         },
         "skills": {
           "type": "array",

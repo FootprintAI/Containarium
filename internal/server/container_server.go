@@ -183,6 +183,13 @@ type ContainerServer struct {
 	runCheckoutLog       func(format string, args ...any)
 	runCheckoutLocks     sync.Map // key: box name -> *sync.Mutex
 
+	// Skill-set re-apply (#3374, box_run_skill_sets.go). boxSkillSetsInstall is
+	// the install step's seam: production runs the shared installer script as
+	// the box user through boxRunStartExec; tests run the real installer against
+	// a temp home. boxSkillSetLocks serializes calls per box.
+	boxSkillSetsInstall boxSkillSetsInstallFunc
+	boxSkillSetLocks    sync.Map // key: box name -> *sync.Mutex
+
 	// boxRunToolAccess overrides how StartBoxRun reads the tool-access level
 	// recorded for a box (#2944): "" = none recorded, so the run keeps the
 	// owner's identity. Tests set it; production reads the Incus config.

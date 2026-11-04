@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
 	"strings"
 	"time"
 
@@ -572,47 +571,18 @@ echo "agent-box installed at $HOME/.local/bin/agent-box"`
 // sdlcSkillsInstallScript fetches the release's install-sdlc-skills.sh and runs
 // it as the box user (#2065), landing the pinned open-sdlc-skills role skills in
 // ~/.claude/skills. The release tag was already validated against
-// releaseTagPattern, so it is safe inside the double-quoted URL.
-//
-// Only a 404 means "this release predates the skills asset" and is skipped with
-// a message; any other fetch failure fails the install, so a network blip never
-// silently ships a box with no skills. A hash mismatch or unsafe archive is the
-// installer's own failure and propagates.
-//
-// sets is a validated selection (sdlcskills.SkillSets): its charset cannot carry
-// shell syntax, so it is safe inside the double quotes too. An installer that
-// predates SKILL_SETS would ignore it and install everything, so a narrowed
-// selection against one fails instead.
+// releaseTagPattern, so it is safe inside the double-quoted URL. The script
+// itself is sdlcskills.InstallScript, shared with the daemon's
+// ApplyBoxSkillSets (#3374) so both paths run the one installer the same way.
 func sdlcSkillsInstallScript(release string, sets sdlcskills.SkillSets) string {
-	return `set -e
-tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
-code="$(curl -sSL -o "$tmp" -w '%{http_code}' "https://raw.githubusercontent.com/` + agentBoxRepo + `/` + release + `/scripts/install-sdlc-skills.sh" </dev/null)"
-case "$code" in
-  200)
-    if ! grep -q '^# skill-sets: v1$' "$tmp"; then
-      # An installer that predates skill sets would ignore SKILL_SETS and install everything.
-      case "` + sets.String() + `" in
-        all) ;;
-        none) echo "release ` + release + `'s SDLC skills installer predates skill sets; nothing to remove, skipping" >&2; exit 0 ;;
-        *) echo "release ` + release + `'s SDLC skills installer predates skill sets; cannot apply SKILL_SETS=` + sets.String() + `" >&2; exit 1 ;;
-      esac
-    fi
-    SKILL_SETS="` + sets.String() + `" RELEASE="` + release + `" REPO="` + agentBoxRepo + `" bash "$tmp" ;;
-  404)
-    case "` + sets.String() + `" in
-      all|none) echo "release ` + release + ` has no SDLC skills installer; skipping" >&2 ;;
-      *) echo "release ` + release + ` has no SDLC skills installer; cannot apply SKILL_SETS=` + sets.String() + `" >&2; exit 1 ;;
-    esac ;;
-  *) echo "fetching the SDLC skills installer failed: HTTP $code" >&2; exit 1 ;;
-esac`
+	return sdlcskills.InstallScript(agentBoxRepo, release, sets)
 }
 
 // releaseTagPattern is what may be interpolated into the asset URL above.
 // The tag is a flag value and lands inside a double-quoted shell string, so
 // it is validated rather than quoted — a charset with no $, backtick, quote,
 // or backslash cannot be anything but a path segment there.
-var releaseTagPattern = regexp.MustCompile(`^v?[0-9A-Za-z][0-9A-Za-z._-]*$`)
+var releaseTagPattern = sdlcskills.ReleaseTagPattern
 
 // bootstrapScript fetches url, unpacks it into a throwaway directory, and
 // runs its apply.sh as the box user — the seam a team uses to drop in skills,
