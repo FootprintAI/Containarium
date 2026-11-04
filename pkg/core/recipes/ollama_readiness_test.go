@@ -91,7 +91,20 @@ func TestOllamaPull_ServerNeverReadyFailsWithoutPulling(t *testing.T) {
 	if strings.Contains(calls, "ollama pull") {
 		t.Errorf("pull must not run against a server that is not ready:\n%s", calls)
 	}
+	if got := strings.Count(calls, "ollama list"); got != 60 {
+		t.Errorf("readiness probed %d times, want exactly 60 (the documented bound)", got)
+	}
 	if !strings.Contains(out, "ollama") || !strings.Contains(out, "not ready") {
 		t.Errorf("the failure should say the ollama server was not ready:\n%s", out)
+	}
+}
+
+// TestOllamaReadinessProbeIsTimeBounded: one hung `podman exec` must not hold
+// the step, so the probe runs under timeout.
+func TestOllamaReadinessProbeIsTimeBounded(t *testing.T) {
+	for _, line := range ollamaTailSteps(t) {
+		if strings.Contains(line, "ollama list") && !strings.Contains(line, "timeout 5 podman exec ollama ollama list") {
+			t.Errorf("readiness probe is not wrapped in timeout 5: %s", line)
+		}
 	}
 }

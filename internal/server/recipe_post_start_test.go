@@ -223,8 +223,28 @@ func (b execResultBoxes) ExecWithExitCode(string, []string) (string, string, int
 	return "", "", b.code, b.err
 }
 
+// execCapErr builds the over-cap error exactly as the incus exec path does
+// (execOutputErr joined onto the wait error with errors.Join): the errors come
+// from a real limitio.Buffer, so they are *limitio.TooLargeError values that
+// match the sentinel only through errors.Is.
+func execCapErr(stdout, stderr bool) error {
+	var errs []error
+	for _, tc := range []struct {
+		over bool
+		name string
+	}{{stdout, "exec stdout"}, {stderr, "exec stderr"}} {
+		if !tc.over {
+			continue
+		}
+		b := limitio.NewBuffer(4)
+		_, _ = b.Write([]byte("more than four bytes"))
+		errs = append(errs, fmt.Errorf("%s: %w", tc.name, b.Err()))
+	}
+	return errors.Join(nil, errors.Join(errs...))
+}
+
 func TestRunPostStart_OverCapOutput(t *testing.T) {
-	capErr := fmt.Errorf("exec stdout: %w", limitio.ErrTooLarge)
+	capErr := execCapErr(true, false)
 	transport := errors.New("command execution failed: context deadline exceeded")
 	for _, tc := range []struct {
 		name    string
@@ -233,7 +253,7 @@ func TestRunPostStart_OverCapOutput(t *testing.T) {
 		wantErr string // "" = success
 	}{
 		{"over cap, exit 0 succeeds", 0, capErr, ""},
-		{"over cap on both streams, exit 0 succeeds", 0, errors.Join(capErr, fmt.Errorf("exec stderr: %w", limitio.ErrTooLarge)), ""},
+		{"over cap on both streams, exit 0 succeeds", 0, execCapErr(true, true), ""},
 		{"over cap, non-zero exit fails", 3, capErr, "exit status 3"},
 		{"over cap plus a transport error fails", 0, errors.Join(transport, capErr), "deadline exceeded"},
 		{"transport error alone fails", 0, transport, "deadline exceeded"},
