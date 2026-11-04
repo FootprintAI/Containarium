@@ -1908,6 +1908,8 @@ func (s *Server) registerTools() {
 	s.tools = append(s.tools, gatewayTools()...)
 	// Coding-tool egress allowlist (#2378): read only; writes are admin CLI.
 	s.tools = append(s.tools, codeEgressTools()...)
+	// Re-apply a box's SDLC skill sets (#3511): wraps `containarium code skill-sets`.
+	s.tools = append(s.tools, applyBoxSkillSetsTool())
 	// SSH session control (#2522): wraps `containarium sessions terminate`.
 	s.tools = append(s.tools, sessionTools()...)
 
@@ -1962,6 +1964,8 @@ func toolScopeAssignments() map[string]string {
 		"mint_gateway_token": auth.ScopeGatewayMint,
 		// #2378: reading the coding tool's egress allowlist.
 		"code_egress_policy": auth.ScopeCodeEgressRead,
+		// #3511: changes what is installed in a box, scoped like other box writes.
+		"apply_box_skill_sets": auth.ScopeContainersWrite,
 
 		"tracker_route_list":   auth.ScopeTrackerAdmin,
 		"tracker_create_issue": auth.ScopeTrackerWrite,

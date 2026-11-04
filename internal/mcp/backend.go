@@ -65,6 +65,9 @@ type API interface {
 	// Whole-box restore (#3358), through the CLI's shared function.
 	RestoreBoxBackup(p client.BoxRestoreParams) (*pb.RestoreBoxBackupResponse, error)
 
+	// Re-apply a box's SDLC skill sets (#3511), through the CLI's shared function.
+	ApplyBoxSkillSets(box string, skillSets []string, release string) (*pb.ApplyBoxSkillSetsResponse, error)
+
 	// Secrets / KMS.
 	SetSecret(username, name, value string) (*SecretResponse, error)
 	GetSecret(username, name string) (string, error)

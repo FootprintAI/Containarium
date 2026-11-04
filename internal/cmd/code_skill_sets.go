@@ -9,10 +9,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/pkg/core/sdlcskills"
-	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
-	"google.golang.org/grpc/status"
 )
 
 // `containarium code skill-sets` (#3374) re-applies a box's SDLC skill sets
@@ -71,12 +68,10 @@ func init() {
 }
 
 // boxSkillSetApplier is what the command needs from a daemon client.
-type boxSkillSetApplier interface {
-	ApplyBoxSkillSets(req *pb.ApplyBoxSkillSetsRequest) (*pb.ApplyBoxSkillSetsResponse, error)
-}
+type boxSkillSetApplier = client.BoxSkillSetApplier
 
 func runCodeSkillSets(cmd *cobra.Command, args []string) error {
-	if err := validateBoxName(args[0]); err != nil {
+	if err := client.ValidateBoxName(args[0]); err != nil {
 		return err
 	}
 	if serverAddr == "" {
@@ -134,74 +129,13 @@ func codeApplySkillSets(c boxSkillSetApplier, box, value, release string, w io.W
 	if err != nil {
 		return err
 	}
-	if release = strings.TrimSpace(release); release != "" && !sdlcskills.ValidReleaseTag(release) {
-		return fmt.Errorf("--release %q is not a release tag (expected something like v0.89.0)", release)
-	}
-	resp, err := c.ApplyBoxSkillSets(&pb.ApplyBoxSkillSetsRequest{Username: box, SkillSets: target, Release: release})
+	resp, err := client.ApplySkillSets(c, box, target, release)
 	if isUnimplemented(err) {
 		return fmt.Errorf("this daemon does not support re-applying skill sets (ApplyBoxSkillSets); upgrade it, or re-run `containarium code install %s --skill-sets %s`", box, value)
 	}
 	if err != nil {
-		if reason := skillSetsRefusalOf(err); reason != pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_UNSPECIFIED {
-			return fmt.Errorf("apply skill sets on %s: refused (%s): %s", box, strings.TrimPrefix(reason.String(), "BOX_SKILL_SETS_REFUSAL_"), status.Convert(err).Message())
-		}
-		return fmt.Errorf("apply skill sets on %s: %w", box, err)
+		return err
 	}
-	_, err = io.WriteString(w, renderSkillSetsApply(box, resp))
+	_, err = io.WriteString(w, client.RenderSkillSetsApply(box, resp))
 	return err
-}
-
-// skillSetsRefusalOf returns the typed reason a refusal carries in its status
-// details (a PreconditionFailure violation type or a BadRequest field
-// violation reason spelled as a BoxSkillSetsRefusal name), or UNSPECIFIED.
-// Details travel on the gRPC transport; the HTTP client surfaces the message
-// only, which already says why.
-func skillSetsRefusalOf(err error) pb.BoxSkillSetsRefusal {
-	st, ok := status.FromError(err)
-	if !ok {
-		return pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_UNSPECIFIED
-	}
-	for _, d := range st.Details() {
-		switch p := d.(type) {
-		case *errdetails.PreconditionFailure:
-			for _, v := range p.GetViolations() {
-				if r, ok := pb.BoxSkillSetsRefusal_value[v.GetType()]; ok {
-					return pb.BoxSkillSetsRefusal(r)
-				}
-			}
-		case *errdetails.BadRequest:
-			for _, v := range p.GetFieldViolations() {
-				if r, ok := pb.BoxSkillSetsRefusal_value[v.GetReason()]; ok {
-					return pb.BoxSkillSetsRefusal(r)
-				}
-			}
-		}
-	}
-	return pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_UNSPECIFIED
-}
-
-// renderSkillSetsApply prints the sets the box now has and what this call
-// installed and removed, or that nothing changed.
-func renderSkillSetsApply(box string, resp *pb.ApplyBoxSkillSetsResponse) string {
-	sets := "none"
-	if len(resp.GetSkillSets()) > 0 {
-		sets = strings.Join(resp.GetSkillSets(), ", ")
-	}
-	var b strings.Builder
-	if resp.GetUnchanged() {
-		fmt.Fprintf(&b, "%s: skill sets unchanged (%s); nothing installed or removed, files refreshed from %s\n", box, sets, resp.GetRelease())
-		return b.String()
-	}
-	fmt.Fprintf(&b, "%s: skill sets now %s (from %s)\n", box, sets, resp.GetRelease())
-	for _, c := range resp.GetInstalled() {
-		fmt.Fprintf(&b, "  installed %s: %s\n", c.GetSkillSet(), strings.Join(c.GetSkills(), ", "))
-	}
-	for _, c := range resp.GetRemoved() {
-		set := c.GetSkillSet()
-		if set == "" {
-			set = "(no set in this release's lock)"
-		}
-		fmt.Fprintf(&b, "  removed %s: %s\n", set, strings.Join(c.GetSkills(), ", "))
-	}
-	return b.String()
 }
