@@ -50,7 +50,7 @@ transient and retry the start once the apply has returned.
 `ApplyBoxSkillSets` shares a per-box gate with run starts, and applies on one
 box are serialized by it. An apply that finds the gate busy waits for it, at
 most 30 seconds, and stops waiting at once if the caller cancels (the call
-returns `CANCELED`). A waiting apply does not make run starts fail: only an
+returns `CANCELED`, or `DEADLINE_EXCEEDED` when the caller's own deadline passed). A waiting apply does not make run starts fail: only an
 apply that holds the gate does. When the 30 seconds pass, the apply changes
 nothing and is refused with `FAILED_PRECONDITION`, and the typed reason says
 what held the gate:
@@ -61,7 +61,9 @@ what held the gate:
   in flight at that moment, which is a snapshot, not a claim that they ran for
   30 seconds. A steady stream of overlapping run starts can keep an apply off
   the gate for the whole cap, because a waiting apply does not queue ahead of
-  them; retry shortly.
+  them; retry shortly. If the gate is free at the moment the cap fires, the
+  apply takes it and proceeds. When no start is recorded in flight, the message
+  says so instead of naming any.
 
 ## Structured output: `structured_output`
 
