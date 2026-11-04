@@ -18,13 +18,18 @@ import (
 // Exit codes of bootstrapScript. Anything else (ssh failing mid-run, mktemp
 // failing) is reported without a claim either way.
 const (
-	// bootstrapExitFetch: the download failed, so the URL was not consumed.
+	// bootstrapExitFetch: the server was never reached (curl 5, 6, 7: proxy
+	// or host not resolved, connection failed), so the URL was not consumed.
 	bootstrapExitFetch = 3
 	// bootstrapExitBundle: the bundle was fetched but is not a .tar.gz with
 	// an apply.sh at its root.
 	bootstrapExitBundle = 4
 	// bootstrapExitApply: the bundle was fetched and its apply.sh failed.
 	bootstrapExitApply = 5
+	// bootstrapExitFetchReached: the download failed after the server was
+	// reached (an HTTP error such as 404/410, a mid-transfer failure, or any
+	// other curl error). A one-shot URL may already be marked used.
+	bootstrapExitFetchReached = 6
 )
 
 // Exit codes of bootstrapPreflightScript, one per thing bootstrapScript is
@@ -41,24 +46,37 @@ const (
 // command growing a flag per item. No sudo anywhere: a bootstrap bundle is
 // the user's own content and gets the user's own privileges.
 //
-// Fetch and apply are separate steps with their own exit codes, so a failed
-// download (the URL was not consumed) is never confused with a failed apply
-// (it was). The URL is never echoed.
+// Fetch and apply are separate steps with their own exit codes, so a download
+// that never reached the server (the URL was not consumed) is told apart from
+// one that did (it may have been) and from a failed apply (it was). The URL is
+// never echoed: curl runs without -S, so its own error text (which names the
+// URL's path) is suppressed and only its exit code is reported. `--` keeps a
+// URL that starts with "-" from being read as a curl option.
 func bootstrapScript(url string) string {
 	return `set -e
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-if ! curl -fsSL -o "$tmp/bundle.tgz" ` + coderun.ShellQuoteSingle(url) + ` </dev/null; then
-  echo "bootstrap bundle could not be fetched" >&2
-  exit 3
-fi
-mkdir "$tmp/bundle"
-if ! tar -xzf "$tmp/bundle.tgz" -C "$tmp/bundle" || [ ! -f "$tmp/bundle/apply.sh" ]; then
+rc=0
+curl -fsL -o "$tmp/bundle.tgz" -- ` + coderun.ShellQuoteSingle(url) + ` </dev/null || rc=$?
+case "$rc" in
+  0) ;;
+  5|6|7)
+    echo "bootstrap bundle server could not be reached (curl exit $rc)" >&2
+    exit 3 ;;
+  *)
+    echo "bootstrap bundle fetch failed after reaching the server (curl exit $rc)" >&2
+    exit 6 ;;
+esac
+bundle_error() {
   echo "bootstrap bundle is not a .tar.gz with an apply.sh at its root" >&2
   exit 4
+}
+mkdir "$tmp/bundle" || bundle_error
+if ! tar -xzf "$tmp/bundle.tgz" -C "$tmp/bundle" || [ ! -f "$tmp/bundle/apply.sh" ]; then
+  bundle_error
 fi
-chmod +x "$tmp/bundle/apply.sh"
-cd "$tmp/bundle"
+chmod +x "$tmp/bundle/apply.sh" || bundle_error
+cd "$tmp/bundle" || bundle_error
 if ! ./apply.sh; then
   echo "bootstrap bundle's apply.sh failed" >&2
   exit 5
@@ -113,7 +131,10 @@ func applyBootstrapBundle(box, url string, run func(string) (string, error)) err
 	if errors.As(err, &re) {
 		switch re.code {
 		case bootstrapExitFetch:
-			return fmt.Errorf("fetch bootstrap bundle on %q failed: the URL was not consumed, retry is safe: %w", box, err)
+			return fmt.Errorf("fetch bootstrap bundle on %q failed: the server was not reached, so the URL was not consumed, retry is safe: %w", box, err)
+		case bootstrapExitFetchReached:
+			return fmt.Errorf("fetch bootstrap bundle on %q failed after reaching the server: the URL may already be consumed; "+
+				"if a retry fails, request a new URL and re-run: %w", box, err)
 		case bootstrapExitBundle, bootstrapExitApply:
 			what := "its apply.sh failed"
 			if re.code == bootstrapExitBundle {

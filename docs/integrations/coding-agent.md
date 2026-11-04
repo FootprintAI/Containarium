@@ -86,6 +86,27 @@ what was installed, removed or left unchanged, and a refusal comes back as
 a bad release tag, or a set id that is not `[a-z0-9-]+` is rejected before any
 request is made. It needs the `containers:write` scope.
 
+To re-apply the **bootstrap bundle** on a box that already has its agent
+(a new skill set, a rotated credential, a changed MCP config), use
+`containarium code bootstrap <box> --url <url>` or `--url-cmd '<command>'`
+(#3512). It runs the bundle step of `code install --bootstrap-url` and nothing
+else: no engine, agent-box or skills reinstall, and `~/.containarium/code.json`
+is left alone. `--url-cmd` runs through your `$SHELL` with
+`CONTAINARIUM_BOX=<box>` set and its first stdout line is the URL, so a control
+plane that hands out one-shot bundle URLs can document one command for every
+box. The URL is requested only after one silent SSH round trip has confirmed
+the box is reachable, accepts your key, and has a writable home, `curl` and
+`tar`; a failure there means nothing was requested or applied. If the download
+never reached the server (host not resolved, connection refused), the URL was
+not consumed and a retry is safe. If it reached the server and then failed (an
+HTTP error such as 404 or 410, or a broken transfer), the URL may already be
+consumed: if a retry fails, request a new URL. If the bundle was fetched
+but is unreadable or its `apply.sh` fails, the one-shot URL is spent (and a
+control plane may have rotated the box's credential on fetch): request a new
+URL and re-run. `code install --bootstrap-url` runs the same check before its
+first script and reports bundle failures the same way. The URL is never
+printed.
+
 Which namespaces a set covers is defined next to the pin, in the `set.<id>=`
 lines of `pkg/core/sdlcskills/sdlc-skills.lock`, so a caller sends set ids and
 never has to track upstream namespaces. That lock has one `[source]` section

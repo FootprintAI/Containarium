@@ -6,8 +6,10 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,7 +56,7 @@ func writeBundle(t *testing.T, dir, name string, files map[string]string) string
 
 // runBootstrapScript executes bootstrapScript(url) with the local sh against a
 // throwaway HOME and returns the exit code and the HOME it ran in.
-func runBootstrapScript(t *testing.T, url string) (int, string, string) {
+func runBootstrapScript(t *testing.T, url string, env ...string) (int, string, string) {
 	t.Helper()
 	for _, bin := range []string{"curl", "tar"} {
 		if _, err := exec.LookPath(bin); err != nil {
@@ -67,7 +69,7 @@ func runBootstrapScript(t *testing.T, url string) (int, string, string) {
 		t.Fatal(err)
 	}
 	c := exec.Command("/bin/sh", path) // #nosec G204 -- fixed interpreter, package-built script
-	c.Env = append(os.Environ(), "HOME="+home)
+	c.Env = append(append(os.Environ(), "HOME="+home), env...)
 	var stderr bytes.Buffer
 	c.Stderr = &stderr
 	err := c.Run()
@@ -98,12 +100,32 @@ func TestBootstrapScript_ExitCodesSplitFetchFromApply(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A one-shot URL the server answers 410 Gone: it was reached, so the URL
+	// may already be spent.
+	gone := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "gone", http.StatusGone)
+	}))
+	t.Cleanup(gone.Close)
+	// A port nothing listens on: connection refused, nothing was reached.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedPort := ln.Addr().String()
+	_ = ln.Close()
+
 	tests := []struct {
 		name string
 		url  string
 		want int
 	}{
-		{name: "fetch fails", url: "file://" + filepath.Join(dir, "missing.tgz"), want: bootstrapExitFetch},
+		{name: "no connection", url: "http://" + closedPort + "/one-shot/s3cr3t-token.tgz", want: bootstrapExitFetch},
+		{name: "server answers 410", url: gone.URL + "/one-shot/s3cr3t-token.tgz", want: bootstrapExitFetchReached},
+		// curl 37 (file not readable) is not a no-connection failure.
+		{name: "file missing", url: "file://" + filepath.Join(dir, "missing-s3cr3t.tgz"), want: bootstrapExitFetchReached},
+		// Without `--` before the URL, curl reads this as its --version option,
+		// exits 0, and the script goes on to unpack nothing.
+		{name: "URL that looks like an option", url: "--version", want: bootstrapExitFetch},
 		{name: "bundle has no apply.sh", url: "file://" + noApply, want: bootstrapExitBundle},
 		{name: "bundle is not a tar.gz", url: "file://" + garbage, want: bootstrapExitBundle},
 		{name: "apply.sh fails", url: "file://" + failing, want: bootstrapExitApply},
@@ -121,8 +143,38 @@ func TestBootstrapScript_ExitCodesSplitFetchFromApply(t *testing.T) {
 					t.Errorf("apply.sh did not run from the bundle root: %q, %v", got, err)
 				}
 			}
-			if strings.Contains(stderr, tc.url) {
-				t.Errorf("the script printed the URL:\n%s", stderr)
+			// curl's own errors name the path of the URL ("Couldn't open file
+			// /…/missing-s3cr3t.tgz"); the secret part of a one-shot URL lives
+			// there, so check for the path, not only the full URL.
+			leaks := []string{tc.url}
+			if u, err := neturl.Parse(tc.url); err == nil && len(u.Path) > 1 {
+				leaks = append(leaks, u.Path)
+			}
+			for _, leak := range leaks {
+				if strings.Contains(stderr, leak) {
+					t.Errorf("the script printed %q from the URL:\n%s", leak, stderr)
+				}
+			}
+		})
+	}
+}
+
+// TestBootstrapScript_SetupFailureAfterFetchIsSpent: once the bundle is
+// fetched the URL is spent, so a failing mkdir or chmod in the unpack step
+// must exit bootstrapExitBundle, not a bare non-zero that the CLI reports
+// without saying so. The failing tool is a PATH shim; curl and tar are the
+// real ones.
+func TestBootstrapScript_SetupFailureAfterFetchIsSpent(t *testing.T) {
+	good := writeBundle(t, t.TempDir(), "good.tgz", map[string]string{"apply.sh": "#!/bin/sh\ntrue\n"})
+	for _, tool := range []string{"mkdir", "chmod"} {
+		t.Run(tool, func(t *testing.T) {
+			shims := t.TempDir()
+			if err := os.WriteFile(filepath.Join(shims, tool), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil { // #nosec G306 -- a stub the test executes
+				t.Fatal(err)
+			}
+			code, _, stderr := runBootstrapScript(t, "file://"+good, "PATH="+shims+string(os.PathListSeparator)+os.Getenv("PATH"))
+			if code != bootstrapExitBundle {
+				t.Fatalf("a failing %s after the fetch exited %d, want %d\nstderr:\n%s", tool, code, bootstrapExitBundle, stderr)
 			}
 		})
 	}
@@ -218,7 +270,8 @@ func TestCodeInstall_BootstrapFailureSaysWhetherTheURLIsSpent(t *testing.T) {
 		want   []string
 		absent string
 	}{
-		{name: "fetch failed", code: bootstrapExitFetch, want: []string{"not consumed", "retry is safe"}, absent: "spent"},
+		{name: "no connection", code: bootstrapExitFetch, want: []string{"not consumed", "retry is safe"}, absent: "spent"},
+		{name: "server reached, fetch failed", code: bootstrapExitFetchReached, want: []string{"may already be consumed", "if a retry fails, request a new URL"}, absent: "retry is safe"},
 		{name: "no apply.sh", code: bootstrapExitBundle, want: []string{"spent", "request a new URL", "credential"}, absent: "retry is safe"},
 		{name: "apply.sh failed", code: bootstrapExitApply, want: []string{"spent", "request a new URL", "credential"}, absent: "retry is safe"},
 	}
