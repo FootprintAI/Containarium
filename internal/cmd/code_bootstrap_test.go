@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,7 +104,7 @@ func TestBootstrapScript_ExitCodesSplitFetchFromApply(t *testing.T) {
 		url  string
 		want int
 	}{
-		{name: "fetch fails", url: "file://" + filepath.Join(dir, "missing.tgz"), want: bootstrapExitFetch},
+		{name: "fetch fails", url: "file://" + filepath.Join(dir, "missing-s3cr3t.tgz"), want: bootstrapExitFetch},
 		{name: "bundle has no apply.sh", url: "file://" + noApply, want: bootstrapExitBundle},
 		{name: "bundle is not a tar.gz", url: "file://" + garbage, want: bootstrapExitBundle},
 		{name: "apply.sh fails", url: "file://" + failing, want: bootstrapExitApply},
@@ -121,8 +122,17 @@ func TestBootstrapScript_ExitCodesSplitFetchFromApply(t *testing.T) {
 					t.Errorf("apply.sh did not run from the bundle root: %q, %v", got, err)
 				}
 			}
-			if strings.Contains(stderr, tc.url) {
-				t.Errorf("the script printed the URL:\n%s", stderr)
+			// curl's own errors name the path of the URL ("Couldn't open file
+			// /…/missing-s3cr3t.tgz"); the secret part of a one-shot URL lives
+			// there, so check for the path, not only the full URL.
+			leaks := []string{tc.url}
+			if u, err := neturl.Parse(tc.url); err == nil && len(u.Path) > 1 {
+				leaks = append(leaks, u.Path)
+			}
+			for _, leak := range leaks {
+				if strings.Contains(stderr, leak) {
+					t.Errorf("the script printed %q from the URL:\n%s", leak, stderr)
+				}
 			}
 		})
 	}
