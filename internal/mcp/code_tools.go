@@ -142,7 +142,11 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 	}
 
 	out, next := readCodeWindow(ctx, sess, started.LogPath, 0, streamJSON)
-	return fmt.Sprintf(
+	warning := ""
+	if started.Warning != "" {
+		warning = "warning: " + started.Warning + "\n"
+	}
+	return warning + fmt.Sprintf(
 		"✓ started %q (pid %d) on %s\n%s\n\nlog_path: %s\nnext_offset: %d\n\n--- output so far ---\n%s\n"+
 			"(the run continues on the box — call code_attach with name=%q and offset=%d for more)",
 		started.Name, started.PID, box,

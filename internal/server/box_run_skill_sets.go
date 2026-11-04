@@ -560,6 +560,16 @@ func (s *ContainerServer) ApplyBoxSkillSets(ctx context.Context, req *pb.ApplyBo
 	}
 	defer s.boxSkillSetGate(boxName).Unlock()
 
+	// Held until return, a failure or panic included: a run started over SSH
+	// reads it in the box owner's tree and refuses (#3529). Taken before the
+	// run-in-progress check, so an SSH run that starts after the check is kept
+	// out too.
+	releaseMarker, err := s.holdSkillSetsApplyMarker(userExec, boxName, username)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "mark %q as applying skill sets: %v", username, err)
+	}
+	defer releaseMarker()
+
 	// A run in progress: a RUNNING code run, or a skill run in this box.
 	out, err := rootExec(boxName, boxRunListScript(s.boxRunDir()))
 	if err != nil {

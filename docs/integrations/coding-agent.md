@@ -82,6 +82,21 @@ while an apply is installing on the box is refused at once with
 `BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS` and whose `subject` is the box).
 The start does not queue or wait; retry it once the apply has returned.
 
+A run started over SSH never reaches the daemon, so it is kept out another
+way (#3529). A run started with `containarium code run` (agent or
+`--command`) or the MCP `code_run` tool is refused before it launches, with
+`skill sets are being applied on this box (ApplyBoxSkillSets started <n> ago,
+...)`. For this the apply holds a
+marker beside the skills, `~/.claude/skills/.sdlc-skill-sets.applying`, written
+as the box user, which the SSH path reads with no call to the daemon. The
+apply removes the marker when it returns, and also when it fails. Retry the
+run once the apply has returned. The marker is a lease: the apply renews it
+every few minutes while it runs and writes an expiry 10 minutes ahead (box
+clock). If the daemon dies mid-apply, the marker therefore stops refusing runs
+within 10 minutes: the next run removes the stale marker, starts, and prints
+`warning: cleared a stale skill-set apply marker ...`. A marker that cannot be
+read, or whose expiry is implausibly far ahead, is cleared the same way.
+
 An agent re-applies a box's sets with the platform MCP tool
 `apply_box_skill_sets` (#3511), a thin wrapper over the same client function
 as `code skill-sets` and the same REST path. Its arguments are `box`,

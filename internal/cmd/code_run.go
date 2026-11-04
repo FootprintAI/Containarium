@@ -197,6 +197,9 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("start run on %q: %w", box, err)
 	}
+	if started.Warning != "" {
+		fmt.Fprintf(diag, "warning: %s\n", started.Warning)
+	}
 	fmt.Fprintf(diag, "✓ started %q (pid %d) on %s\n", started.Name, started.PID, box)
 	if approvalNote != "" {
 		journalApprovalNote(ctx, sess, name, approvalNote, diag)
@@ -247,6 +250,9 @@ func runCodeRunCommand(cmd *cobra.Command, box string) error {
 	started, err := sess.ProcessStart(ctx, name, command, "", coderun.CaptureModeFor(false))
 	if err != nil {
 		return fmt.Errorf("start command run on %q: %w", box, err)
+	}
+	if started.Warning != "" {
+		fmt.Fprintf(diag, "warning: %s\n", started.Warning)
 	}
 	fmt.Fprintf(diag, "✓ started %q (pid %d) on %s\n", started.Name, started.PID, box)
 	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, false)

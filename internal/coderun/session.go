@@ -221,12 +221,24 @@ type ProcessStartResult struct {
 	Name, Command, LogPath string
 	PID                    int
 	StartedAt              time.Time
+	// Warning is a note for the caller to show: a stale skill-set apply
+	// marker was cleared before the run started (#3529). Empty otherwise.
+	Warning string
 }
 
 // ProcessStart spawns command on the box. captureMode is "combined" or
 // "framed" ("" defaults to "combined", matching process_start's own
 // default) — see internal/agentbox's CaptureMode for what each means.
+//
+// Every run started over SSH (`containarium code run`, the MCP code_run tool)
+// starts here, so this is where it is refused while an ApplyBoxSkillSets is
+// changing the box's skills (#3529, GuardSkillSetsApply): before process_start
+// is called at all.
 func (s *Session) ProcessStart(ctx context.Context, name, command, cwd, captureMode string) (*ProcessStartResult, error) {
+	warning, err := GuardSkillSetsApply(ctx, s.ShellExec)
+	if err != nil {
+		return nil, err
+	}
 	args := map[string]any{"command": command}
 	if name != "" {
 		args["name"] = name
@@ -246,7 +258,7 @@ func (s *Session) ProcessStart(ctx context.Context, name, command, cwd, captureM
 	startedAt, _ := time.Parse(time.RFC3339, kv["started_at"])
 	return &ProcessStartResult{
 		Name: kv["name"], Command: kv["command"], LogPath: kv["log_path"],
-		PID: pid, StartedAt: startedAt,
+		PID: pid, StartedAt: startedAt, Warning: warning,
 	}, nil
 }
 
