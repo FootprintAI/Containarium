@@ -2,6 +2,8 @@ package server
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"log"
 	"os/exec"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/limitio"
 	"github.com/footprintai/containarium/pkg/core/recipes"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
@@ -160,6 +163,9 @@ func TestDeployRecipe_AsyncPostStartNonZeroExitIsLogged(t *testing.T) {
 	if !strings.Contains(got, "exit status 125") {
 		t.Errorf("the log line should carry the exit status:\n%s", got)
 	}
+	if !strings.Contains(got, "ports were not exposed") {
+		t.Errorf("the log line should say routes were skipped (#3545):\n%s", got)
+	}
 	if strings.Contains(got, "manifest unknown") {
 		t.Errorf("post_start stderr is not copied into the daemon log:\n%s", got)
 	}
@@ -174,6 +180,51 @@ func TestDeployRecipe_SyncPostStartNonZeroExitFails(t *testing.T) {
 	if status.Code(err) != codes.Internal || !strings.Contains(err.Error(), "post_start failed on alice-container") ||
 		!strings.Contains(err.Error(), "exit status 1") {
 		t.Fatalf("got %v, want Internal naming the box and exit status 1", err)
+	}
+}
+
+// #3545: output past the exec capture cap is tolerated only when it is the
+// only problem. The incus exec path joins a wait/transport error with the cap
+// error, so a bare errors.Is(err, ErrTooLarge) also matches a timeout.
+
+// execResultBoxes returns a fixed ExecWithExitCode result.
+type execResultBoxes struct {
+	recipeBoxes
+	code int
+	err  error
+}
+
+func (b execResultBoxes) ExecWithExitCode(string, []string) (string, string, int, error) {
+	return "", "", b.code, b.err
+}
+
+func TestRunPostStart_OverCapOutput(t *testing.T) {
+	capErr := fmt.Errorf("exec stdout: %w", limitio.ErrTooLarge)
+	transport := errors.New("command execution failed: context deadline exceeded")
+	for _, tc := range []struct {
+		name    string
+		code    int
+		err     error
+		wantErr string // "" = success
+	}{
+		{"over cap, exit 0 succeeds", 0, capErr, ""},
+		{"over cap on both streams, exit 0 succeeds", 0, errors.Join(capErr, fmt.Errorf("exec stderr: %w", limitio.ErrTooLarge)), ""},
+		{"over cap, non-zero exit fails", 3, capErr, "exit status 3"},
+		{"over cap plus a transport error fails", 0, errors.Join(transport, capErr), "deadline exceeded"},
+		{"transport error alone fails", 0, transport, "deadline exceeded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runPostStart(execResultBoxes{code: tc.code, err: tc.err}, "alice-container", "true")
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("got %v, want success", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("got %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 
