@@ -7,9 +7,156 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.128.0] - 2026-11-04
+
+
 ### Added
 
 - **Per-target preemption metrics for `--watch-spot-vm`** (#3485). Each watched VM now appears on the sentinel's `/metrics` and, with `--metrics-export`, in the pushed series: `sentinel_preempted_total{backend="<target>"}`, `sentinel_recovered_total{backend="<target>"}`, `sentinel_watch_target_down{backend="<target>"}` (1 while the VM is known down) and `sentinel_watch_target_last_preemption_timestamp_seconds{backend="<target>"}`. The existing unlabeled series still describe the primary backend and are unchanged; a preemption found by the status poll is counted like an event-driven one.
+- **Re-apply a box's SDLC skill sets without re-creating it** (#3374). The new
+  `ApplyBoxSkillSets` RPC (`POST /v1/containers/{username}/skill-sets:apply`)
+  and its thin CLI, `containarium code skill-sets <box> --skill-sets <ids>`,
+  make a running box's installed skill sets exactly the given list: newly
+  listed sets are installed, sets the box's manifest records and the list
+  omits are removed (only the skill directories that set installed; skills
+  installed by hand are never touched), and the files of sets kept are
+  refreshed to the release's pin. The call is idempotent and reports what it
+  installed and removed. It is refused with a typed reason, carried in the
+  error details, under a run in progress (`RUN_IN_PROGRESS`), for an unknown
+  set id (`UNKNOWN_SKILL_SET`), or when a set installed before the per-box
+  manifest existed would be removed (`SET_PREDATES_MANIFEST`; keep it in the
+  list once to adopt it). Runs as the box's own user through the same
+  installer `code install --skill-sets` uses. Advertised as `box_skill_sets`
+  in `SystemInfo.capabilities`.
+- **Run token usage contract** (#3467). `BoxRun`, `RunAgentSkillResponse` and `CrewRun` gain a `usage` field (status, per-model input/output/cache token counts, whether a resumed session is included), and `SystemInfo.capabilities` advertises `run_usage`. This first slice defines the contract only: every run reports `UNAVAILABLE` for now, never zero counts.
+- **Python toolchain for agent-runtime boxes** (#3491). The `agent-runtime`
+  recipe takes an opt-in `toolchains` parameter; `toolchains=python` installs
+  `python3-venv`, `python3-pip` and `python3-pytest`, and the new `agent-python`
+  helper (shipped in the agent-runtime bundle) creates a venv for a checkout,
+  installs the dependencies the repo itself declares (`requirements*.txt`, then
+  the project from `pyproject.toml` / `setup.cfg`) and runs its tests. The new
+  `agent-test` helper runs any test command and reports that it ran, with its
+  exit status. Every helper failure ends with one `<helper>: error:` line
+  (diagnostics such as pip's log tail may precede it); an unreachable package
+  index under restricted egress names the hosts to allow (`pypi.org`,
+  `files.pythonhosted.org`). An empty `toolchains` (the default) changes
+  nothing; an unknown value fails provisioning.
+- **Box runs report token usage** (#3467). `ListBoxRuns` now fills `BoxRun.usage` for a finished `structured_output` run from the engine's JSON result: per-model input, output and cache token counts when the engine reports them per model, otherwise one aggregate row. A run that resumed a session is flagged because its counts are cumulative. A plain-text, invalid, oversized or still-running run reports `UNAVAILABLE`, never zero counts.
+- **Token usage on skill and graph crew runs** (#3467). `RunAgentSkill`, `PlanTaskGraph` and task-graph crew runs now fill `usage` from what the in-box Claude engine reported: per model when it reports per-model counts, otherwise one aggregate row. A run resumed for its final message is flagged with `includes_prior_session`. Missing, malformed or negative counts report `UNAVAILABLE`, never zeros. Crews whose members answer over A2A report `UNAVAILABLE` for now.
+
+### Changed
+
+- **Birth idle-stop parity for local CLI and MCP creates** (#524). Local CLI creation now records the start clock before enabling idle-stop, while MCP `create_container` accepts an optional `idle_stop_minutes` setting to apply the existing policy at creation.
+  Existing boxes and default-off behavior on self-hosted deployments are unchanged.
+- **`tests_run` in a skill artifact is what the box observed** (#3491). The
+  in-box agent runtime now sets a final output's top-level `tests_run` from the
+  test-command executions it saw in the run (reported by `agent-test` and
+  `agent-python test`), not from the model's own claim, and journals a status
+  line when it changes the value. A `tests_run` passed through from the task
+  input (as `diff-reviewer` relays the implementer's) is left as it is. The
+  `issue-implementer` prompt now asks for tests to run through those helpers;
+  a run whose tests ran any other way reports `tests_run: false`.
+
+### Fixed
+
+- **New Boxes honor auto-sleep, and HTTP wake waits for the application** (follow-up to #524).
+  Running Boxes now record their initial start time before auto-sleep is enabled,
+  so an idle Box created with an auto-sleep policy can stop without a manual restart.
+  If the start-time stamp fails, the policy is not silently enabled.
+  On HTTP wake, the readiness probe follows the Box's current IP and waits for
+  the route's TCP port to accept connections within the original timeout. A Box
+  being Running alone is no longer treated as an application-ready signal;
+  a wake that is not ready returns a retryable response instead of forwarding
+  the first request prematurely to an unopened port.
+  Re-enabling a policy preserves the existing idle clock, activity-query errors
+  do not count as idleness, and multiple routes use their own authorized ports.
+
+### Security
+
+- **Remaining daemon logs and CLI tables escape tenant-supplied names, and
+  CI keeps it that way** (#3457). Log lines from the model gateway,
+  credential watch, auto-sleep, wake proxy, capacity drain, security scanner,
+  SSH key registry, secrets, backups, Kubernetes boxes and the cloud session
+  sync now write box names, usernames, tenants, skill ids, key owners, model
+  names and route domains with Go `%q` quoting. The `info` user list,
+  the anonymous box list, `network-policy list`, `security scan-opt-in list` and
+  `audit query --raw` username column now print those values through the
+  same control-character escape as the other CLI tables. A new unit test
+  fails the build when a log call or a CLI table row prints a known
+  tenant-controlled field with `%s` or `%v`. Log filters that match the old
+  unquoted form need updating: values now appear in double quotes, e.g.
+  `tenant="acme"` instead of `tenant=acme`.
+- **Reads from boxes and peers are capped in size** (#3469). Command output
+  captured from a box (16 MiB per stream), whole-file reads out of a box
+  (64 MiB), and the response bodies the daemon and the MCP server read whole
+  from peer daemons, a box's A2A server and the daemon API (16 MiB) are now
+  capped, so a box that prints without end or a peer that answers with an
+  endless body can no longer grow the daemon's memory until it is killed. A
+  read over its cap returns the first bytes up to the cap with a "data
+  exceeds the N-byte limit (truncated)" error; reads under the cap behave
+  exactly as before. Larger file transfers use the streaming read, which is
+  not capped.
+- **Incus operation waits have a deadline** (#3470). The daemon used to wait
+  forever on an Incus operation that never completed, holding the request
+  (and any lock it held) indefinitely. Every wait in the Incus client is now
+  bounded: control operations (start, stop, freeze, delete, rename, config,
+  label, ACL and device updates) by 10 minutes, data-sized operations
+  (creating an instance, publishing an image, creating a backup, importing
+  one) by 6 hours, and commands run inside a box without an explicit timeout
+  by 24 hours. A wait that runs out fails with an error saying the operation
+  did not complete in time, which Go callers can match with
+  `errors.Is(err, incus.ErrOperationTimeout)`; the operation itself is not
+  cancelled and may still finish. Operations that complete in time behave as
+  before, and interactive terminal and console sessions are not bounded.
+- **Remaining tenant and peer strings in sentinel, gateway and startup logs
+  are quoted** (#3476). A tunnelled backend's id in the backend status line
+  and the alert-webhook line, the peer URL in the terminal proxy line, the
+  probe error text in the primary-unreachable line, and the account names in
+  the startup account-sync lines are now written with Go `%q`, so a newline
+  or escape sequence in them no longer starts a log line or reaches the
+  terminal. The account-sync lines quote each name separately instead of one
+  joined string. Log-format change: the primary-registered line now reads
+  `ip="10.0.0.1" port=443` instead of `ip="10.0.0.1":443`; log filters that
+  match the old form need updating. Error text appended with `%v` is still
+  not quoted (#3472).
+- **The remaining backend-id log lines in the sentinel are quoted** (#3484).
+  The lines that report a failed status read, a start attempt, a failed
+  start, a sent start command, a provisioning backend, and a running backend
+  that fails its health check, plus the tunnel-fallback line printed when the
+  HTTPS proxy starts, now write the backend id with Go `%q`. A tunnelled
+  backend's id is derived from a self-reported spot id, so a newline or
+  escape sequence in it can no longer start a forged log line or reach the
+  terminal. The terminal peer-dial path was checked and already logs the peer
+  URL quoted. Error text appended with `%v` is still not quoted (#3472).
+- **slides-agent zero-click login uses a single-use token kept out of the URL
+  query** (#3486). The slides-agent image now carries a small in-box login
+  helper: `GetWorkspaceAccess` mints a fresh token per call that expires after
+  120 seconds and can be redeemed once, and returns
+  `/__ws_login#t=<token>`. The token is in the URL fragment, which a browser
+  never sends, so it no longer lands in a request line, an access log or a
+  `Referer`; the bootstrap page posts it and is served `no-store` and
+  `no-referrer`. A replayed token is refused, and a token sent in the query is
+  burned. Redemption sets a separate random `__Host-ws_session` cookie
+  (`HttpOnly`, `Secure`, `SameSite=None` as before so an iframe embed keeps
+  working; the `__Host-` prefix means a site on a sibling subdomain cannot
+  plant one), which the proxy checks with the helper on every request and
+  strips before the dev server; any valid one of several is accepted, so a
+  planted duplicate cannot lock a user out. A helper or box restart ends every
+  session. The daemon's mint probe fails on an HTTP error (`curl -f`), the
+  helper answers a refusal as JSON with no token, and a mint body that is not
+  a well-formed token never becomes a URL. The static per-box token and its
+  `ws_auth` cookie are gone from slides-agent boxes; basic auth stays for direct access, though a
+  successful basic-auth request no longer sets a cookie. An existing
+  slides-agent box keeps the old proxy until it is re-created (or its
+  post_start re-run) with the new image; until then the daemon falls back to
+  its static token as before. Consumers that build the login URL themselves
+  from the token must use the returned `url`, or put the token in the
+  fragment. The chat workspace and `agent-workspace` are unchanged.
+
+### Upgrading
+
+- **Check anything that reads large output or files out of a box** (#3469). Command output captured from a box is now capped at 16 MiB per stream and a whole-file read out of a box at 64 MiB; a read over its cap returns the first bytes plus a "data exceeds the N-byte limit (truncated)" error instead of the full content. A script or integration that captured more than that in one call must move to the streaming read, which is not capped. No flag or host step is needed.
+- **Slow Incus operations now fail instead of waiting forever** (#3470). Control operations (start, stop, delete, rename, config) time out after 10 minutes, creating an instance, publishing an image or taking a backup after 6 hours, and a command run in a box without its own timeout after 24 hours. The operation is not cancelled and may still finish; the caller gets an error that Go code can match with `errors.Is(err, incus.ErrOperationTimeout)`. A host whose storage routinely needs longer than these limits will now see errors where it used to hang. No flag or host step is needed.
 
 ## [0.127.0] - 2026-11-03
 
