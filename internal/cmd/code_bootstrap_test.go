@@ -273,7 +273,7 @@ func TestGetContainer_NotFoundNamesServerAndOrg(t *testing.T) {
 	if err == nil {
 		t.Fatal("want a not-found error")
 	}
-	for _, want := range []string{`"alice"`, "not found on " + ts.URL, "org org-abc", "user@example.com", "containarium list", "containarium whoami"} {
+	for _, want := range []string{`"alice"`, "not found on " + ts.URL, "org org-abc", "user@example.com", "containarium list", "containarium whoami --server " + ts.URL} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %q", err, want)
 		}
@@ -291,5 +291,19 @@ func TestGetContainer_NotFoundNamesServerAndOrg(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "org ") {
 		t.Errorf("a server with no org id must not name one: %q", err)
+	}
+
+	// A --token / CONTAINARIUM_TOKEN override is not the stored login, so the
+	// stored org and account are not the scope that was searched.
+	override := &connectAPI{hc: ts.Client(), server: ts.URL, token: "eyJsomeone-else"}
+	_, err = override.GetContainer(context.Background(), "alice")
+	if err == nil {
+		t.Fatal("want a not-found error")
+	}
+	if strings.Contains(err.Error(), "org-abc") || strings.Contains(err.Error(), "user@example.com") {
+		t.Errorf("an override token must not report the stored login's identity: %q", err)
+	}
+	if !strings.Contains(err.Error(), "not found on "+ts.URL) {
+		t.Errorf("error %q does not name the server", err)
 	}
 }
