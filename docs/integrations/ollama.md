@@ -28,9 +28,6 @@ The recipe's `post_start` commands run after the container is up:
 podman volume create ollama-models
 podman run -d --name ollama --restart=always --device nvidia.com/gpu=all \
     -p 11434:11434 -v ollama-models:/root/.ollama docker.io/ollama/ollama
-# wait until `timeout 5 podman exec ollama ollama list` succeeds (60 probes,
-# 2s apart; at most about 7 minutes if every probe hangs), failing the step
-# with a clear message if the server never comes up
 podman exec ollama ollama pull "$CONTAINARIUM_PARAM_MODEL"
 ```
 
