@@ -4256,6 +4256,47 @@
         ]
       }
     },
+    "/v1/containers/{username}/skill-sets:apply": {
+      "post": {
+        "summary": "Re-apply a box's SDLC skill sets",
+        "description": "Makes a running box's installed SDLC skill sets exactly the given list, through the same installer `containarium code install --skill-sets` uses: newly listed sets are installed, sets the box's manifest records and the list omits are removed (only the skill directories that set installed; skills the owner installed by hand are never touched), and the files of sets kept are refreshed to the release's pin. Reports what was installed and removed; repeating the call changes nothing and says so (unchanged). Refused with a typed reason in the error details: an id not in the lock is INVALID_ARGUMENT (UNKNOWN_SKILL_SET), a box with a code run that is RUNNING or a skill run in it is FAILED_PRECONDITION (RUN_IN_PROGRESS), and omitting a set that was installed before the manifest existed is FAILED_PRECONDITION (SET_PREDATES_MANIFEST; keep it in the list to adopt it). Runs as the box's own user. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_ApplyBoxSkillSets",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ApplyBoxSkillSetsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ApplyBoxSkillSetsBody"
+            }
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
     "/v1/containers/{username}/snapshots": {
       "get": {
         "summary": "List a container's snapshots",
@@ -11540,6 +11581,59 @@
       "description": "- APP_STATE_UNSPECIFIED: Unspecified state (should not be used)\n - APP_STATE_UPLOADING: Source code is being uploaded\n - APP_STATE_BUILDING: Container image is being built (using Podman)\n - APP_STATE_RUNNING: App is running and healthy\n - APP_STATE_STOPPED: App is stopped by user\n - APP_STATE_FAILED: Build or runtime failure\n - APP_STATE_RESTARTING: App is restarting",
       "title": "AppState represents the lifecycle state of an application"
     },
+    "ApplyBoxSkillSetsBody": {
+      "type": "object",
+      "properties": {
+        "skillSets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The complete target list of set ids the box should have (for example\n[\"sdlc\", \"qa\"]). Sets in the list and not on the box are installed; sets\non the box (per its manifest) and not in the list are removed. An empty\nlist removes every set the manifest records. An id not in the lock is\nrefused (UNKNOWN_SKILL_SET)."
+        },
+        "release": {
+          "type": "string",
+          "description": "The Containarium release whose installer, lock and skills bundle to use\n(a v-prefixed tag). Empty means the daemon's own release."
+        }
+      },
+      "description": "ApplyBoxSkillSetsRequest re-applies a box's SDLC skill sets."
+    },
+    "ApplyBoxSkillSetsResponse": {
+      "type": "object",
+      "properties": {
+        "skillSets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The sets the box's manifest records after the call, sorted: the target\nlist."
+        },
+        "installed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/BoxSkillSetChange"
+          },
+          "description": "The skills this call installed, by set. A set already on the box whose\ndirectories did not change is not listed."
+        },
+        "removed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/BoxSkillSetChange"
+          },
+          "description": "The skills this call removed, by set."
+        },
+        "unchanged": {
+          "type": "boolean",
+          "description": "True when the call installed and removed no skill: the box already had\nexactly the target sets. Repeating a call is unchanged. The installed\nfiles are still refreshed to the release's pin, so a pin bump that\nchanges a skill's content without adding or removing one is unchanged\ntoo."
+        },
+        "release": {
+          "type": "string",
+          "description": "The release the skills came from (the request's, or the daemon's own)."
+        }
+      }
+    },
     "AttachVolumeBody": {
       "type": "object",
       "properties": {
@@ -12080,6 +12174,23 @@
       ],
       "default": "BOX_RUN_TOOL_PROVENANCE_UNSPECIFIED",
       "description": "BoxRunToolProvenance compares a tool across the two probes of one run.\n\n - BOX_RUN_TOOL_PROVENANCE_PRESENT_AT_START: Present at the start with the same version at the end.\n - BOX_RUN_TOOL_PROVENANCE_ADDED_DURING_RUN: Not on the PATH at the start, found at the end: installed during the run.\n - BOX_RUN_TOOL_PROVENANCE_CHANGED_DURING_RUN: On the PATH at both ends, but a different version or a different location."
+    },
+    "BoxSkillSetChange": {
+      "type": "object",
+      "properties": {
+        "skillSet": {
+          "type": "string",
+          "description": "The set id, as in the lock's `set.\u003cid\u003e=` line (for example \"qa\")."
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The skill directory names under ~/.claude/skills this set installed or\nremoved (for example \"qa-sprint-verify\"), sorted."
+        }
+      },
+      "description": "BoxSkillSetChange is what one call did for one skill set."
     },
     "BoxToolAccess": {
       "type": "string",
@@ -22700,7 +22811,7 @@
           "items": {
             "type": "string"
           },
-          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model) and\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
+          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model),\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds) and\n\"box_skill_sets\" (the ApplyBoxSkillSets RPC, #3374).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
         },
         "storagePools": {
           "type": "array",

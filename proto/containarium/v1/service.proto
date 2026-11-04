@@ -599,6 +599,24 @@ service ContainerService {
     };
   }
 
+  // ApplyBoxSkillSets re-applies a box's SDLC skill sets without re-creating
+  // it (#3374): installs the skills of newly listed sets, removes those of
+  // sets no longer listed (per the box's manifest), and leaves everything
+  // else alone. Idempotent; refused with a typed reason (BoxSkillSetsRefusal)
+  // under a run in progress, for an unknown set id, or when a set that
+  // predates the manifest would be removed. Same access as StartBoxRun.
+  rpc ApplyBoxSkillSets(ApplyBoxSkillSetsRequest) returns (ApplyBoxSkillSetsResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/skill-sets:apply"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Re-apply a box's SDLC skill sets";
+      description: "Makes a running box's installed SDLC skill sets exactly the given list, through the same installer `containarium code install --skill-sets` uses: newly listed sets are installed, sets the box's manifest records and the list omits are removed (only the skill directories that set installed; skills the owner installed by hand are never touched), and the files of sets kept are refreshed to the release's pin. Reports what was installed and removed; repeating the call changes nothing and says so (unchanged). Refused with a typed reason in the error details: an id not in the lock is INVALID_ARGUMENT (UNKNOWN_SKILL_SET), a box with a code run that is RUNNING or a skill run in it is FAILED_PRECONDITION (RUN_IN_PROGRESS), and omitting a set that was installed before the manifest existed is FAILED_PRECONDITION (SET_PREDATES_MANIFEST; keep it in the list to adopt it). Runs as the box's own user. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
   // GetRunApprovalKey returns the public key a box's permission-request
   // answers are signed with (#2184). `code run --approvals ask` hands it to
   // the box. Same access as StartBoxRun.

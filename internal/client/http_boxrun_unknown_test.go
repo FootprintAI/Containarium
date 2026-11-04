@@ -62,4 +62,9 @@ func TestBoxRunResponsesDiscardUnknownFields(t *testing.T) {
 			t.Fatalf("GetBoxRunUserStatus: %v", err)
 		}
 	})
+	t.Run("ApplyBoxSkillSets", func(t *testing.T) {
+		if _, err := c.ApplyBoxSkillSets(&pb.ApplyBoxSkillSetsRequest{Username: "alice", SkillSets: []string{"qa"}}); err != nil {
+			t.Fatalf("ApplyBoxSkillSets: %v", err)
+		}
+	})
 }

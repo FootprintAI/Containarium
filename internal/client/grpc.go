@@ -755,6 +755,20 @@ func (c *GRPCClient) SweepBoxRunCheckouts(req *pb.SweepBoxRunCheckoutsRequest) (
 	return c.client.SweepBoxRunCheckouts(ctx, req)
 }
 
+// applyBoxSkillSetsTimeout bounds a skill-set apply: the box fetches the
+// installer and the skills bundle from GitHub and copies files as its user.
+const applyBoxSkillSetsTimeout = 10 * time.Minute
+
+// ApplyBoxSkillSets re-applies a box's SDLC skill sets (#3374): installs the
+// skills of newly listed sets and removes those of sets no longer listed. The
+// error is returned UNWRAPPED so an older daemon surfaces as
+// codes.Unimplemented and a typed refusal keeps its status details.
+func (c *GRPCClient) ApplyBoxSkillSets(req *pb.ApplyBoxSkillSetsRequest) (*pb.ApplyBoxSkillSetsResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), applyBoxSkillSetsTimeout)
+	defer cancel()
+	return c.client.ApplyBoxSkillSets(ctx, req)
+}
+
 // TailBoxRunLog reads one window of a box run's log via gRPC (#2123). The
 // deadline covers the server's follow_seconds wait.
 func (c *GRPCClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error) {
