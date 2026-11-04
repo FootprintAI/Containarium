@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
@@ -413,16 +414,91 @@ func (s *ContainerServer) boxSkillSetGate(box string) *sync.RWMutex {
 }
 
 // enterBoxRunStart takes box's gate for a run start, or refuses the start with
-// APPLY_IN_PROGRESS when an apply holds it or is waiting for it: never a wait,
+// APPLY_IN_PROGRESS when an apply holds it (an apply that is only waiting does not count, #3530): never a wait,
 // per the decision on #3524 (Q3). The caller runs release once the run's
 // record is written (or the start has failed).
-func (s *ContainerServer) enterBoxRunStart(box string) (release func(), err error) {
+func (s *ContainerServer) enterBoxRunStart(box, runName string) (release func(), err error) {
 	gate := s.boxSkillSetGate(box)
 	if !gate.TryRLock() {
 		return nil, boxSkillSetsRefusal(pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS, box,
 			fmt.Sprintf("%s is applying skill sets (ApplyBoxSkillSets) right now; a run does not start while its skills are being changed. Retry once the apply has returned.", box))
 	}
-	return gate.RUnlock, nil
+	s.boxRunStarts.add(box, runName)
+	return func() {
+		s.boxRunStarts.remove(box, runName)
+		gate.RUnlock()
+	}, nil
+}
+
+// boxSkillSetsGateWait caps how long ApplyBoxSkillSets waits for run starts to
+// finish (#3530); boxSkillSetsGatePoll is how often it retries. Variables so
+// tests can shorten them.
+var (
+	boxSkillSetsGateWait = 30 * time.Second
+	boxSkillSetsGatePoll = 25 * time.Millisecond
+)
+
+// boxRunStartHolders records which run starts hold a box's gate, so a refused
+// apply can name them. The zero value is ready to use.
+type boxRunStartHolders struct {
+	mu    sync.Mutex
+	byBox map[string]map[string]int
+}
+
+func (h *boxRunStartHolders) add(box, run string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.byBox == nil {
+		h.byBox = map[string]map[string]int{}
+	}
+	if h.byBox[box] == nil {
+		h.byBox[box] = map[string]int{}
+	}
+	h.byBox[box][run]++
+}
+
+func (h *boxRunStartHolders) remove(box, run string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.byBox[box][run]--; h.byBox[box][run] <= 0 {
+		delete(h.byBox[box], run)
+	}
+}
+
+func (h *boxRunStartHolders) names(box string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	names := make([]string, 0, len(h.byBox[box]))
+	for n := range h.byBox[box] {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// lockBoxSkillSetGate takes box's gate for writing, retrying TryLock until ctx
+// is done or boxSkillSetsGateWait has passed. A TryLock that fails does not
+// queue as a writer, so run starts are not refused while the apply only waits;
+// they are refused (APPLY_IN_PROGRESS) once it holds the gate. On the cap it
+// refuses with RUN_IN_PROGRESS naming the run starts holding the gate.
+func (s *ContainerServer) lockBoxSkillSetGate(ctx context.Context, box string) error {
+	gate := s.boxSkillSetGate(box)
+	timeout := time.NewTimer(boxSkillSetsGateWait)
+	defer timeout.Stop()
+	tick := time.NewTicker(boxSkillSetsGatePoll)
+	defer tick.Stop()
+	for !gate.TryLock() {
+		select {
+		case <-ctx.Done():
+			return status.FromContextError(ctx.Err()).Err()
+		case <-timeout.C:
+			return boxSkillSetsRefusal(pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_RUN_IN_PROGRESS, box,
+				fmt.Sprintf("%s has a run start in progress (%s) that did not finish within %s; its skills are not changed under a run. Retry shortly.",
+					box, quoteAll(s.boxRunStarts.names(box)), boxSkillSetsGateWait))
+		case <-tick.C:
+		}
+	}
+	return nil
 }
 
 func quoteAll(names []string) string {
@@ -479,9 +555,10 @@ func (s *ContainerServer) ApplyBoxSkillSets(ctx context.Context, req *pb.ApplyBo
 	boxName := username + "-container"
 	// Held until return: no run starts between the check below and the install
 	// (#3510); see boxSkillSetGate.
-	gate := s.boxSkillSetGate(boxName)
-	gate.Lock()
-	defer gate.Unlock()
+	if err := s.lockBoxSkillSetGate(ctx, boxName); err != nil {
+		return nil, err
+	}
+	defer s.boxSkillSetGate(boxName).Unlock()
 
 	// Held until return, a failure or panic included: a run started over SSH
 	// reads it in the box owner's tree and refuses (#3529). Taken before the
