@@ -186,9 +186,10 @@ type ContainerServer struct {
 	// Skill-set re-apply (#3374, box_run_skill_sets.go). boxSkillSetsInstall is
 	// the install step's seam: production runs the shared installer script as
 	// the box user through boxRunStartExec; tests run the real installer against
-	// a temp home. boxSkillSetLocks serializes calls per box.
+	// a temp home. boxSkillSetLocks is the per-box gate (boxSkillSetGate): an
+	// apply holds it for writing, a run start for reading (#3510).
 	boxSkillSetsInstall boxSkillSetsInstallFunc
-	boxSkillSetLocks    sync.Map // key: box name -> *sync.Mutex
+	boxSkillSetLocks    sync.Map // key: box name -> *sync.RWMutex
 
 	// boxRunToolAccess overrides how StartBoxRun reads the tool-access level
 	// recorded for a box (#2944): "" = none recorded, so the run keeps the
