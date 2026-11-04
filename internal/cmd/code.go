@@ -179,6 +179,15 @@ It also lands the agent-box helper on ~/.local/bin, so containarium code
 run/attach/status/stop work on this box, and records the choices above in
 ~/.containarium/code.json (0600) so ` + "`code run`" + ` never re-asks.
 
+On the Claude path it installs the pinned SDLC role skills into
+~/.claude/skills, selected by --skill-sets (default: all). That sets the
+selection once, over SSH, as part of installing the engine. To change it
+later on a box that already exists — add a set, drop one, or pick up a pin
+bump — use ` + "`containarium code skill-sets <box> --skill-sets <ids>`" + `, which
+re-applies the same installer through the daemon, with no SSH client, and
+removes only what the dropped sets installed. Re-running this command with a
+different --skill-sets also works, at the cost of re-installing the engine.
+
 After installing it prints the binary version and reports which credential
 SOURCE the box has — names only, never a value. On the Claude path it also
 asserts the install created no ~/.claude/.credentials.json.
@@ -228,7 +237,7 @@ func init() {
 		"deprecated alias for --skill-sets none")
 	_ = codeInstallCmd.Flags().MarkDeprecated("no-sdlc-skills", "use --skill-sets none")
 	codeInstallCmd.Flags().StringVar(&codeSkillSets, "skill-sets", "",
-		"which pinned SDLC skill sets to install into ~/.claude/skills: a comma-separated list of set ids (for example sdlc,qa), \"all\", or \"none\" (default: all). An unknown id fails and names the known ones; narrowing the list on a re-run removes the dropped sets")
+		"which pinned SDLC skill sets to install into ~/.claude/skills: a comma-separated list of set ids (for example sdlc,qa), \"all\", or \"none\" (default: all). An unknown id fails and names the known ones; narrowing the list on a re-run removes the dropped sets. To change the sets later without re-installing the engine, use `containarium code skill-sets`")
 	codeInstallCmd.Flags().StringVar(&codeRelease, "release", "",
 		"release tag to pull the agent-box / mcp-server assets from, v-prefixed (default: this CLI's own version)")
 	codeInstallCmd.Flags().StringVar(&codeClaudeCodeVersion, "claude-code-version", "",

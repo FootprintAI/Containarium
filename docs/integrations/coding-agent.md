@@ -47,6 +47,34 @@ For an existing box, use `containarium code install` instead (it installs the
 same skills for the Claude engine; `--skill-sets qa` or `--skill-sets sdlc,qa`
 selects sets, `--skill-sets none` installs none and removes what the installer
 owned, and `--no-sdlc-skills` is a deprecated alias for `--skill-sets none`).
+
+To change a box's sets **after** that, without re-creating the box or
+re-installing the engine, use `containarium code skill-sets <box>
+--skill-sets <ids>` (#3374): it is the thin CLI over the daemon's
+`ApplyBoxSkillSets` RPC (`POST /v1/containers/{username}/skill-sets:apply`,
+the same call a control plane makes when a tenant's skill sets change). The
+two paths are two halves of one mechanism: `code install --skill-sets` sets
+the selection once, over SSH, when the agent first lands on the box;
+`code skill-sets` re-applies the same installer at a release (default: the
+daemon's own) through the daemon, as the box's own user, with no SSH client.
+`--skill-sets` is the complete target list: newly listed sets are installed,
+sets the box's manifest records and the list omits are removed (only the skill
+directories that set installed), the files of sets kept are refreshed to the
+release's pin, and anything you installed by hand under `~/.claude/skills` is
+never touched. Repeating the call reports `unchanged`. The daemon keeps a
+per-box manifest beside the skills, `~/.claude/skills/.sdlc-skill-sets.json`,
+recording which skill directories each set installed; a set installed by
+`code install` or the recipe before that manifest existed can be adopted by
+keeping it in the list, and is refused (`SET_PREDATES_MANIFEST`) if omitted
+before it has been adopted once. A box with a run in progress — a running
+`code run`, or a skill run executing in it — is refused (`RUN_IN_PROGRESS`)
+and nothing is changed; an unknown set id is refused (`UNKNOWN_SKILL_SET`)
+naming the known ones. Each refusal carries that reason as a typed detail of
+the error (a `google.rpc.PreconditionFailure` violation type, or the
+`google.rpc.BadRequest` field-violation reason for an unknown id), so a caller
+never matches on message text. The daemon advertises the call as
+`box_skill_sets` in `SystemInfo.capabilities`.
+
 Which namespaces a set covers is defined next to the pin, in the `set.<id>=`
 lines of `pkg/core/sdlcskills/sdlc-skills.lock`, so a caller sends set ids and
 never has to track upstream namespaces. That lock has one `[source]` section

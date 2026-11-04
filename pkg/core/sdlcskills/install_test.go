@@ -25,6 +25,27 @@ func TestSkillSetsFromIDs(t *testing.T) {
 	}
 }
 
+func TestSkillSetsAllAndIDs(t *testing.T) {
+	for _, v := range []string{"", "all"} {
+		s, err := ParseSkillSets(v)
+		if err != nil || !s.All() || s.None() || s.IDs() != nil {
+			t.Errorf("ParseSkillSets(%q): all=%v none=%v ids=%v err=%v", v, s.All(), s.None(), s.IDs(), err)
+		}
+	}
+	if s, _ := ParseSkillSets("none"); s.All() || !s.None() || s.IDs() != nil {
+		t.Errorf("none: all=%v none=%v ids=%v", s.All(), s.None(), s.IDs())
+	}
+	s, _ := ParseSkillSets("sdlc, qa,sdlc")
+	if s.All() || s.None() || strings.Join(s.IDs(), ",") != "sdlc,qa" {
+		t.Errorf("ids: all=%v none=%v ids=%v", s.All(), s.None(), s.IDs())
+	}
+	ids := s.IDs()
+	ids[0] = "mutated"
+	if s.IDs()[0] != "sdlc" {
+		t.Error("IDs must return a copy")
+	}
+}
+
 func TestValidReleaseTag(t *testing.T) {
 	for tag, want := range map[string]bool{
 		"v0.127.0": true, "0.127.0": true, "v1.2.3-rc.1": true,
