@@ -91,6 +91,10 @@ type recipeBoxes interface {
 	// PushFile streams a file into the box (never buffering it whole).
 	PushFile(containerName, path string, content io.ReadSeeker, mode string) error
 	Get(username string) (*incus.ContainerInfo, error)
+	// SetConfig and UnsetConfig write and remove one Incus config key on the
+	// box. deploy records with them whether post_start completed (#3546).
+	SetConfig(containerName, key, value string) error
+	UnsetConfig(containerName, key string) error
 }
 
 // containerServerBoxes is recipeBoxes over the daemon's ContainerServer.
@@ -118,6 +122,12 @@ func (c containerServerBoxes) PushFile(name, path string, content io.ReadSeeker,
 }
 func (c containerServerBoxes) Get(username string) (*incus.ContainerInfo, error) {
 	return c.s.manager.Get(username)
+}
+func (c containerServerBoxes) SetConfig(name, key, value string) error {
+	return c.s.manager.SetConfig(name, key, value)
+}
+func (c containerServerBoxes) UnsetConfig(name, key string) error {
+	return c.s.manager.UnsetConfig(name, key)
 }
 
 func (s *RecipeServer) boxOps() recipeBoxes {

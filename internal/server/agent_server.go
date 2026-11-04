@@ -1193,12 +1193,12 @@ func (s *AgentSkillServer) provisionBoxOnly(ctx context.Context, skill *pb.Agent
 	// (and its one-time post_start assembly) and just re-mint the token,
 	// re-seed, and re-apply policy below. A stopped box (idle-sleep, host
 	// reboot) is started so the subsequent seed-exec / loop-exec lands.
-	if info, gerr := s.recipes.containers.manager.Get(name); gerr == nil && info != nil {
+	if info, gerr := s.recipes.boxOps().Get(name); gerr == nil && info != nil {
 		if info.State != "Running" {
 			if err := s.recipes.containers.manager.Start(name); err != nil {
 				return "", nil, false, status.Errorf(codes.Internal, "failed to start existing agent box %s: %v", name, err)
 			}
-			if reread, rerr := s.recipes.containers.manager.Get(name); rerr == nil && reread != nil {
+			if reread, rerr := s.recipes.boxOps().Get(name); rerr == nil && reread != nil {
 				info = reread
 			}
 		}
