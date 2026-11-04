@@ -52,9 +52,15 @@ func (e *remoteExitError) Unwrap() error { return e.err }
 // into a silent auth check: BatchMode so nothing prompts, a connect timeout
 // so a dead host is a fast non-publickey failure, and `true` as the command.
 func probeSSHArgs(base []string) []string {
+	return probeSSHArgsCmd(base, "true")
+}
+
+// probeSSHArgsCmd is probeSSHArgs with remoteCmd in place of `true`, for a
+// silent check that also asserts something on the box (#3512's preflight).
+func probeSSHArgsCmd(base []string, remoteCmd string) []string {
 	args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=15"}
 	args = append(args, base...)
-	return append(args, "true")
+	return append(args, remoteCmd)
 }
 
 // sshProbeFn runs a probe argv (from probeSSHArgs) with stderr captured.
