@@ -205,6 +205,9 @@ type installFakes struct {
 	probe  func(args []string) error
 	exec   func(script string) (string, error)
 	events *[]string
+	// urlCmd, when set, answers `code bootstrap --url-cmd` in place of the
+	// canned output (runCodeBootstrapWith only).
+	urlCmd func(ctx context.Context, command, box string, stderr io.Writer) (string, error)
 }
 
 // runInstallWith is runInstall with control over the remote side; it also
