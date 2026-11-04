@@ -1193,10 +1193,24 @@ func (s *AgentSkillServer) provisionBoxOnly(ctx context.Context, skill *pb.Agent
 	// (and its one-time post_start assembly) and just re-mint the token,
 	// re-seed, and re-apply policy below. A stopped box (idle-sleep, host
 	// reboot) is started so the subsequent seed-exec / loop-exec lands.
+	//
+	// The skip holds only for a box whose post_start completed (#3546): deploy
+	// marks the box before post_start and clears the mark on success, so a box
+	// an earlier run left half-prepared (post_start failed, or the daemon
+	// stopped mid-way) still carries it, and post_start runs again here. If it
+	// fails again the run fails with FailedPrecondition and the box is kept.
 	if info, gerr := s.recipes.boxOps().Get(name); gerr == nil && info != nil {
 		if info.State != "Running" {
 			if err := s.recipes.containers.manager.Start(name); err != nil {
 				return "", nil, false, status.Errorf(codes.Internal, "failed to start existing agent box %s: %v", name, err)
+			}
+			if reread, rerr := s.recipes.boxOps().Get(name); rerr == nil && reread != nil {
+				info = reread
+			}
+		}
+		if info.PostStartPending {
+			if err := s.recipes.rerunPendingPostStart(ctx, recipeID, name, agentBoxDeployParams()); err != nil {
+				return "", nil, false, err
 			}
 			if reread, rerr := s.recipes.boxOps().Get(name); rerr == nil && reread != nil {
 				info = reread
@@ -1216,12 +1230,18 @@ func (s *AgentSkillServer) provisionBoxOnly(ctx context.Context, skill *pb.Agent
 		Name:       name,
 		BackendId:  backendID,
 		Pool:       pool,
-		Parameters: map[string]string{"release": agentRuntimeReleaseTag()},
+		Parameters: agentBoxDeployParams(),
 	})
 	if derr != nil {
 		return "", nil, false, derr // already a gRPC status from deploy/CreateContainer
 	}
 	return skillBoxName(skill.Id), dep.Container, true, nil
+}
+
+// agentBoxDeployParams are the recipe parameters a skill's box is deployed
+// with, and post_start re-run with on a box left not prepared (#3546).
+func agentBoxDeployParams() map[string]string {
+	return map[string]string{"release": agentRuntimeReleaseTag()}
 }
 
 // skillBoxName is the container a skill's runs use: one box per skill id,

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -60,6 +61,11 @@ type RecipeServer struct {
 	network    *NetworkServer // may be nil when app hosting / routing is off
 	gateway    *recipeGateway // nil unless the daemon serves the model-gateway
 	boxes      recipeBoxes    // nil = the ContainerServer; tests substitute a fake
+
+	// postStartRetry serialises re-running a box's unfinished post_start
+	// (#3546, rerunPendingPostStart): box name -> *sync.Mutex, so two runs
+	// that find the same not-ready box do not run post_start at once.
+	postStartRetry sync.Map
 
 	// The guardrail deploy gate (#2368, recipe_guardrail_gate.go). nil
 	// provider or "" root: a gated recipe is refused; ungated recipes are
@@ -512,6 +518,15 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 
 	containerName := req.Name + "-container"
 
+	// Record that the box is not prepared yet BEFORE anything else runs in
+	// it (#3546). Only a post_start that succeeds removes the mark, so a
+	// failed post_start, or a daemon that stops while it runs, leaves the box
+	// marked, and a skill or crew run that would reuse it runs post_start
+	// again (rerunPendingPostStart) instead of skipping it.
+	if len(recipe.PostStart) > 0 {
+		markPostStartPending(s.boxOps(), containerName)
+	}
+
 	// Gated: place exactly the verified bytes at dataset_path before
 	// post_start. (Async is refused for a gated recipe, so this always
 	// precedes post_start.)
@@ -541,7 +556,7 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 			bg := context.WithoutCancel(ctx)
 			if len(recipe.PostStart) > 0 {
 				script := buildPostStartScript(recipe, params, gatewayEnv)
-				if err := runPostStart(s.boxOps(), containerName, script); err != nil {
+				if err := completePostStart(s.boxOps(), containerName, script); err != nil {
 					note := ""
 					if len(recipe.Ports) > 0 {
 						note = "; ports were not exposed"
@@ -570,7 +585,7 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	//    and parameters exported. Same trust level as a stack's post_install.
 	if len(recipe.PostStart) > 0 {
 		script := buildPostStartScript(recipe, params, gatewayEnv)
-		if err := runPostStart(s.boxOps(), containerName, script); err != nil {
+		if err := completePostStart(s.boxOps(), containerName, script); err != nil {
 			return nil, status.Errorf(codes.Internal, "post_start failed on %s: %v", containerName, err)
 		}
 	}
@@ -597,6 +612,91 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 		container = toProtoContainer(&st)
 	}
 	return &pb.DeployRecipeResponse{Container: container, Url: url, Message: msg}, nil
+}
+
+// markPostStartPending sets the post_start-pending mark on a box (#3546). A
+// failure to write it is logged and the deploy goes on: refusing here would
+// leave a box that exists, is unmarked and never ran post_start, which is
+// the state the mark exists to prevent.
+func markPostStartPending(boxes recipeBoxes, containerName string) {
+	if err := boxes.SetConfig(containerName, incus.PostStartPendingKey, incus.PostStartPendingValue); err != nil {
+		log.Printf("[recipe] could not mark %q as not prepared before post_start: %v", containerName, err)
+	}
+}
+
+// completePostStart runs post_start and, only when it succeeds, removes the
+// post_start-pending mark (#3546). A failure to remove the mark is logged and
+// not returned: post_start did complete, and a mark left behind costs one
+// extra post_start run on the box's next skill run, not a wrong result.
+func completePostStart(boxes recipeBoxes, containerName, script string) error {
+	if err := runPostStart(boxes, containerName, script); err != nil {
+		return err
+	}
+	if err := boxes.UnsetConfig(containerName, incus.PostStartPendingKey); err != nil {
+		log.Printf("[recipe] post_start completed on %q but its not-prepared mark could not be removed: %v", containerName, err)
+	}
+	return nil
+}
+
+// rerunPendingPostStart is the reuse half of the post_start-pending mark
+// (#3546). A skill or crew run that is about to reuse box name (the
+// daemon-provisioned agent-<skill> box) calls it; when the box still carries
+// the mark, the recipe's post_start runs again with the parameters the first
+// deploy used, and the mark is removed only if it succeeds. A box without the
+// mark (prepared, or one deploy never marked) is left alone. When post_start
+// fails again the box is kept for debugging and the run fails with
+// FailedPrecondition naming the box; deleting the box makes the next run
+// provision a fresh one.
+//
+// A guardrail-gated recipe is not re-run: its dataset is verified and
+// delivered as part of a deploy, and re-running post_start over whatever is
+// in the box now would skip that check. The run fails with the same advice.
+func (s *RecipeServer) rerunPendingPostStart(ctx context.Context, recipeID, name string, parameters map[string]string) error {
+	lock, _ := s.postStartRetry.LoadOrStore(name, &sync.Mutex{})
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Re-read under the lock: a concurrent run may have finished it.
+	info, err := s.boxOps().Get(name)
+	if err != nil || info == nil || !info.PostStartPending {
+		return nil
+	}
+	containerName := name + "-container"
+	notPrepared := func(format string, args ...any) error {
+		return status.Errorf(codes.FailedPrecondition,
+			"box %s is not fully prepared: its recipe post_start did not complete on an earlier run and %s; the box is kept for debugging, delete it to provision a fresh one",
+			containerName, fmt.Sprintf(format, args...))
+	}
+	recipe, err := s.catalog.Get(recipeID)
+	if err != nil {
+		return notPrepared("its recipe %q is no longer in the catalog", recipeID)
+	}
+	if recipe.GetGuardrailGate() != nil {
+		return notPrepared("recipe %q is guardrail-gated, so post_start is not re-run on an existing box", recipeID)
+	}
+	params, err := recipes.ResolveParameters(recipe, parameters)
+	if err != nil {
+		return notPrepared("its parameters no longer resolve: %v", err)
+	}
+	if len(recipe.PostStart) == 0 {
+		// Nothing left to run: the recipe no longer has a post_start.
+		if err := s.boxOps().UnsetConfig(containerName, incus.PostStartPendingKey); err != nil {
+			log.Printf("[recipe] could not remove the not-prepared mark from %q: %v", containerName, err)
+		}
+		return nil
+	}
+	provider, keyOwner := resolveRecipeGatewayProvider(recipe, name, params, nil)
+	script := buildPostStartScript(recipe, params, s.gatewayEnvForRecipe(recipe, name, provider, keyOwner))
+	log.Printf("[recipe] %q was not fully prepared by an earlier run; running post_start again", containerName)
+	if err := completePostStart(s.boxOps(), containerName, script); err != nil {
+		return notPrepared("running it again failed: %v", err)
+	}
+	// The first deploy returned before exposing ports; finish that too.
+	if _, _, warnings := s.exposePorts(ctx, recipe, name); len(warnings) > 0 {
+		log.Printf("[recipe] expose warnings on %q after re-running post_start: %q", containerName, strings.Join(warnings, "; "))
+	}
+	return nil
 }
 
 // runPostStart runs a post_start script in the box and fails on a non-zero
