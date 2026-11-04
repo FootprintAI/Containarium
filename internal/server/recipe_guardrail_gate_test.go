@@ -95,6 +95,12 @@ func (f *fakeRecipeBoxes) PushFile(_ string, path string, content io.ReadSeeker,
 
 func (f *fakeRecipeBoxes) Get(string) (*incus.ContainerInfo, error) { return nil, errors.New("fake") }
 
+// SetConfig and UnsetConfig accept every write and record nothing in events,
+// so the event sequences other tests assert are unchanged by the post_start
+// marker (#3546). postStartBoxes models the marker itself.
+func (f *fakeRecipeBoxes) SetConfig(string, string, string) error { return nil }
+func (f *fakeRecipeBoxes) UnsetConfig(string, string) error       { return nil }
+
 // fakePolicyProvider serves a fixed policy or error.
 type fakePolicyProvider struct {
 	policy *pb.ServerGuardrailPolicy
