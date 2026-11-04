@@ -55,7 +55,7 @@ func writeBundle(t *testing.T, dir, name string, files map[string]string) string
 
 // runBootstrapScript executes bootstrapScript(url) with the local sh against a
 // throwaway HOME and returns the exit code and the HOME it ran in.
-func runBootstrapScript(t *testing.T, url string) (int, string, string) {
+func runBootstrapScript(t *testing.T, url string, env ...string) (int, string, string) {
 	t.Helper()
 	for _, bin := range []string{"curl", "tar"} {
 		if _, err := exec.LookPath(bin); err != nil {
@@ -68,7 +68,7 @@ func runBootstrapScript(t *testing.T, url string) (int, string, string) {
 		t.Fatal(err)
 	}
 	c := exec.Command("/bin/sh", path) // #nosec G204 -- fixed interpreter, package-built script
-	c.Env = append(os.Environ(), "HOME="+home)
+	c.Env = append(append(os.Environ(), "HOME="+home), env...)
 	var stderr bytes.Buffer
 	c.Stderr = &stderr
 	err := c.Run()
@@ -136,6 +136,27 @@ func TestBootstrapScript_ExitCodesSplitFetchFromApply(t *testing.T) {
 				if strings.Contains(stderr, leak) {
 					t.Errorf("the script printed %q from the URL:\n%s", leak, stderr)
 				}
+			}
+		})
+	}
+}
+
+// TestBootstrapScript_SetupFailureAfterFetchIsSpent: once the bundle is
+// fetched the URL is spent, so a failing mkdir or chmod in the unpack step
+// must exit bootstrapExitBundle, not a bare non-zero that the CLI reports
+// without saying so. The failing tool is a PATH shim; curl and tar are the
+// real ones.
+func TestBootstrapScript_SetupFailureAfterFetchIsSpent(t *testing.T) {
+	good := writeBundle(t, t.TempDir(), "good.tgz", map[string]string{"apply.sh": "#!/bin/sh\ntrue\n"})
+	for _, tool := range []string{"mkdir", "chmod"} {
+		t.Run(tool, func(t *testing.T) {
+			shims := t.TempDir()
+			if err := os.WriteFile(filepath.Join(shims, tool), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil { // #nosec G306 -- a stub the test executes
+				t.Fatal(err)
+			}
+			code, _, stderr := runBootstrapScript(t, "file://"+good, "PATH="+shims+string(os.PathListSeparator)+os.Getenv("PATH"))
+			if code != bootstrapExitBundle {
+				t.Fatalf("a failing %s after the fetch exited %d, want %d\nstderr:\n%s", tool, code, bootstrapExitBundle, stderr)
 			}
 		})
 	}

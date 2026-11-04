@@ -54,13 +54,16 @@ if ! curl -fsL -o "$tmp/bundle.tgz" -- ` + coderun.ShellQuoteSingle(url) + ` </d
   echo "bootstrap bundle could not be fetched" >&2
   exit 3
 fi
-mkdir "$tmp/bundle"
-if ! tar -xzf "$tmp/bundle.tgz" -C "$tmp/bundle" || [ ! -f "$tmp/bundle/apply.sh" ]; then
+bundle_error() {
   echo "bootstrap bundle is not a .tar.gz with an apply.sh at its root" >&2
   exit 4
+}
+mkdir "$tmp/bundle" || bundle_error
+if ! tar -xzf "$tmp/bundle.tgz" -C "$tmp/bundle" || [ ! -f "$tmp/bundle/apply.sh" ]; then
+  bundle_error
 fi
-chmod +x "$tmp/bundle/apply.sh"
-cd "$tmp/bundle"
+chmod +x "$tmp/bundle/apply.sh" || bundle_error
+cd "$tmp/bundle" || bundle_error
 if ! ./apply.sh; then
   echo "bootstrap bundle's apply.sh failed" >&2
   exit 5
