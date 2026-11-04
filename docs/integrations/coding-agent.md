@@ -91,10 +91,11 @@ To re-apply the **bootstrap bundle** on a box that already has its agent
 `containarium code bootstrap <box> --url <url>` or `--url-cmd '<command>'`
 (#3512). It runs the bundle step of `code install --bootstrap-url` and nothing
 else: no engine, agent-box or skills reinstall, and `~/.containarium/code.json`
-is left alone. `--url-cmd` runs through your `$SHELL` with
-`CONTAINARIUM_BOX=<box>` set and its first stdout line is the URL, so a control
-plane that hands out one-shot bundle URLs can document one command for every
-box. The URL is requested only after one silent SSH round trip has confirmed
+is left alone. `--url-cmd` runs through your `$SHELL` (`/bin/sh` when `$SHELL`
+is unset) with `CONTAINARIUM_BOX=<box>` set and its first stdout line is the
+URL, so a control plane that hands out one-shot bundle URLs can document one
+command for every box. A hook still running after 30 seconds is killed and
+nothing is applied. The URL is requested only after one silent SSH round trip has confirmed
 the box is reachable, accepts your key, and has a writable home, `curl` and
 `tar`; a failure there means nothing was requested or applied. If the download
 never reached the server (host not resolved, connection refused), the URL was

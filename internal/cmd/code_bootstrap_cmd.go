@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -43,9 +44,10 @@ Where the URL comes from (exactly one):
 
   --url <url>        the bundle URL itself.
   --url-cmd '<cmd>'  a command that prints the URL on its first stdout line.
-                     It runs through your $SHELL with your environment plus
-                     CONTAINARIUM_BOX=<box>, so one documented command serves
-                     every box.
+                     It runs through your $SHELL (/bin/sh when unset) with
+                     your environment plus CONTAINARIUM_BOX=<box>, so one
+                     documented command serves every box. A hook that has not
+                     exited after 30s is killed and nothing is applied.
 
 Before the URL is used, and before --url-cmd runs, one silent SSH round trip
 checks that the box is reachable and accepts your key, that its home is
@@ -75,27 +77,78 @@ func init() {
 // runURLCmdFn runs --url-cmd. Test seam.
 var runURLCmdFn = runURLCmd
 
-// runURLCmd runs command through the user's shell with CONTAINARIUM_BOX=box
-// and returns the first line of its stdout. The hook's stderr goes to stderr
-// so its own diagnostics reach the user; its stdout (the URL) is never echoed.
+// Limits on the --url-cmd hook. Variables only so tests can shorten them.
+var (
+	// urlCmdTimeout bounds the whole hook: one that never exits is killed
+	// rather than hanging the CLI.
+	urlCmdTimeout = 30 * time.Second
+	// urlCmdWaitDelay bounds how long the CLI waits, after the hook exits,
+	// for a background child it left behind to release stdout/stderr.
+	urlCmdWaitDelay = 2 * time.Second
+)
+
+// urlCmdMaxOutput caps the bytes of the hook's first stdout line the CLI
+// keeps; everything after that line is discarded unread.
+const urlCmdMaxOutput = 4096
+
+// firstLineWriter keeps the first line written to it, up to max bytes, and
+// discards the rest, so a chatty hook cannot grow the CLI's memory.
+type firstLineWriter struct {
+	buf      []byte
+	max      int
+	done     bool
+	overflow bool
+}
+
+func (w *firstLineWriter) Write(p []byte) (int, error) {
+	if w.done {
+		return len(p), nil
+	}
+	chunk := p
+	if i := bytes.IndexByte(p, '\n'); i >= 0 {
+		chunk, w.done = p[:i], true
+	}
+	if room := w.max - len(w.buf); len(chunk) > room {
+		chunk, w.done, w.overflow = chunk[:room], true, true
+	}
+	w.buf = append(w.buf, chunk...)
+	return len(p), nil
+}
+
+// runURLCmd runs command through the user's shell ($SHELL, or /bin/sh when
+// unset) with CONTAINARIUM_BOX=box and returns the first line of its stdout.
+// The hook's stderr goes to stderr so its own diagnostics reach the user; its
+// stdout (the URL) is never echoed, not even in an error.
 func runURLCmd(ctx context.Context, command, box string, stderr io.Writer) (string, error) {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/sh"
 	}
+	ctx, cancel := context.WithTimeout(ctx, urlCmdTimeout)
+	defer cancel()
 	// #nosec G204 -- running the user's own --url-cmd through their own shell
 	// is exactly what the flag asks for.
 	c := exec.CommandContext(ctx, shell, "-c", command)
 	c.Env = append(os.Environ(), "CONTAINARIUM_BOX="+box)
 	c.Stdin = os.Stdin
 	c.Stderr = stderr
-	var stdout bytes.Buffer
-	c.Stdout = &stdout
-	if err := c.Run(); err != nil {
+	c.WaitDelay = urlCmdWaitDelay
+	out := &firstLineWriter{max: urlCmdMaxOutput}
+	c.Stdout = out
+	err := c.Run()
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return "", fmt.Errorf("--url-cmd did not exit within %s and was killed", urlCmdTimeout)
+	case errors.Is(err, exec.ErrWaitDelay):
+		// The hook itself exited 0; a background child it started still
+		// held stdout or stderr and was cut off. The line is complete.
+	case err != nil:
 		return "", fmt.Errorf("--url-cmd failed: %w", err)
 	}
-	line, _, _ := strings.Cut(stdout.String(), "\n")
-	line = strings.TrimSpace(line)
+	if out.overflow {
+		return "", fmt.Errorf("--url-cmd's first stdout line is longer than %d bytes", urlCmdMaxOutput)
+	}
+	line := strings.TrimSpace(string(out.buf))
 	if line == "" {
 		return "", errors.New("--url-cmd printed no URL on its first stdout line")
 	}
