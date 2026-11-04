@@ -532,7 +532,11 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 			if len(recipe.PostStart) > 0 {
 				script := buildPostStartScript(recipe, params, gatewayEnv)
 				if err := runPostStart(s.boxOps(), containerName, script); err != nil {
-					log.Printf("[recipe] async post_start failed on %q (recipe %q): %v", containerName, recipe.Id, err)
+					note := ""
+					if len(recipe.Ports) > 0 {
+						note = "; ports were not exposed"
+					}
+					log.Printf("[recipe] async post_start failed on %q (recipe %q): %v%s", containerName, recipe.Id, err, note)
 					return
 				}
 			}
@@ -561,6 +565,9 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 		}
 	}
 
+	// A failed post_start returned above, so no route is exposed for a
+	// workload that did not finish starting (fail closed, #3545).
+	//
 	// 3. Expose configured ports (best-effort: a routing failure leaves the
 	//    workload running and reachable on the LAN; surface it as a warning).
 	url, endpoints, warnings := s.exposePorts(ctx, recipe, req.Name)
@@ -585,16 +592,42 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 // runPostStart runs a post_start script in the box and fails on a non-zero
 // exit (#3542). Its output is not returned or logged: a step may print what
 // a deploy supplied. Output past the exec capture cap is not a failure on its
-// own; the exit status decides.
+// own; the exit status decides. It is tolerated only when it is the only
+// problem: the exec path joins a wait/transport error with the cap error and
+// reports exit 0 then, so errors.Is alone would hide a timeout (#3545).
 func runPostStart(boxes recipeBoxes, containerName, script string) error {
 	_, _, code, err := boxes.ExecWithExitCode(containerName, []string{"bash", "-c", script})
-	if err != nil && !errors.Is(err, limitio.ErrTooLarge) {
+	if err != nil && !onlyOutputCapErr(err) {
 		return err
 	}
 	if code != 0 {
 		return fmt.Errorf("exit status %d", code)
 	}
 	return nil
+}
+
+// onlyOutputCapErr reports whether every leaf of err (descending through
+// errors.Join and %w wrapping) matches limitio.ErrTooLarge. The exec path
+// returns *limitio.TooLargeError, which matches the sentinel through its Is
+// method and has no Unwrap, so each leaf is compared with errors.Is.
+func onlyOutputCapErr(err error) bool {
+	if err == nil {
+		return true
+	}
+	switch e := err.(type) {
+	case interface{ Unwrap() []error }:
+		children := e.Unwrap()
+		for _, c := range children {
+			if !onlyOutputCapErr(c) {
+				return false
+			}
+		}
+		return len(children) > 0
+	case interface{ Unwrap() error }:
+		return e.Unwrap() != nil && onlyOutputCapErr(e.Unwrap())
+	default:
+		return errors.Is(err, limitio.ErrTooLarge)
+	}
 }
 
 // resourceLimits merges the recipe's defaults with deploy-time overrides.

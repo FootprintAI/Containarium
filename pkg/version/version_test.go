@@ -21,6 +21,8 @@ func TestReleaseTag(t *testing.T) {
 		{"0.129", ""},
 		{"01.2.3", ""},
 		{"0.129.0-", ""},
+		{"0.129.0+build.5", ""}, // build metadata is not a release version (a tag cannot carry it)
+		{"0.129.0-rc.1+build.5", ""},
 		{"0.129.0\n", ""},
 		{"0.129.0 extra", ""},
 	} {

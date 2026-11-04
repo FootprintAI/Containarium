@@ -2,6 +2,8 @@ package server
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"log"
 	"os/exec"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/limitio"
 	"github.com/footprintai/containarium/pkg/core/recipes"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
@@ -59,7 +62,10 @@ func TestBuildPostStartScript_ExportsDaemonRelease(t *testing.T) {
 		t.Errorf("the caller's release parameter must still reach post_start unchanged; got %q", caller)
 	}
 
-	// A caller cannot set the daemon's release through a parameter.
+	// Parameters export under the CONTAINARIUM_PARAM_ prefix, so one named
+	// like the release variable cannot reach it. (The ordering against the
+	// recipe's own env is pinned by
+	// TestBuildPostStartScript_RecipeEnvCannotOverrideRelease.)
 	daemon, _ = runPostStartEcho(t, map[string]string{"release": "v0.1.0", "containarium_release": "v6.6.6"})
 	if daemon != "v0.131.2" {
 		t.Errorf("a parameter overrode %s: got %q", recipes.ReleaseEnvName, daemon)
@@ -70,6 +76,28 @@ func TestBuildPostStartScript_ExportsDaemonRelease(t *testing.T) {
 	version.Version = "dev"
 	if daemon, _ = runPostStartEcho(t, nil); daemon != "" {
 		t.Errorf("non-release build: %s = %q, want empty", recipes.ReleaseEnvName, daemon)
+	}
+}
+
+// TestBuildPostStartScript_RecipeEnvCannotOverrideRelease: the daemon's
+// release is exported after the recipe's static env, so an env entry of the
+// same name cannot stand in for it. Moving the export before the env loop
+// makes this fail.
+func TestBuildPostStartScript_RecipeEnvCannotOverrideRelease(t *testing.T) {
+	orig := version.Version
+	t.Cleanup(func() { version.Version = orig })
+	version.Version = "0.131.2"
+	recipe := &pb.Recipe{
+		Id:        "r",
+		Env:       map[string]string{recipes.ReleaseEnvName: "v6.6.6"},
+		PostStart: []string{`printf '%s' "$` + recipes.ReleaseEnvName + `"`},
+	}
+	out, err := exec.Command("bash", "-c", buildPostStartScript(recipe, nil, "")).CombinedOutput() //nolint:gosec // test-built script
+	if err != nil {
+		t.Fatalf("post_start: %v\n%s", err, out)
+	}
+	if string(out) != "v0.131.2" {
+		t.Errorf("recipe env overrode %s: got %q, want the daemon's v0.131.2", recipes.ReleaseEnvName, out)
 	}
 }
 
@@ -93,6 +121,9 @@ func (b *exitStatusBoxes) ExecWithExitCode(name string, command []string) (strin
 const failingPostStartYAML = `recipes:
   - id: failing
     image: x
+    ports:
+      - container_port: 8080
+        subdomain: failing
     post_start:
       - podman pull example.invalid/never-published:v0.0.0
 `
@@ -160,8 +191,37 @@ func TestDeployRecipe_AsyncPostStartNonZeroExitIsLogged(t *testing.T) {
 	if !strings.Contains(got, "exit status 125") {
 		t.Errorf("the log line should carry the exit status:\n%s", got)
 	}
+	if !strings.Contains(got, "ports were not exposed") {
+		t.Errorf("the log line should say routes were skipped (#3545):\n%s", got)
+	}
 	if strings.Contains(got, "manifest unknown") {
 		t.Errorf("post_start stderr is not copied into the daemon log:\n%s", got)
+	}
+}
+
+// A recipe with no ports has nothing left unexposed, so the line says nothing
+// about routes.
+func TestDeployRecipe_AsyncPostStartFailureNoPortsNoRouteNote(t *testing.T) {
+	logs := capturePostStartLog(t)
+	srv, _ := newFailingPostStartServer(t, 1)
+	srv.catalog = recipes.New()
+	if err := srv.catalog.LoadFromBytes([]byte("recipes:\n  - id: noports\n    image: x\n    post_start:\n      - false\n")); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tenantWithScopes("alice", auth.ScopeContainersWrite)
+	if _, err := srv.DeployRecipe(ctx, &pb.DeployRecipeRequest{RecipeId: "noports", Name: "alice", Async: true}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(logs.String(), "async post_start failed") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := logs.String()
+	if !strings.Contains(got, "async post_start failed") {
+		t.Fatalf("no failure logged:\n%s", got)
+	}
+	if strings.Contains(got, "ports were not exposed") {
+		t.Errorf("a recipe without ports should not claim unexposed ports:\n%s", got)
 	}
 }
 
@@ -174,6 +234,71 @@ func TestDeployRecipe_SyncPostStartNonZeroExitFails(t *testing.T) {
 	if status.Code(err) != codes.Internal || !strings.Contains(err.Error(), "post_start failed on alice-container") ||
 		!strings.Contains(err.Error(), "exit status 1") {
 		t.Fatalf("got %v, want Internal naming the box and exit status 1", err)
+	}
+}
+
+// #3545: output past the exec capture cap is tolerated only when it is the
+// only problem. The incus exec path joins a wait/transport error with the cap
+// error, so a bare errors.Is(err, ErrTooLarge) also matches a timeout.
+
+// execResultBoxes returns a fixed ExecWithExitCode result.
+type execResultBoxes struct {
+	recipeBoxes
+	code int
+	err  error
+}
+
+func (b execResultBoxes) ExecWithExitCode(string, []string) (string, string, int, error) {
+	return "", "", b.code, b.err
+}
+
+// execCapErr builds the over-cap error exactly as the incus exec path does
+// (execOutputErr joined onto the wait error with errors.Join): the errors come
+// from a real limitio.Buffer, so they are *limitio.TooLargeError values that
+// match the sentinel only through errors.Is.
+func execCapErr(stdout, stderr bool) error {
+	var errs []error
+	for _, tc := range []struct {
+		over bool
+		name string
+	}{{stdout, "exec stdout"}, {stderr, "exec stderr"}} {
+		if !tc.over {
+			continue
+		}
+		b := limitio.NewBuffer(4)
+		_, _ = b.Write([]byte("more than four bytes"))
+		errs = append(errs, fmt.Errorf("%s: %w", tc.name, b.Err()))
+	}
+	return errors.Join(nil, errors.Join(errs...))
+}
+
+func TestRunPostStart_OverCapOutput(t *testing.T) {
+	capErr := execCapErr(true, false)
+	transport := errors.New("command execution failed: context deadline exceeded")
+	for _, tc := range []struct {
+		name    string
+		code    int
+		err     error
+		wantErr string // "" = success
+	}{
+		{"over cap, exit 0 succeeds", 0, capErr, ""},
+		{"over cap on both streams, exit 0 succeeds", 0, execCapErr(true, true), ""},
+		{"over cap, non-zero exit fails", 3, capErr, "exit status 3"},
+		{"over cap plus a transport error fails", 0, errors.Join(transport, capErr), "deadline exceeded"},
+		{"transport error alone fails", 0, transport, "deadline exceeded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runPostStart(execResultBoxes{code: tc.code, err: tc.err}, "alice-container", "true")
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("got %v, want success", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("got %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 

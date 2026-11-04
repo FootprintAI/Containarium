@@ -31,6 +31,12 @@ podman run -d --name ollama --restart=always --device nvidia.com/gpu=all \
 podman exec ollama ollama pull "$CONTAINARIUM_PARAM_MODEL"
 ```
 
+`post_start` runs under `set -euo pipefail`, and a step that exits non-zero
+fails the deploy. When `post_start` fails, the daemon does **not** expose the
+recipe's ports (fail closed): a synchronous deploy returns the error, and an
+asynchronous deploy leaves the box running with no route and logs
+`post_start failed ...; ports were not exposed` in the daemon journal.
+
 The model cache lives on a named Podman volume, so it survives container
 restarts.
 
