@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.129.1] - 2026-11-04
+
+
+### Fixed
+
+- **A run started over SSH no longer starts while `ApplyBoxSkillSets` is installing skills** (#3529).
+  `containarium code run` (agent and `--command` runs) and the MCP `code_run`
+  tool are refused before launching, with a message naming the apply, while
+  an apply on that box is in flight. The apply holds a marker beside the
+  skills (`~/.claude/skills/.sdlc-skill-sets.applying`, written as the box
+  user) and removes it when it returns, including on failure. The SSH path
+  reads it with no daemon call, and reads it again right after the start: a
+  run that began in the instant before an apply took the marker is stopped
+  and refused, so either the apply sees the run or the run sees the apply.
+  The marker is a lease, renewed while the apply runs: one left by a daemon
+  that died mid-apply lapses within 10 minutes, and the next run clears it
+  with a warning and starts. A stale marker of any content (unreadable, over
+  4 KiB, not JSON) is cleared the same way, and only if it is still the file
+  that was checked, so a new apply's marker written in between still refuses
+  the run. A backward box-clock step of more than about a minute during a
+  live apply can make its marker read as stale until the next renewal (at
+  most 200 seconds).
+- **A second `ApplyBoxSkillSets` on a box whose first apply is still installing is refused as `APPLY_IN_PROGRESS`** (#3537), not as `RUN_IN_PROGRESS` with an empty list of run starts. The 30-second cap message no longer says the named run starts "did not finish": it says the box was busy with run starts for 30s and names the starts still in flight at that moment, if any. A steady stream of overlapping run starts can still keep an apply off the gate for the whole cap. The per-box run-start record also no longer keeps an empty entry after the last start returns. The cap, cancellation and both refusals are described in `docs/BOX-RUN-API.md`.
+- **The `slides-agent` recipe pulls the image published with the daemon's own release** (#3542).
+  The image tag no longer follows the caller's `release` parameter, so a
+  `release` pinned to a tag older than the recipe no longer fails the pull
+  and leaves the box without its dev server and proxy. The daemon now
+  exports its own release tag to every recipe's `post_start` as
+  `CONTAINARIUM_RELEASE` (no parameter can set it; empty on a daemon build
+  that is not a release, where the slides step refuses and asks for
+  `slides_image`). `slides_image` still overrides the image, and `release`
+  still picks the agent-box binary and the SDLC skills bundle as before.
+- **A `post_start` that exits non-zero now fails the recipe deploy** (#3542).
+  The exit status of the `post_start` script was dropped, so a failed step
+  (for example an image pull that 404s) reported the deploy as done on the
+  synchronous path and logged nothing on the async path. The synchronous
+  deploy now returns `post_start failed on <box>: exit status N`, and the
+  async path logs `[recipe] async post_start failed on ...` with the exit
+  status in the daemon journal. The script's output is not copied into the
+  log.
+
+### Upgrading
+
+- **Recipe deploys now report a failing `post_start`, and the slides image needs a release daemon or `slides_image`** (#3542). A recipe whose `post_start` script exits non-zero used to be reported as deployed (synchronous path) or logged nothing (async path). It now returns `post_start failed on <box>: exit status N` on the synchronous path and logs `[recipe] async post_start failed on <box> (recipe <id>)` on the async one, so a deploy or a recipe that appeared to work before can now show as failed: check the daemon journal after upgrading and fix the failing step. The slides-agent recipe pulls the image tagged with the daemon's own release; on a daemon build that is not a release (empty release tag) the slides step refuses and asks for the `slides_image` parameter. The `release` parameter still picks the agent-box binary and the SDLC skills bundle. No flag or host-side step is needed.
+
 ## [0.129.0] - 2026-11-04
 
 
