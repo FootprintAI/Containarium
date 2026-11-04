@@ -78,7 +78,7 @@ func runSlidesImageStep(t *testing.T, env map[string]string, pullExit string) sl
 func TestSlidesAgentImage_DefaultsToDaemonRelease(t *testing.T) {
 	daemon := version.ReleaseTag()
 	if daemon != "v"+version.GetVersion() {
-		t.Fatalf("this build's version %q is not a release version; the test needs one", version.GetVersion())
+		t.Skipf("this build's version %q is not a release version; the test needs one", version.GetVersion())
 	}
 	want := slidesAgentImageBase + ":" + daemon
 	for _, callerRelease := range []string{"", "v0.1.0", "v0.125.0", daemon} {

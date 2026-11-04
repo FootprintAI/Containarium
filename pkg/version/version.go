@@ -56,7 +56,9 @@ var releaseVersion = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[
 // never published.
 //
 // A plain `go build` between releases reports the constant above, the last
-// release cut, so it names a tag that exists.
+// release cut. The release cut bumps that constant before the release images
+// are published, so a build in that window names a tag that does not exist
+// yet; pulling it fails loudly and names the image.
 func ReleaseTag() string {
 	v := strings.TrimPrefix(Version, "v")
 	if !releaseVersion.MatchString(v) {

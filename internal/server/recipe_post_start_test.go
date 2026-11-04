@@ -62,7 +62,10 @@ func TestBuildPostStartScript_ExportsDaemonRelease(t *testing.T) {
 		t.Errorf("the caller's release parameter must still reach post_start unchanged; got %q", caller)
 	}
 
-	// A caller cannot set the daemon's release through a parameter.
+	// Parameters export under the CONTAINARIUM_PARAM_ prefix, so one named
+	// like the release variable cannot reach it. (The ordering against the
+	// recipe's own env is pinned by
+	// TestBuildPostStartScript_RecipeEnvCannotOverrideRelease.)
 	daemon, _ = runPostStartEcho(t, map[string]string{"release": "v0.1.0", "containarium_release": "v6.6.6"})
 	if daemon != "v0.131.2" {
 		t.Errorf("a parameter overrode %s: got %q", recipes.ReleaseEnvName, daemon)
@@ -73,6 +76,28 @@ func TestBuildPostStartScript_ExportsDaemonRelease(t *testing.T) {
 	version.Version = "dev"
 	if daemon, _ = runPostStartEcho(t, nil); daemon != "" {
 		t.Errorf("non-release build: %s = %q, want empty", recipes.ReleaseEnvName, daemon)
+	}
+}
+
+// TestBuildPostStartScript_RecipeEnvCannotOverrideRelease: the daemon's
+// release is exported after the recipe's static env, so an env entry of the
+// same name cannot stand in for it. Moving the export before the env loop
+// makes this fail.
+func TestBuildPostStartScript_RecipeEnvCannotOverrideRelease(t *testing.T) {
+	orig := version.Version
+	t.Cleanup(func() { version.Version = orig })
+	version.Version = "0.131.2"
+	recipe := &pb.Recipe{
+		Id:        "r",
+		Env:       map[string]string{recipes.ReleaseEnvName: "v6.6.6"},
+		PostStart: []string{`printf '%s' "$` + recipes.ReleaseEnvName + `"`},
+	}
+	out, err := exec.Command("bash", "-c", buildPostStartScript(recipe, nil, "")).CombinedOutput() //nolint:gosec // test-built script
+	if err != nil {
+		t.Fatalf("post_start: %v\n%s", err, out)
+	}
+	if string(out) != "v0.131.2" {
+		t.Errorf("recipe env overrode %s: got %q, want the daemon's v0.131.2", recipes.ReleaseEnvName, out)
 	}
 }
 
