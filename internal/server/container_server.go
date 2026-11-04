@@ -190,6 +190,9 @@ type ContainerServer struct {
 	// apply holds it for writing, a run start for reading (#3510).
 	boxSkillSetsInstall boxSkillSetsInstallFunc
 	boxSkillSetLocks    sync.Map // key: box name -> *sync.RWMutex
+	// skillSetsApplyLease overrides the apply marker's lease
+	// (sdlcskills.ApplyMarkerLease) for tests; 0 = the default (#3529).
+	skillSetsApplyLease time.Duration
 
 	// boxRunToolAccess overrides how StartBoxRun reads the tool-access level
 	// recorded for a box (#2944): "" = none recorded, so the run keeps the

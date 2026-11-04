@@ -75,6 +75,22 @@ the error (a `google.rpc.PreconditionFailure` violation type, or the
 never matches on message text. The daemon advertises the call as
 `box_skill_sets` in `SystemInfo.capabilities`.
 
+While an apply is changing a box's skills, a run does not start on that box,
+so no run reads a half-written `~/.claude/skills`. A run started through the
+daemon is refused with `APPLY_IN_PROGRESS` (#3510). A run started over SSH,
+with `containarium code run` (agent or `--command`) or the MCP `code_run` tool,
+is refused before it launches with `skill sets are being applied on this box
+(ApplyBoxSkillSets started <n> ago, ...)` (#3529). For this the apply holds a
+marker beside the skills, `~/.claude/skills/.sdlc-skill-sets.applying`, written
+as the box user, which the SSH path reads with no call to the daemon. The
+apply removes the marker when it returns, and also when it fails. Retry the
+run once the apply has returned. The marker is a lease: the apply renews it
+every few minutes while it runs and writes an expiry 10 minutes ahead (box
+clock). If the daemon dies mid-apply, the marker therefore stops refusing runs
+within 10 minutes: the next run removes the stale marker, starts, and prints
+`warning: cleared a stale skill-set apply marker ...`. A marker that cannot be
+read, or whose expiry is implausibly far ahead, is cleared the same way.
+
 An agent re-applies a box's sets with the platform MCP tool
 `apply_box_skill_sets` (#3511), a thin wrapper over the same client function
 as `code skill-sets` and the same REST path. Its arguments are `box`,
