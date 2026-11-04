@@ -142,6 +142,13 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 	}
 
 	out, next := readCodeWindow(ctx, sess, started.LogPath, 0, streamJSON)
+	return codeRunReply(started, box, out, next), nil
+}
+
+// codeRunReply is code_run's reply for a started run: a note from the start
+// (started.Warning, #3529) first when there is one, then the started line, the
+// first window of output and the offset to resume from.
+func codeRunReply(started *coderun.ProcessStartResult, box, out string, next int64) string {
 	warning := ""
 	if started.Warning != "" {
 		warning = "warning: " + started.Warning + "\n"
@@ -153,7 +160,7 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 		// This tool only builds the Claude tenant-secret command, so its
 		// traffic never crosses the gateway.
 		engine.ScanningLine(engine.ModelTrafficScanning(engine.KindSecret, pb.GuardrailEffectivePolicy_GUARDRAIL_EFFECTIVE_POLICY_UNSPECIFIED)),
-		started.LogPath, next, out, started.Name, next), nil
+		started.LogPath, next, out, started.Name, next)
 }
 
 // mcpSessionSidecar is where the run called name keeps its session sidecar:

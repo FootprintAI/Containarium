@@ -3,6 +3,7 @@ package sdlcskills
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -118,12 +119,30 @@ func ParseApplyMarkerTaken(out string) (ApplyMarkerTaken, error) {
 	return ApplyMarkerTaken{StartedAt: start, CreatedLevels: levels}, nil
 }
 
+// ApplyMarkerReadLimit bounds how much of the marker a check reads. An apply
+// writes well under 100 bytes; a larger file is not one an apply wrote, so it
+// is stale (and removed) rather than read in full.
+const ApplyMarkerReadLimit = 4096
+
+// applyMarkerIDPattern is a marker file's identity as the check prints it,
+// inode:mtime:size. Every write replaces the file by rename, so a marker an
+// apply writes after a check never has the identity the check saw.
+var applyMarkerIDPattern = regexp.MustCompile(`^[0-9]+:[0-9]+:[0-9]+$`)
+
 // ApplyMarkerCheckScript prints, as the box user, the box clock on the first
-// line and the marker's content (nothing when there is none) after it.
+// line; then "absent" when there is no marker, "unreadable <id>" when there is
+// one the user cannot read as a regular file, or "present <id>"; and for a
+// present marker, at most ApplyMarkerReadLimit+1 bytes of it after that. <id>
+// is the file's inode:mtime:size, what ApplyMarkerClearStaleScript compares
+// before it removes anything.
 func ApplyMarkerCheckScript() string {
-	return `date +%s
-cat ` + applyMarkerPath + ` 2>/dev/null
-exit 0
+	return `f=` + applyMarkerPath + `
+date +%s
+if [ ! -e "$f" ] && [ ! -L "$f" ]; then echo absent; exit 0; fi
+id="$(stat -c '%i:%Y:%s' "$f" 2>/dev/null)" || { echo "apply marker exists but cannot be inspected" >&2; exit 1; }
+if [ ! -f "$f" ] || [ ! -r "$f" ]; then echo "unreadable $id"; exit 0; fi
+echo "present $id"
+head -c ` + strconv.Itoa(ApplyMarkerReadLimit+1) + ` "$f"
 `
 }
 
@@ -147,29 +166,46 @@ type ApplyMarkerCheck struct {
 	Marker ApplyMarker
 	// Now is the box clock, unix seconds.
 	Now int64
-	// Raw is the marker's content as read, trimmed: what a stale removal
-	// compares against so it never removes a marker a new apply just wrote.
-	Raw string
+	// ID is the marker file's identity (inode:mtime:size) when there is one:
+	// what a stale clear compares, so it never removes a marker a new apply
+	// wrote since the check.
+	ID string
 	// Why says, for a stale marker, why it is not believed.
 	Why string
 }
 
 // ParseApplyMarkerCheck classifies ApplyMarkerCheckScript's output. The box
-// user writes the marker, so it is data: one that is not the expected JSON or
-// carries no expiry is stale (unreadable), never held forever.
+// user writes the marker, so it is data: one that cannot be read, is larger
+// than any apply writes, is not the expected JSON, or carries no expiry is
+// stale, never held forever.
 func ParseApplyMarkerCheck(out string) (ApplyMarkerCheck, error) {
-	first, rest, _ := strings.Cut(strings.TrimLeft(out, "\n"), "\n")
-	now, err := strconv.ParseInt(strings.TrimSpace(first), 10, 64)
+	clock, rest, _ := strings.Cut(out, "\n")
+	now, err := strconv.ParseInt(strings.TrimSpace(clock), 10, 64)
 	if err != nil {
-		return ApplyMarkerCheck{}, fmt.Errorf("apply marker check: unexpected box clock %q", strings.TrimSpace(first))
+		return ApplyMarkerCheck{}, fmt.Errorf("apply marker check: unexpected box clock %q", strings.TrimSpace(clock))
 	}
-	c := ApplyMarkerCheck{Now: now, Raw: strings.TrimSpace(rest)}
-	if c.Raw == "" {
+	state, content, _ := strings.Cut(rest, "\n")
+	c := ApplyMarkerCheck{Now: now}
+	fields := strings.Fields(state)
+	switch {
+	case len(fields) == 1 && fields[0] == "absent":
 		c.Status = ApplyMarkerAbsent
+		return c, nil
+	case len(fields) == 2 && (fields[0] == "present" || fields[0] == "unreadable") && applyMarkerIDPattern.MatchString(fields[1]):
+		c.ID = fields[1]
+	default:
+		return ApplyMarkerCheck{}, fmt.Errorf("apply marker check: unexpected state %q", state)
+	}
+	if fields[0] == "unreadable" {
+		c.Status, c.Why = ApplyMarkerStale, "it cannot be read"
+		return c, nil
+	}
+	if len(content) > ApplyMarkerReadLimit {
+		c.Status, c.Why = ApplyMarkerStale, "it is larger than any apply writes"
 		return c, nil
 	}
 	var m ApplyMarker
-	if err := json.Unmarshal([]byte(c.Raw), &m); err != nil || m.ExpiresAt <= 0 {
+	if err := json.Unmarshal([]byte(content), &m); err != nil || m.ExpiresAt <= 0 {
 		c.Status, c.Why = ApplyMarkerStale, "it cannot be read"
 		return c, nil
 	}
@@ -185,16 +221,34 @@ func ParseApplyMarkerCheck(out string) (ApplyMarkerCheck, error) {
 	return c, nil
 }
 
+// Outputs of ApplyMarkerClearStaleScript.
+const (
+	applyMarkerRemoved = "removed"
+	applyMarkerKept    = "kept"
+)
+
 // ApplyMarkerClearStaleScript removes the marker as the box user only while
-// it still holds raw, so a marker a new apply wrote since the check survives.
-func ApplyMarkerClearStaleScript(raw string) string {
+// its identity is still id (ApplyMarkerCheck.ID), so a marker a new apply
+// wrote since the check survives, and prints whether it removed it
+// (ParseApplyMarkerCleared). id is validated, never quoted: it is digits and
+// colons only.
+func ApplyMarkerClearStaleScript(id string) (string, error) {
+	if !applyMarkerIDPattern.MatchString(id) {
+		return "", fmt.Errorf("apply marker: %q is not a marker identity", id)
+	}
 	return `f=` + applyMarkerPath + `
-[ "$(cat "$f" 2>/dev/null)" = ` + shellQuote(raw) + ` ] && rm -f "$f"
-exit 0
-`
+if [ "$(stat -c '%i:%Y:%s' "$f" 2>/dev/null)" = '` + id + `' ] && rm -f "$f"; then echo ` + applyMarkerRemoved + `; else echo ` + applyMarkerKept + `; fi
+`, nil
 }
 
-// shellQuote single-quotes s for sh.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+// ParseApplyMarkerCleared reads ApplyMarkerClearStaleScript's output: whether
+// the stale marker was removed (false: the file is no longer the one checked).
+func ParseApplyMarkerCleared(out string) (bool, error) {
+	switch strings.TrimSpace(out) {
+	case applyMarkerRemoved:
+		return true, nil
+	case applyMarkerKept:
+		return false, nil
+	}
+	return false, fmt.Errorf("apply marker: unexpected clear output %q", strings.TrimSpace(out))
 }
