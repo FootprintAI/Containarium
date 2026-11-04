@@ -50,10 +50,12 @@ Where the URL comes from (exactly one):
 Before the URL is used, and before --url-cmd runs, one silent SSH round trip
 checks that the box is reachable and accepts your key, that its home is
 writable, and that curl and tar are there. If that fails, nothing was requested
-or applied. A bundle URL may be one-shot: if the download fails, the URL was
-not consumed and a retry is safe; if the bundle was fetched but is unreadable
-or its apply.sh fails, the URL is spent, so request a new one and re-run. The
-URL is never printed.
+or applied. A bundle URL may be one-shot: if the download never reached the
+server, the URL was not consumed and a retry is safe; if it reached the server
+and then failed (an HTTP error such as 404 or 410, or a broken transfer), the
+URL may already be consumed, so if a retry fails request a new one; if the
+bundle was fetched but is unreadable or its apply.sh fails, the URL is spent,
+so request a new one and re-run. The URL is never printed.
 
 Examples:
   containarium code bootstrap alice --url https://bundles.example.com/team.tar.gz

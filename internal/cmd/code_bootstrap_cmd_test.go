@@ -156,8 +156,9 @@ func TestCodeBootstrap_PreflightFailureNeverRunsTheURLCmd(t *testing.T) {
 
 func TestCodeBootstrap_FetchAndApplyFailuresDiffer(t *testing.T) {
 	for code, want := range map[int]string{
-		bootstrapExitFetch: "not consumed, retry is safe",
-		bootstrapExitApply: "one-shot URL is spent",
+		bootstrapExitFetch:        "not consumed, retry is safe",
+		bootstrapExitFetchReached: "may already be consumed",
+		bootstrapExitApply:        "one-shot URL is spent",
 	} {
 		r, err := runCodeBootstrapWith(t, "alice", "", "printf x", installFakes{
 			exec: func(string) (string, error) { return "", &remoteExitError{code: code} },

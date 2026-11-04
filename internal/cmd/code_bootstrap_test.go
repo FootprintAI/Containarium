@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	neturl "net/url"
@@ -99,12 +100,29 @@ func TestBootstrapScript_ExitCodesSplitFetchFromApply(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A one-shot URL the server answers 410 Gone: it was reached, so the URL
+	// may already be spent.
+	gone := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "gone", http.StatusGone)
+	}))
+	t.Cleanup(gone.Close)
+	// A port nothing listens on: connection refused, nothing was reached.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedPort := ln.Addr().String()
+	_ = ln.Close()
+
 	tests := []struct {
 		name string
 		url  string
 		want int
 	}{
-		{name: "fetch fails", url: "file://" + filepath.Join(dir, "missing-s3cr3t.tgz"), want: bootstrapExitFetch},
+		{name: "no connection", url: "http://" + closedPort + "/one-shot/s3cr3t-token.tgz", want: bootstrapExitFetch},
+		{name: "server answers 410", url: gone.URL + "/one-shot/s3cr3t-token.tgz", want: bootstrapExitFetchReached},
+		// curl 37 (file not readable) is not a no-connection failure.
+		{name: "file missing", url: "file://" + filepath.Join(dir, "missing-s3cr3t.tgz"), want: bootstrapExitFetchReached},
 		// Without `--` before the URL, curl reads this as its --version option,
 		// exits 0, and the script goes on to unpack nothing.
 		{name: "URL that looks like an option", url: "--version", want: bootstrapExitFetch},
@@ -252,7 +270,8 @@ func TestCodeInstall_BootstrapFailureSaysWhetherTheURLIsSpent(t *testing.T) {
 		want   []string
 		absent string
 	}{
-		{name: "fetch failed", code: bootstrapExitFetch, want: []string{"not consumed", "retry is safe"}, absent: "spent"},
+		{name: "no connection", code: bootstrapExitFetch, want: []string{"not consumed", "retry is safe"}, absent: "spent"},
+		{name: "server reached, fetch failed", code: bootstrapExitFetchReached, want: []string{"may already be consumed", "if a retry fails, request a new URL"}, absent: "retry is safe"},
 		{name: "no apply.sh", code: bootstrapExitBundle, want: []string{"spent", "request a new URL", "credential"}, absent: "retry is safe"},
 		{name: "apply.sh failed", code: bootstrapExitApply, want: []string{"spent", "request a new URL", "credential"}, absent: "retry is safe"},
 	}
