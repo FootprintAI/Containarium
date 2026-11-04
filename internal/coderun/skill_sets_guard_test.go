@@ -31,7 +31,7 @@ type boxShellConn struct {
 	// shellCalls counts shell_exec calls; from failShellFrom on (1-based, 0
 	// never) each one exits 1 with shellStderr as its stderr.
 	shellCalls, failShellFrom int
-	shellStderr                string
+	shellStderr               string
 	// killErr, when set, makes process_kill fail with it.
 	killErr string
 }
@@ -66,7 +66,7 @@ func (c *boxShellConn) CallTool(_ context.Context, req mcp.CallToolRequest) (*mc
 		if c.killErr != "" {
 			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{mcp.TextContent{Type: "text", Text: c.killErr}}}, nil
 		}
-		reply =fmt.Sprintf("name: %v\npid: 42\nsignal: SIGKILL\nexited: true\nlog_path: /tmp/r.log\n", args["name"])
+		reply = fmt.Sprintf("name: %v\npid: 42\nsignal: SIGKILL\nexited: true\nlog_path: /tmp/r.log\n", args["name"])
 	default:
 		return nil, errors.New("boxShellConn: unexpected tool " + req.Params.Name)
 	}
