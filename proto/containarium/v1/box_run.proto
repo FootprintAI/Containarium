@@ -381,6 +381,85 @@ message SweepBoxRunCheckoutsResponse {
   repeated BoxRunCheckout checkouts = 3;
 }
 
+// A box's SDLC skill sets (#3374). `containarium code install --skill-sets`
+// installs the pinned open-sdlc-skills role skills into the box owner's
+// ~/.claude/skills when a box is set up (scripts/install-sdlc-skills.sh, the
+// sets of pkg/core/sdlcskills/sdlc-skills.lock). ApplyBoxSkillSets changes
+// that selection on a box that already exists, through the same installer
+// and the same lock, so a set added or removed later, or a pin bump, reaches
+// the box without re-creating it. A per-box manifest beside the skills
+// (.sdlc-skill-sets.json) records which skill directories each set
+// installed, so removing a set deletes exactly those and never a skill the
+// owner installed by hand. The skills are written as the box's own user,
+// the same identity `code install` writes them as; the unprivileged run
+// user's copy is refreshed from them at the start of each platform run.
+
+// BoxSkillSetsRefusal is the typed reason ApplyBoxSkillSets refuses a call,
+// so a caller never matches on message text. It is carried in the error's
+// details, spelled as the enum value's name: as the `type` of the
+// google.rpc.PreconditionFailure violation of a FAILED_PRECONDITION, or as
+// the `reason` of the google.rpc.BadRequest field violation of an
+// INVALID_ARGUMENT. The violation's subject names the set or the box.
+enum BoxSkillSetsRefusal {
+  BOX_SKILL_SETS_REFUSAL_UNSPECIFIED = 0;
+  // A requested set id is not defined in the daemon's skill-set lock
+  // (INVALID_ARGUMENT); the message names the known ids. Nothing was
+  // changed.
+  BOX_SKILL_SETS_REFUSAL_UNKNOWN_SKILL_SET = 1;
+  // The box has a run in progress: a code run that is RUNNING, or a skill
+  // run executing in this box (FAILED_PRECONDITION). Its skill files are
+  // not changed under a run; retry once the run has ended.
+  BOX_SKILL_SETS_REFUSAL_RUN_IN_PROGRESS = 2;
+  // A set the box holds was installed before the per-box manifest existed,
+  // so what it installed is not recorded, and the target list omits it
+  // (FAILED_PRECONDITION). Keep the set in the list: that re-installs and
+  // records it, after which a later call can remove it.
+  BOX_SKILL_SETS_REFUSAL_SET_PREDATES_MANIFEST = 3;
+}
+
+// BoxSkillSetChange is what one call did for one skill set.
+message BoxSkillSetChange {
+  // The set id, as in the lock's `set.<id>=` line (for example "qa").
+  string skill_set = 1;
+  // The skill directory names under ~/.claude/skills this set installed or
+  // removed (for example "qa-sprint-verify"), sorted.
+  repeated string skills = 2;
+}
+
+// ApplyBoxSkillSetsRequest re-applies a box's SDLC skill sets.
+message ApplyBoxSkillSetsRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // The complete target list of set ids the box should have (for example
+  // ["sdlc", "qa"]). Sets in the list and not on the box are installed; sets
+  // on the box (per its manifest) and not in the list are removed. An empty
+  // list removes every set the manifest records. An id not in the lock is
+  // refused (UNKNOWN_SKILL_SET).
+  repeated string skill_sets = 2;
+  // The Containarium release whose installer, lock and skills bundle to use
+  // (a v-prefixed tag). Empty means the daemon's own release.
+  string release = 3;
+}
+
+message ApplyBoxSkillSetsResponse {
+  // The sets the box's manifest records after the call, sorted: the target
+  // list.
+  repeated string skill_sets = 1;
+  // The skills this call installed, by set. A set already on the box whose
+  // directories did not change is not listed.
+  repeated BoxSkillSetChange installed = 2;
+  // The skills this call removed, by set.
+  repeated BoxSkillSetChange removed = 3;
+  // True when the call installed and removed no skill: the box already had
+  // exactly the target sets. Repeating a call is unchanged. The installed
+  // files are still refreshed to the release's pin, so a pin bump that
+  // changes a skill's content without adding or removing one is unchanged
+  // too.
+  bool unchanged = 4;
+  // The release the skills came from (the request's, or the daemon's own).
+  string release = 5;
+}
+
 // Permission requests of a box run (#2183, #2184). A run started with
 // `code run --approvals ask` journals each tool call that needs a permission
 // to <run_name>.input.jsonl beside its log and waits for a signed answer.

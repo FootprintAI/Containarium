@@ -52,6 +52,7 @@ const (
 	ContainerService_TailBoxRunLog_FullMethodName             = "/containarium.v1.ContainerService/TailBoxRunLog"
 	ContainerService_StopBoxRun_FullMethodName                = "/containarium.v1.ContainerService/StopBoxRun"
 	ContainerService_SweepBoxRunCheckouts_FullMethodName      = "/containarium.v1.ContainerService/SweepBoxRunCheckouts"
+	ContainerService_ApplyBoxSkillSets_FullMethodName         = "/containarium.v1.ContainerService/ApplyBoxSkillSets"
 	ContainerService_GetRunApprovalKey_FullMethodName         = "/containarium.v1.ContainerService/GetRunApprovalKey"
 	ContainerService_ListRunInputs_FullMethodName             = "/containarium.v1.ContainerService/ListRunInputs"
 	ContainerService_AnswerRunInput_FullMethodName            = "/containarium.v1.ContainerService/AnswerRunInput"
@@ -299,6 +300,13 @@ type ContainerServiceClient interface {
 	// maximum age, not in use and not a live run's. dry_run lists the same set
 	// and removes nothing. Same access as StopBoxRun.
 	SweepBoxRunCheckouts(ctx context.Context, in *SweepBoxRunCheckoutsRequest, opts ...grpc.CallOption) (*SweepBoxRunCheckoutsResponse, error)
+	// ApplyBoxSkillSets re-applies a box's SDLC skill sets without re-creating
+	// it (#3374): installs the skills of newly listed sets, removes those of
+	// sets no longer listed (per the box's manifest), and leaves everything
+	// else alone. Idempotent; refused with a typed reason (BoxSkillSetsRefusal)
+	// under a run in progress, for an unknown set id, or when a set that
+	// predates the manifest would be removed. Same access as StartBoxRun.
+	ApplyBoxSkillSets(ctx context.Context, in *ApplyBoxSkillSetsRequest, opts ...grpc.CallOption) (*ApplyBoxSkillSetsResponse, error)
 	// GetRunApprovalKey returns the public key a box's permission-request
 	// answers are signed with (#2184). `code run --approvals ask` hands it to
 	// the box. Same access as StartBoxRun.
@@ -796,6 +804,16 @@ func (c *containerServiceClient) SweepBoxRunCheckouts(ctx context.Context, in *S
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SweepBoxRunCheckoutsResponse)
 	err := c.cc.Invoke(ctx, ContainerService_SweepBoxRunCheckouts_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ApplyBoxSkillSets(ctx context.Context, in *ApplyBoxSkillSetsRequest, opts ...grpc.CallOption) (*ApplyBoxSkillSetsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplyBoxSkillSetsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ApplyBoxSkillSets_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1425,6 +1443,13 @@ type ContainerServiceServer interface {
 	// maximum age, not in use and not a live run's. dry_run lists the same set
 	// and removes nothing. Same access as StopBoxRun.
 	SweepBoxRunCheckouts(context.Context, *SweepBoxRunCheckoutsRequest) (*SweepBoxRunCheckoutsResponse, error)
+	// ApplyBoxSkillSets re-applies a box's SDLC skill sets without re-creating
+	// it (#3374): installs the skills of newly listed sets, removes those of
+	// sets no longer listed (per the box's manifest), and leaves everything
+	// else alone. Idempotent; refused with a typed reason (BoxSkillSetsRefusal)
+	// under a run in progress, for an unknown set id, or when a set that
+	// predates the manifest would be removed. Same access as StartBoxRun.
+	ApplyBoxSkillSets(context.Context, *ApplyBoxSkillSetsRequest) (*ApplyBoxSkillSetsResponse, error)
 	// GetRunApprovalKey returns the public key a box's permission-request
 	// answers are signed with (#2184). `code run --approvals ask` hands it to
 	// the box. Same access as StartBoxRun.
@@ -1696,6 +1721,9 @@ func (UnimplementedContainerServiceServer) StopBoxRun(context.Context, *StopBoxR
 }
 func (UnimplementedContainerServiceServer) SweepBoxRunCheckouts(context.Context, *SweepBoxRunCheckoutsRequest) (*SweepBoxRunCheckoutsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SweepBoxRunCheckouts not implemented")
+}
+func (UnimplementedContainerServiceServer) ApplyBoxSkillSets(context.Context, *ApplyBoxSkillSetsRequest) (*ApplyBoxSkillSetsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApplyBoxSkillSets not implemented")
 }
 func (UnimplementedContainerServiceServer) GetRunApprovalKey(context.Context, *GetRunApprovalKeyRequest) (*GetRunApprovalKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRunApprovalKey not implemented")
@@ -2434,6 +2462,24 @@ func _ContainerService_SweepBoxRunCheckouts_Handler(srv interface{}, ctx context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).SweepBoxRunCheckouts(ctx, req.(*SweepBoxRunCheckoutsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ApplyBoxSkillSets_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyBoxSkillSetsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ApplyBoxSkillSets(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ApplyBoxSkillSets_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ApplyBoxSkillSets(ctx, req.(*ApplyBoxSkillSetsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3332,6 +3378,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SweepBoxRunCheckouts",
 			Handler:    _ContainerService_SweepBoxRunCheckouts_Handler,
+		},
+		{
+			MethodName: "ApplyBoxSkillSets",
+			Handler:    _ContainerService_ApplyBoxSkillSets_Handler,
 		},
 		{
 			MethodName: "GetRunApprovalKey",
