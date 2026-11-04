@@ -414,6 +414,9 @@ type Recipe struct {
 	// Shell commands run inside the container after it is up (e.g. the
 	// `podman run ...` that starts the app, plus model warm-up). Same trust
 	// level as a stack's post_install: these ship in-tree and are reviewed.
+	// Besides CONTAINARIUM_PARAM_<NAME>, they see CONTAINARIUM_RELEASE: the
+	// deploying daemon's own release tag (e.g. "v0.129.0"), empty when the
+	// daemon build is not a release. No parameter sets it.
 	PostStart []string `protobuf:"bytes,11,rep,name=post_start,json=postStart,proto3" json:"post_start,omitempty"`
 	// When non-empty, the daemon brokers this recipe's model calls through the
 	// managed model-gateway for the named provider (e.g. "gemini-openai"): it

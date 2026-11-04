@@ -8,6 +8,12 @@
 # Deploy-time parameters are exported to post_start as
 # CONTAINARIUM_PARAM_<UPPER_NAME> environment variables.
 #
+# The daemon also exports CONTAINARIUM_RELEASE: its own release tag ("v" +
+# its version, e.g. v0.129.0), or empty when the daemon build is not a
+# release. No parameter can set it. Use it for what must match the OSS
+# version running post_start (slides-agent's image); a caller's `release`
+# parameter is for what the caller pins on purpose (agent-box, skills).
+#
 # These recipes ship in-tree and are reviewed; post_start runs with the same
 # trust level as a stack's post_install. Remote/community catalogs are a
 # separate, signed mechanism (not loaded here).
@@ -321,7 +327,7 @@ recipes:
         default: admin
       - name: slides_image
         label: Slides image
-        description: OCI reference of the prebaked slides-agent image. Empty uses the image published for `release` (ghcr.io/footprintai/containarium-slides-agent:<release>); set it for a registry mirror or a rehearsal build.
+        description: OCI reference of the prebaked slides-agent image. Empty uses the image published with the deploying daemon's own release (ghcr.io/footprintai/containarium-slides-agent:<daemon release>), whatever `release` is; set it for a registry mirror or a rehearsal build, or on a daemon build that is not a release.
         type: string
       - name: allowed_hosts
         label: Allowed hosts
@@ -335,10 +341,19 @@ recipes:
       - *coding_agent_step_install_skills
       - *coding_agent_step_bootstrap
       - |
-        # The prebaked image: tag tracks the release like every image this repo
-        # publishes; slides_image points at a mirror or a rehearsal build.
-        IMAGE="${CONTAINARIUM_PARAM_SLIDES_IMAGE:-ghcr.io/footprintai/containarium-slides-agent:$CONTAINARIUM_PARAM_RELEASE}"
-        podman pull "$IMAGE" >/dev/null
+        # The prebaked image (#3542): tagged with the DAEMON's own release
+        # (CONTAINARIUM_RELEASE), not the caller's `release`. The checks below
+        # assert this image's protocol, so it must be the one published with
+        # the recipe that runs them; `release` only picks agent-box and the
+        # skills bundle. slides_image points at a mirror or a rehearsal build.
+        # A daemon build that is not a release has no published image: say so
+        # rather than guess a tag.
+        IMAGE="${CONTAINARIUM_PARAM_SLIDES_IMAGE:-}"
+        if [ -z "$IMAGE" ]; then
+          [ -n "${CONTAINARIUM_RELEASE:-}" ] || { echo "slides-agent: this daemon build has no release tag, so there is no published slides image to default to; set slides_image" >&2; exit 1; }
+          IMAGE="ghcr.io/footprintai/containarium-slides-agent:$CONTAINARIUM_RELEASE"
+        fi
+        podman pull "$IMAGE" >/dev/null || { echo "slides-agent: podman pull $IMAGE failed" >&2; exit 1; }
       - |
         # Auth material for the proxy, staged under /opt/wsauth (root, 0600):
         # the bcrypt hash of the password (computed by the image's own caddy,

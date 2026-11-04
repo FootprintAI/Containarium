@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,11 +19,13 @@ import (
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
 	"github.com/footprintai/containarium/internal/guardrailrate"
 	"github.com/footprintai/containarium/internal/guardrailstage"
+	"github.com/footprintai/containarium/internal/limitio"
 	"github.com/footprintai/containarium/internal/modelgateway"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/recipes"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/footprintai/containarium/pkg/version"
 )
 
 // recipeBaseImage is the LXC image a recipe's dedicated container is built
@@ -77,6 +80,11 @@ type RecipeServer struct {
 type recipeBoxes interface {
 	CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error)
 	Exec(containerName string, command []string) error
+	// ExecWithExitCode runs a command in the box and reports its exit status
+	// as data. post_start runs through it (#3542): Exec reports success
+	// whatever the command's exit status, so a failed post_start went
+	// unreported.
+	ExecWithExitCode(containerName string, command []string) (stdout, stderr string, exitCode int, err error)
 	// ExecWithOutput runs a command in the box and returns its stdout and
 	// stderr (GetWorkspaceAccess reads the box's login token with it).
 	ExecWithOutput(containerName string, command []string) (string, string, error)
@@ -98,6 +106,9 @@ func (c containerServerBoxes) CreateContainer(ctx context.Context, req *pb.Creat
 }
 func (c containerServerBoxes) Exec(name string, command []string) error {
 	return c.s.manager.Exec(name, command)
+}
+func (c containerServerBoxes) ExecWithExitCode(name string, command []string) (string, string, int, error) {
+	return c.s.manager.ExecWithExitCode(name, command)
 }
 func (c containerServerBoxes) ExecWithOutput(name string, command []string) (string, string, error) {
 	return c.s.manager.ExecWithOutput(name, command)
@@ -520,7 +531,7 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 			bg := context.WithoutCancel(ctx)
 			if len(recipe.PostStart) > 0 {
 				script := buildPostStartScript(recipe, params, gatewayEnv)
-				if err := s.boxOps().Exec(containerName, []string{"bash", "-c", script}); err != nil {
+				if err := runPostStart(s.boxOps(), containerName, script); err != nil {
 					log.Printf("[recipe] async post_start failed on %q (recipe %q): %v", containerName, recipe.Id, err)
 					return
 				}
@@ -545,7 +556,7 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	//    and parameters exported. Same trust level as a stack's post_install.
 	if len(recipe.PostStart) > 0 {
 		script := buildPostStartScript(recipe, params, gatewayEnv)
-		if err := s.boxOps().Exec(containerName, []string{"bash", "-c", script}); err != nil {
+		if err := runPostStart(s.boxOps(), containerName, script); err != nil {
 			return nil, status.Errorf(codes.Internal, "post_start failed on %s: %v", containerName, err)
 		}
 	}
@@ -569,6 +580,21 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 		container = toProtoContainer(&st)
 	}
 	return &pb.DeployRecipeResponse{Container: container, Url: url, Message: msg}, nil
+}
+
+// runPostStart runs a post_start script in the box and fails on a non-zero
+// exit (#3542). Its output is not returned or logged: a step may print what
+// a deploy supplied. Output past the exec capture cap is not a failure on its
+// own; the exit status decides.
+func runPostStart(boxes recipeBoxes, containerName, script string) error {
+	_, _, code, err := boxes.ExecWithExitCode(containerName, []string{"bash", "-c", script})
+	if err != nil && !errors.Is(err, limitio.ErrTooLarge) {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("exit status %d", code)
+	}
+	return nil
 }
 
 // resourceLimits merges the recipe's defaults with deploy-time overrides.
@@ -598,7 +624,8 @@ func resourceLimits(recipe *pb.Recipe, override *pb.RecipeResources) *pb.Resourc
 // Values are single-quote escaped to prevent shell injection from parameters.
 // gatewayEnv, when non-empty, is the managed model-gateway export snippet
 // (gatewayEnvForRecipe) prepended before the recipe's own env so post_start
-// sees CONTAINARIUM_MODEL_GATEWAY_URL/_TOKEN.
+// sees CONTAINARIUM_MODEL_GATEWAY_URL/_TOKEN. The daemon's release tag is
+// exported as recipes.ReleaseEnvName.
 func buildPostStartScript(recipe *pb.Recipe, params map[string]string, gatewayEnv string) string {
 	var b strings.Builder
 	b.WriteString("set -euo pipefail\n")
@@ -611,6 +638,10 @@ func buildPostStartScript(recipe *pb.Recipe, params map[string]string, gatewayEn
 	for name, v := range params {
 		fmt.Fprintf(&b, "export %s=%s\n", recipes.ParamEnvName(name), shellSingleQuote(v))
 	}
+	// The daemon's own release (#3542), after the recipe's env so nothing a
+	// deploy supplies can stand in for it. Always exported, empty on a
+	// non-release build, so `set -u` steps can test it.
+	fmt.Fprintf(&b, "export %s=%s\n", recipes.ReleaseEnvName, shellSingleQuote(version.ReleaseTag()))
 	for _, line := range recipe.PostStart {
 		b.WriteString(line)
 		b.WriteString("\n")

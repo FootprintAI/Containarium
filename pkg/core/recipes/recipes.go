@@ -387,3 +387,11 @@ func ResolveParameters(r *pb.Recipe, overrides map[string]string) (map[string]st
 func ParamEnvName(name string) string {
 	return "CONTAINARIUM_PARAM_" + strings.ToUpper(name)
 }
+
+// ReleaseEnvName is the environment variable a post_start command sees
+// holding the release tag of the daemon running it (#3542): "v" + the
+// daemon's version (version.ReleaseTag), e.g. "v0.129.0", or empty when the
+// daemon build is not a release. It is set by the daemon, never by a
+// parameter, so a recipe pins what must match its own OSS version (the
+// slides-agent image) with it instead of trusting a caller's `release`.
+const ReleaseEnvName = "CONTAINARIUM_RELEASE"

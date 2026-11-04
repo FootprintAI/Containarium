@@ -65,6 +65,11 @@ func (f *fakeRecipeBoxes) Exec(_ string, command []string) error {
 	return nil
 }
 
+// ExecWithExitCode records a post_start run like Exec and reports exit 0.
+func (f *fakeRecipeBoxes) ExecWithExitCode(name string, command []string) (string, string, int, error) {
+	return "", "", 0, f.Exec(name, command)
+}
+
 func (f *fakeRecipeBoxes) ExecWithOutput(string, []string) (string, string, error) {
 	return "", "", errors.New("fakeRecipeBoxes: ExecWithOutput not modelled")
 }

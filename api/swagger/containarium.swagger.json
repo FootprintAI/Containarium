@@ -19662,7 +19662,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Shell commands run inside the container after it is up (e.g. the\n`podman run ...` that starts the app, plus model warm-up). Same trust\nlevel as a stack's post_install: these ship in-tree and are reviewed."
+          "description": "Shell commands run inside the container after it is up (e.g. the\n`podman run ...` that starts the app, plus model warm-up). Same trust\nlevel as a stack's post_install: these ship in-tree and are reviewed.\nBesides CONTAINARIUM_PARAM_\u003cNAME\u003e, they see CONTAINARIUM_RELEASE: the\ndeploying daemon's own release tag (e.g. \"v0.129.0\"), empty when the\ndaemon build is not a release. No parameter sets it."
         },
         "modelGatewayProvider": {
           "type": "string",
