@@ -145,6 +145,11 @@ func TestApplyBoxSkillSets_WaitsForARunStartThenRefusesIt(t *testing.T) {
 		t.Fatal("run start never reached the box")
 	}
 
+	// The held start makes no exec of its own until released, so any exec
+	// counted from here is the apply's: without the lock it would run its
+	// run-in-progress check (a root exec) while the start is held.
+	counting, execs := countBoxExecs(s)
+	counting.Store(true)
 	applied := make(chan error, 1)
 	go func() {
 		_, err := apply(t, s, "qa")
@@ -155,9 +160,13 @@ func TestApplyBoxSkillSets_WaitsForARunStartThenRefusesIt(t *testing.T) {
 		t.Fatalf("apply returned while a run was still starting: %v", err)
 	case <-time.After(200 * time.Millisecond):
 	}
+	if got := execs.Load(); got != 0 {
+		t.Fatalf("apply made %d exec(s) on the box while a run was still starting; it must wait before touching the box", got)
+	}
 	if *installs != 0 {
 		t.Fatal("apply installed while a run was still starting")
 	}
+	counting.Store(false)
 
 	holding.Store(false)
 	close(letStartGo)

@@ -381,7 +381,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	// #3510: refused, before the box is touched, while ApplyBoxSkillSets is
 	// changing the box's skills; held until return (the run's record is
 	// written by then) so an apply arriving meanwhile sees this run.
-	releaseGate, err := s.enterBoxRunStart(box)
+	releaseGate, err := s.enterBoxRunStart(box, name)
 	if err != nil {
 		return nil, err
 	}
