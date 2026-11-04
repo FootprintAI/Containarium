@@ -193,11 +193,10 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	// --session value and needs no discovery.
 	discover := codeRunSession == "" && snapshotSessionDirectory(ctx, sess, eng, name, diag)
 
-	started, err := sess.ProcessStart(ctx, name, command, "", coderun.CaptureModeFor(codeRunStreamJSON))
+	started, err := startCodeRun(ctx, sess, diag, box, name, command, coderun.CaptureModeFor(codeRunStreamJSON))
 	if err != nil {
 		return fmt.Errorf("start run on %q: %w", box, err)
 	}
-	reportCodeRunStarted(diag, started, box)
 	if approvalNote != "" {
 		journalApprovalNote(ctx, sess, name, approvalNote, diag)
 	}
@@ -244,22 +243,29 @@ func runCodeRunCommand(cmd *cobra.Command, box string) error {
 	}
 	defer func() { _ = sess.Close() }()
 	command := coderun.BuildShellCommand(codeRunCommand, timeoutSeconds)
-	started, err := sess.ProcessStart(ctx, name, command, "", coderun.CaptureModeFor(false))
+	started, err := startCodeRun(ctx, sess, diag, box, name, command, coderun.CaptureModeFor(false))
 	if err != nil {
 		return fmt.Errorf("start command run on %q: %w", box, err)
 	}
-	reportCodeRunStarted(diag, started, box)
 	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, false)
 }
 
-// codeRunStarter (stub, #3540).
+// codeRunStarter is the part of a box's agent-box session a `code run` starts
+// its run through (*coderun.Session).
 type codeRunStarter interface {
 	ProcessStart(ctx context.Context, name, command, cwd, captureMode string) (*coderun.ProcessStartResult, error)
 }
 
-// startCodeRun (stub, #3540).
-func startCodeRun(ctx context.Context, sess codeRunStarter, _ io.Writer, _, name, command, captureMode string) (*coderun.ProcessStartResult, error) {
-	return sess.ProcessStart(ctx, name, command, "", captureMode)
+// startCodeRun starts the run on box and prints the start's report
+// (reportCodeRunStarted): every `code run` path starts here, so a note from
+// the start (#3529) reaches the person on each of them (#3540).
+func startCodeRun(ctx context.Context, sess codeRunStarter, diag io.Writer, box, name, command, captureMode string) (*coderun.ProcessStartResult, error) {
+	started, err := sess.ProcessStart(ctx, name, command, "", captureMode)
+	if err != nil {
+		return nil, err
+	}
+	reportCodeRunStarted(diag, started, box)
+	return started, nil
 }
 
 // reportCodeRunStarted prints a note from the start (started.Warning, #3529)
