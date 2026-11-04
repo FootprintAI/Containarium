@@ -44,12 +44,13 @@ const (
 // Fetch and apply are separate steps with their own exit codes, so a failed
 // download (the URL was not consumed) is never confused with a failed apply
 // (it was). The URL is never echoed: curl runs without -S, so its own error
-// text (which names the URL's path) is suppressed.
+// text (which names the URL's path) is suppressed. `--` keeps a URL that
+// starts with "-" from being read as a curl option.
 func bootstrapScript(url string) string {
 	return `set -e
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-if ! curl -fsL -o "$tmp/bundle.tgz" ` + coderun.ShellQuoteSingle(url) + ` </dev/null; then
+if ! curl -fsL -o "$tmp/bundle.tgz" -- ` + coderun.ShellQuoteSingle(url) + ` </dev/null; then
   echo "bootstrap bundle could not be fetched" >&2
   exit 3
 fi

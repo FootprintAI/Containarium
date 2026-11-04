@@ -105,6 +105,9 @@ func TestBootstrapScript_ExitCodesSplitFetchFromApply(t *testing.T) {
 		want int
 	}{
 		{name: "fetch fails", url: "file://" + filepath.Join(dir, "missing-s3cr3t.tgz"), want: bootstrapExitFetch},
+		// Without `--` before the URL, curl reads this as its --version option,
+		// exits 0, and the script goes on to unpack nothing.
+		{name: "URL that looks like an option", url: "--version", want: bootstrapExitFetch},
 		{name: "bundle has no apply.sh", url: "file://" + noApply, want: bootstrapExitBundle},
 		{name: "bundle is not a tar.gz", url: "file://" + garbage, want: bootstrapExitBundle},
 		{name: "apply.sh fails", url: "file://" + failing, want: bootstrapExitApply},
