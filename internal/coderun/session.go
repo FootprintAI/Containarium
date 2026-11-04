@@ -254,6 +254,17 @@ func (s *Session) ProcessStart(ctx context.Context, name, command, cwd, captureM
 		return nil, fmt.Errorf("process_start: %w", err)
 	}
 	kv, _ := parseKV(text, "")
+	started := kv["name"]
+	if started == "" {
+		started = name
+	}
+	recheck, err := s.recheckSkillSetsApplyAfterStart(ctx, started)
+	if err != nil {
+		return nil, err
+	}
+	if recheck != "" {
+		warning = strings.TrimPrefix(warning+"; "+recheck, "; ")
+	}
 	pid, _ := strconv.Atoi(kv["pid"])
 	startedAt, _ := time.Parse(time.RFC3339, kv["started_at"])
 	return &ProcessStartResult{

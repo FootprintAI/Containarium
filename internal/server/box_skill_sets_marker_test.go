@@ -11,6 +11,7 @@ import (
 	osexec "os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -171,13 +172,15 @@ func TestApplyBoxSkillSets_RenewsTheMarkerWhileInstalling(t *testing.T) {
 // marker is taken exactly as an apply takes it, then abandoned.
 func TestSkillSetsApplyMarker_ACrashedApplyLapses(t *testing.T) {
 	home := t.TempDir()
-	if out, err := ownerShell(home)(context.Background(), sdlcskills.ApplyMarkerWriteScript(0, time.Second)); err != nil || !strings.HasPrefix(out, "exit_code: 0\n") {
+	if out, err := ownerShell(home)(context.Background(), sdlcskills.ApplyMarkerWriteScript(0, 2*time.Second)); err != nil || !strings.HasPrefix(out, "exit_code: 0\n") {
 		t.Fatalf("take the marker: %v %s", err, out)
 	}
 	if _, err := coderun.GuardSkillSetsApply(context.Background(), ownerShell(home)); !errors.Is(err, coderun.ErrSkillSetsApplyInProgress) {
 		t.Fatalf("a fresh marker must refuse: err = %v", err)
 	}
-	time.Sleep(2100 * time.Millisecond)
+	// Whole box-clock seconds: written at T with expiry T+2, so held when checked
+	// within the next second, and lapsed at any T+3 or later.
+	time.Sleep(3100 * time.Millisecond)
 	warning, err := coderun.GuardSkillSetsApply(context.Background(), ownerShell(home))
 	if err != nil {
 		t.Fatalf("a lapsed marker must not refuse the run: %v", err)
@@ -187,5 +190,67 @@ func TestSkillSetsApplyMarker_ACrashedApplyLapses(t *testing.T) {
 	}
 	if _, err := os.Stat(applyMarkerPath(home)); !os.IsNotExist(err) {
 		t.Fatalf("a lapsed marker must be cleared: stat err = %v", err)
+	}
+}
+
+// release waits for a renewal already in flight before it removes the
+// marker, so a renewal can never write the marker back after its removal and
+// leave a returned apply holding it for a whole lease.
+func TestApplyBoxSkillSets_NoRenewalAfterTheMarkerIsRemoved(t *testing.T) {
+	home := t.TempDir()
+	s, _, _ := skillSetServer(t, home, pb.ContainerState_CONTAINER_STATE_RUNNING)
+	s.skillSetsApplyLease = 3 * time.Second // a renewal every second
+
+	renewing, letRenew, renewed := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	user := s.boxRunStartExec
+	s.boxRunStartExec = func(box, username, script string) (string, error) {
+		// The first write takes the start from the clock; a renewal carries it.
+		isRenewal := strings.Contains(script, sdlcskills.ApplyMarkerFile) && strings.Contains(script, "expires_at") && !strings.Contains(script, `start="$now"`)
+		first := false
+		if isRenewal {
+			once.Do(func() { first = true })
+		}
+		if !first {
+			return user(box, username, script)
+		}
+		close(renewing)
+		<-letRenew
+		defer close(renewed)
+		return user(box, username, script)
+	}
+	// The install ends while the first renewal is in flight.
+	inner := s.boxSkillSetsInstall
+	s.boxSkillSetsInstall = func(box, user, rel string, sets sdlcskills.SkillSets) (string, error) {
+		select {
+		case <-renewing:
+		case <-time.After(10 * time.Second):
+			return "", errors.New("no renewal within 10s")
+		}
+		return inner(box, user, rel, sets)
+	}
+
+	applied := make(chan error, 1)
+	go func() {
+		_, err := apply(t, s, "qa")
+		applied <- err
+	}()
+	select {
+	case <-renewing:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no renewal within 10s")
+	}
+	// The renewal goes on once the apply has reached its release.
+	time.AfterFunc(500*time.Millisecond, func() { close(letRenew) })
+	if err := <-applied; err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	select {
+	case <-renewed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the renewal never finished")
+	}
+	if _, err := os.Stat(applyMarkerPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("a renewal wrote the marker back after the apply removed it: stat err = %v", err)
 	}
 }

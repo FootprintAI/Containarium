@@ -86,16 +86,34 @@ A run started over SSH never reaches the daemon, so it is kept out another
 way (#3529). A run started with `containarium code run` (agent or
 `--command`) or the MCP `code_run` tool is refused before it launches, with
 `skill sets are being applied on this box (ApplyBoxSkillSets started <n> ago,
-...)`. For this the apply holds a
-marker beside the skills, `~/.claude/skills/.sdlc-skill-sets.applying`, written
-as the box user, which the SSH path reads with no call to the daemon. The
-apply removes the marker when it returns, and also when it fails. Retry the
-run once the apply has returned. The marker is a lease: the apply renews it
-every few minutes while it runs and writes an expiry 10 minutes ahead (box
-clock). If the daemon dies mid-apply, the marker therefore stops refusing runs
-within 10 minutes: the next run removes the stale marker, starts, and prints
-`warning: cleared a stale skill-set apply marker ...`. A marker that cannot be
-read, or whose expiry is implausibly far ahead, is cleared the same way.
+...)`. For this the apply holds a marker beside the skills,
+`~/.claude/skills/.sdlc-skill-sets.applying`, written as the box user, which
+the SSH path reads with no call to the daemon. The apply takes the marker
+before it checks for runs in progress, and removes it when it returns, also
+when it fails. Retry the run once the apply has returned.
+
+A run can pass that check in the instant before an apply takes the marker,
+too early for the apply's own check to see the run. So the SSH path checks
+the marker again right after the run starts. The helper on the box records
+the run before the start returns, so either the apply sees the run and
+refuses, or this second check sees the marker. In the second case the run
+is stopped at once (its log is kept) and refused with the same message,
+ending `... the run "<name>" had just started and was stopped`. If the
+second check cannot run, the run continues and the start prints a warning.
+
+The marker is a lease. The apply writes an expiry 10 minutes ahead (box
+clock) and renews it every 200 seconds while it runs. If the daemon dies
+mid-apply, the marker therefore stops refusing runs within 10 minutes: the
+next run removes the stale marker, starts, and prints `warning: cleared a
+stale skill-set apply marker ...`. Anything else at that path is cleared the
+same way: a file that cannot be read, is larger than 4 KiB, is not the
+marker's JSON, or has an expiry implausibly far ahead. The clear removes the
+file only if it is still the one the check read (same inode, mtime and
+size), and re-checks when it is not, so a marker a new apply wrote in
+between is kept and refuses the run. One limit: if the box clock steps back
+by more than about a minute during a live apply, its marker reads as stale
+until the next renewal (at most 200 seconds), and a run started then is not
+refused.
 
 An agent re-applies a box's sets with the platform MCP tool
 `apply_box_skill_sets` (#3511), a thin wrapper over the same client function

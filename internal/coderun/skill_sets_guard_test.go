@@ -23,6 +23,11 @@ type boxShellConn struct {
 	t      *testing.T
 	home   string
 	starts int
+	// kills records process_kill calls as "<name> force=<bool>".
+	kills []string
+	// beforeClear runs before a stale-marker clear script, onStart inside
+	// process_start: where a test makes a new apply take the marker.
+	beforeClear, onStart func()
 }
 
 func (c *boxShellConn) Initialize(context.Context, mcp.InitializeRequest) (*mcp.InitializeResult, error) {
@@ -34,10 +39,20 @@ func (c *boxShellConn) CallTool(_ context.Context, req mcp.CallToolRequest) (*mc
 	var reply string
 	switch req.Params.Name {
 	case "shell_exec":
-		reply = boxShellExecForTest(c.home, args["command"].(string))
+		command := args["command"].(string)
+		if c.beforeClear != nil && strings.Contains(command, "echo removed") {
+			c.beforeClear()
+		}
+		reply = boxShellExecForTest(c.home, command)
 	case "process_start":
 		c.starts++
+		if c.onStart != nil {
+			c.onStart()
+		}
 		reply = "name: r\npid: 42\ncommand: x\nlog_path: /tmp/r.log\nstarted_at: 2026-11-04T00:00:00Z\n"
+	case "process_kill":
+		c.kills = append(c.kills, fmt.Sprintf("%v force=%v", args["name"], args["force"]))
+		reply = fmt.Sprintf("name: %v\npid: 42\nsignal: SIGKILL\nexited: true\nlog_path: /tmp/r.log\n", args["name"])
 	default:
 		return nil, errors.New("boxShellConn: unexpected tool " + req.Params.Name)
 	}
@@ -151,5 +166,60 @@ func TestProcessStart_RefusesWhenTheCheckCannotRun(t *testing.T) {
 	}
 	if _, called := conn.call("process_start"); called {
 		t.Fatal("process_start was called after a failed check")
+	}
+}
+
+// A stale marker is replaced by a new apply's between the check and the clear:
+// the clear keeps the new one, and the run is refused rather than started under
+// it.
+func TestProcessStart_RefusedWhenANewApplyTakesTheMarkerDuringAStaleClear(t *testing.T) {
+	home := t.TempDir()
+	writeMarker(t, home, `{"version":1,"started_at":1,"expires_at":2}`)
+	conn := &boxShellConn{t: t, home: home, beforeClear: func() { takeMarker(t, home) }}
+	_, err := sessionWith(conn).ProcessStart(context.Background(), "r", "claude -p hi", "", "")
+	if !errors.Is(err, ErrSkillSetsApplyInProgress) {
+		t.Fatalf("err = %v, want ErrSkillSetsApplyInProgress", err)
+	}
+	if conn.starts != 0 {
+		t.Fatalf("process_start called %d time(s) under the new apply's marker", conn.starts)
+	}
+	if _, err := os.Stat(markerPath(home)); err != nil {
+		t.Fatalf("the new apply's marker must be kept: %v", err)
+	}
+}
+
+// The residual race: the check passes, then an apply takes the marker before
+// the run's record exists (so its run-in-progress check does not see the run).
+// agent-box writes the record before process_start returns, so the re-check
+// after it sees the marker, and the run is stopped and refused.
+func TestProcessStart_StopsARunWhoseApplyStartedDuringTheLaunch(t *testing.T) {
+	home := t.TempDir()
+	conn := &boxShellConn{t: t, home: home, onStart: func() { takeMarker(t, home) }}
+	_, err := sessionWith(conn).ProcessStart(context.Background(), "r", "claude -p hi", "", "")
+	if !errors.Is(err, ErrSkillSetsApplyInProgress) {
+		t.Fatalf("err = %v, want ErrSkillSetsApplyInProgress", err)
+	}
+	if !strings.Contains(err.Error(), "stopped") {
+		t.Errorf("refusal %q does not say the started run was stopped", err)
+	}
+	if len(conn.kills) != 1 || conn.kills[0] != "r force=true" {
+		t.Fatalf("process_kill calls = %v, want one forced kill of %q", conn.kills, "r")
+	}
+}
+
+// A start time the box clock is behind, or absurdly far from, is not printed
+// as a negative or meaningless "started ... ago".
+func TestProcessStart_RefusalAgeIsSane(t *testing.T) {
+	now := time.Now().Unix()
+	for _, started := range []int64{now + 3600, 1, -5} {
+		home := t.TempDir()
+		writeMarker(t, home, fmt.Sprintf(`{"version":1,"started_at":%d,"expires_at":%d}`, started, now+300))
+		_, err := sessionWith(&boxShellConn{t: t, home: home}).ProcessStart(context.Background(), "r", "x", "", "")
+		if !errors.Is(err, ErrSkillSetsApplyInProgress) {
+			t.Fatalf("started_at %d: err = %v", started, err)
+		}
+		if msg := err.Error(); strings.Contains(msg, " ago") {
+			t.Errorf("started_at %d: refusal %q states an age it cannot know", started, msg)
+		}
 	}
 }
