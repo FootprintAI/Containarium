@@ -19,6 +19,7 @@ import (
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
+	spb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -1591,6 +1592,9 @@ func (c *HTTPClient) ApplyBoxSkillSets(req *pb.ApplyBoxSkillSetsRequest) (*pb.Ap
 		return nil, status.Errorf(codes.Unimplemented, "server does not expose ApplyBoxSkillSets (HTTP 404)")
 	}
 	if resp.StatusCode >= 400 {
+		if err := typedStatusError(bodyBytes); err != nil && SkillSetsRefusalOf(err) != pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_UNSPECIFIED {
+			return nil, err
+		}
 		return nil, httpError(bodyBytes, resp.StatusCode, "apply box skill sets")
 	}
 	out := &pb.ApplyBoxSkillSetsResponse{}
@@ -2776,6 +2780,18 @@ func (c *HTTPClient) guardrailPolicyCall(method, path string, body []byte, out p
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
+}
+
+// typedStatusError decodes a grpc-gateway error body ({code, message,
+// details}) into a gRPC status error carrying its details, or nil when the
+// body is not one. Callers use it only to recover a typed reason; every other
+// error keeps httpError's plain message.
+func typedStatusError(body []byte) error {
+	var st spb.Status
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, &st); err != nil || st.GetCode() == 0 {
+		return nil
+	}
+	return status.ErrorProto(&st)
 }
 
 // httpError extracts a JSON {"error": ...} message from a gateway error body,
