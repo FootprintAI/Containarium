@@ -233,6 +233,19 @@ const (
 // (ParseApplyMarkerCleared). id is validated, never quoted: it is digits and
 // colons only.
 func ApplyMarkerClearStaleScript(id string) (string, error) {
+	return applyMarkerClearStaleScript(id, "")
+}
+
+// ApplyMarkerClearResult is what a clear did (stub, #3540).
+type ApplyMarkerClearResult int
+
+const (
+	ApplyMarkerClearRemoved ApplyMarkerClearResult = iota
+	ApplyMarkerClearKept
+	ApplyMarkerClearFailed
+)
+
+func applyMarkerClearStaleScript(id, _ string) (string, error) {
 	if !applyMarkerIDPattern.MatchString(id) {
 		return "", fmt.Errorf("apply marker: %q is not a marker identity", id)
 	}
@@ -243,12 +256,12 @@ if [ "$(stat -c '%i:%Y:%s' "$f" 2>/dev/null)" = '` + id + `' ] && rm -f "$f"; th
 
 // ParseApplyMarkerCleared reads ApplyMarkerClearStaleScript's output: whether
 // the stale marker was removed (false: the file is no longer the one checked).
-func ParseApplyMarkerCleared(out string) (bool, error) {
+func ParseApplyMarkerCleared(out string) (ApplyMarkerClearResult, error) {
 	switch strings.TrimSpace(out) {
 	case applyMarkerRemoved:
-		return true, nil
+		return ApplyMarkerClearRemoved, nil
 	case applyMarkerKept:
-		return false, nil
+		return ApplyMarkerClearKept, nil
 	}
-	return false, fmt.Errorf("apply marker: unexpected clear output %q", strings.TrimSpace(out))
+	return ApplyMarkerClearKept, fmt.Errorf("apply marker: unexpected clear output %q", strings.TrimSpace(out))
 }

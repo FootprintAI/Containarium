@@ -252,6 +252,16 @@ func runCodeRunCommand(cmd *cobra.Command, box string) error {
 	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, false)
 }
 
+// codeRunStarter (stub, #3540).
+type codeRunStarter interface {
+	ProcessStart(ctx context.Context, name, command, cwd, captureMode string) (*coderun.ProcessStartResult, error)
+}
+
+// startCodeRun (stub, #3540).
+func startCodeRun(ctx context.Context, sess codeRunStarter, _ io.Writer, _, name, command, captureMode string) (*coderun.ProcessStartResult, error) {
+	return sess.ProcessStart(ctx, name, command, "", captureMode)
+}
+
 // reportCodeRunStarted prints a note from the start (started.Warning, #3529)
 // when there is one, then the started line.
 func reportCodeRunStarted(diag io.Writer, started *coderun.ProcessStartResult, box string) {

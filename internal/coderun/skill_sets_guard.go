@@ -18,6 +18,9 @@ import (
 // tree (sdlcskills.ApplyMarkerFile) rather than from the daemon.
 var ErrSkillSetsApplyInProgress = errors.New("skill sets are being applied on this box")
 
+// ErrSkillSetsApplyMarkerNotCleared (stub, #3540).
+var ErrSkillSetsApplyMarkerNotCleared = errors.New("a stale skill-set apply marker could not be removed")
+
 // shellExecFunc runs a command on the box as the box user and returns
 // agent-box's shell_exec reply (Session.ShellExec).
 type shellExecFunc func(context.Context, string) (string, error)
@@ -56,11 +59,11 @@ func GuardSkillSetsApply(ctx context.Context, shellExec func(context.Context, st
 		if err != nil {
 			return "", fmt.Errorf("clear a stale skill-set apply marker: %w", err)
 		}
-		removed, err := sdlcskills.ParseApplyMarkerCleared(out)
+		cleared, err := sdlcskills.ParseApplyMarkerCleared(out)
 		if err != nil {
 			return "", fmt.Errorf("clear a stale skill-set apply marker: %w", err)
 		}
-		if removed {
+		if cleared == sdlcskills.ApplyMarkerClearRemoved {
 			return fmt.Sprintf("cleared a stale skill-set apply marker (~/.claude/skills/%s): %s", sdlcskills.ApplyMarkerFile, c.Why), nil
 		}
 	}
