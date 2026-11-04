@@ -438,11 +438,35 @@ var (
 	boxSkillSetsGatePoll = 25 * time.Millisecond
 )
 
-// boxRunStartHolders records which run starts hold a box's gate, so a refused
-// apply can name them. The zero value is ready to use.
+// boxRunStartHolders records who holds a box's gate, so an apply refused on the
+// cap can say what it was waiting for: the run starts holding it for reading,
+// or whether another apply holds it for writing. The zero value is ready to use.
 type boxRunStartHolders struct {
-	mu    sync.Mutex
-	byBox map[string]map[string]int
+	mu      sync.Mutex
+	byBox   map[string]map[string]int
+	applies map[string]bool // boxes whose gate an apply holds for writing (#3537)
+}
+
+// setApply records (or clears) that an apply holds box's gate for writing. It
+// is set only after the gate is taken and cleared before it is released, so a
+// true answer always means an apply really holds the gate.
+func (h *boxRunStartHolders) setApply(box string, held bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !held {
+		delete(h.applies, box)
+		return
+	}
+	if h.applies == nil {
+		h.applies = map[string]bool{}
+	}
+	h.applies[box] = true
+}
+
+func (h *boxRunStartHolders) applyHeld(box string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.applies[box]
 }
 
 func (h *boxRunStartHolders) add(box, run string) {
@@ -463,6 +487,9 @@ func (h *boxRunStartHolders) remove(box, run string) {
 	if h.byBox[box][run]--; h.byBox[box][run] <= 0 {
 		delete(h.byBox[box], run)
 	}
+	if len(h.byBox[box]) == 0 {
+		delete(h.byBox, box) // no empty inner map per box (#3537)
+	}
 }
 
 func (h *boxRunStartHolders) names(box string) []string {
@@ -479,9 +506,16 @@ func (h *boxRunStartHolders) names(box string) []string {
 // lockBoxSkillSetGate takes box's gate for writing, retrying TryLock until ctx
 // is done or boxSkillSetsGateWait has passed. A TryLock that fails does not
 // queue as a writer, so run starts are not refused while the apply only waits;
-// they are refused (APPLY_IN_PROGRESS) once it holds the gate. On the cap it
-// refuses with RUN_IN_PROGRESS naming the run starts holding the gate.
-func (s *ContainerServer) lockBoxSkillSetGate(ctx context.Context, box string) error {
+// they are refused (APPLY_IN_PROGRESS) once it holds the gate. The returned
+// unlock releases the gate.
+//
+// On the cap the refusal says what held the gate: APPLY_IN_PROGRESS when
+// another apply (which also holds it for writing) did, RUN_IN_PROGRESS when run
+// starts did, naming those still in flight now. Because the waiting apply never
+// queues as a writer, a steady stream of overlapping run starts can keep it off
+// the gate for the whole cap (starvation); the names are a snapshot taken at the
+// cap, not proof that those starts ran for that long.
+func (s *ContainerServer) lockBoxSkillSetGate(ctx context.Context, box string) (unlock func(), err error) {
 	gate := s.boxSkillSetGate(box)
 	timeout := time.NewTimer(boxSkillSetsGateWait)
 	defer timeout.Stop()
@@ -490,15 +524,28 @@ func (s *ContainerServer) lockBoxSkillSetGate(ctx context.Context, box string) e
 	for !gate.TryLock() {
 		select {
 		case <-ctx.Done():
-			return status.FromContextError(ctx.Err()).Err()
+			return nil, status.FromContextError(ctx.Err()).Err()
 		case <-timeout.C:
-			return boxSkillSetsRefusal(pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_RUN_IN_PROGRESS, box,
-				fmt.Sprintf("%s has a run start in progress (%s) that did not finish within %s; its skills are not changed under a run. Retry shortly.",
-					box, quoteAll(s.boxRunStarts.names(box)), boxSkillSetsGateWait))
+			if s.boxRunStarts.applyHeld(box) {
+				return nil, boxSkillSetsRefusal(pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS, box,
+					fmt.Sprintf("%s is already applying skill sets (another ApplyBoxSkillSets call holds the box) and it was still going after %s. Retry once that apply has returned.",
+						box, boxSkillSetsGateWait))
+			}
+			inFlight := ""
+			if names := s.boxRunStarts.names(box); len(names) > 0 {
+				inFlight = fmt.Sprintf(" Run starts still in flight now: %s.", quoteAll(names))
+			}
+			return nil, boxSkillSetsRefusal(pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_RUN_IN_PROGRESS, box,
+				fmt.Sprintf("%s was busy with run starts for %s, so the skill sets were not applied; its skills are not changed under a run.%s Retry shortly.",
+					box, boxSkillSetsGateWait, inFlight))
 		case <-tick.C:
 		}
 	}
-	return nil
+	s.boxRunStarts.setApply(box, true)
+	return func() {
+		s.boxRunStarts.setApply(box, false)
+		gate.Unlock()
+	}, nil
 }
 
 func quoteAll(names []string) string {
@@ -555,10 +602,11 @@ func (s *ContainerServer) ApplyBoxSkillSets(ctx context.Context, req *pb.ApplyBo
 	boxName := username + "-container"
 	// Held until return: no run starts between the check below and the install
 	// (#3510); see boxSkillSetGate.
-	if err := s.lockBoxSkillSetGate(ctx, boxName); err != nil {
+	unlockGate, err := s.lockBoxSkillSetGate(ctx, boxName)
+	if err != nil {
 		return nil, err
 	}
-	defer s.boxSkillSetGate(boxName).Unlock()
+	defer unlockGate()
 
 	// Held until return, a failure or panic included: a run started over SSH
 	// reads it in the box owner's tree and refuses (#3529). Taken before the
