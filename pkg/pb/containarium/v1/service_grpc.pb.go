@@ -51,6 +51,7 @@ const (
 	ContainerService_ListBoxRuns_FullMethodName               = "/containarium.v1.ContainerService/ListBoxRuns"
 	ContainerService_TailBoxRunLog_FullMethodName             = "/containarium.v1.ContainerService/TailBoxRunLog"
 	ContainerService_StopBoxRun_FullMethodName                = "/containarium.v1.ContainerService/StopBoxRun"
+	ContainerService_WriteBoxFile_FullMethodName              = "/containarium.v1.ContainerService/WriteBoxFile"
 	ContainerService_SweepBoxRunCheckouts_FullMethodName      = "/containarium.v1.ContainerService/SweepBoxRunCheckouts"
 	ContainerService_ApplyBoxSkillSets_FullMethodName         = "/containarium.v1.ContainerService/ApplyBoxSkillSets"
 	ContainerService_GetRunApprovalKey_FullMethodName         = "/containarium.v1.ContainerService/GetRunApprovalKey"
@@ -294,6 +295,13 @@ type ContainerServiceClient interface {
 	// `containarium code stop`, for a caller with no SSH client. Same access as
 	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
 	StopBoxRun(ctx context.Context, in *StopBoxRunRequest, opts ...grpc.CallOption) (*StopBoxRunResponse, error)
+	// WriteBoxFile writes one file into a box user's home directory through the
+	// container file API, never through a shell (#3548): the way a caller puts
+	// input on a box for a run to read, without SSH and without embedding the
+	// bytes in a `command` run. Same access as StartBoxRun: ssh:write, and the
+	// box owner or one of its collaborators. Advertised as the "box_files"
+	// capability.
+	WriteBoxFile(ctx context.Context, in *WriteBoxFileRequest, opts ...grpc.CallOption) (*WriteBoxFileResponse, error)
 	// SweepBoxRunCheckouts runs the per-run checkout sweep once on one box
 	// (#3296): removes directories directly under the owner's and the run
 	// user's ~/work named <repo>-run-<8 hex> that are older than the daemon's
@@ -794,6 +802,16 @@ func (c *containerServiceClient) StopBoxRun(ctx context.Context, in *StopBoxRunR
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StopBoxRunResponse)
 	err := c.cc.Invoke(ctx, ContainerService_StopBoxRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) WriteBoxFile(ctx context.Context, in *WriteBoxFileRequest, opts ...grpc.CallOption) (*WriteBoxFileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WriteBoxFileResponse)
+	err := c.cc.Invoke(ctx, ContainerService_WriteBoxFile_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1437,6 +1455,13 @@ type ContainerServiceServer interface {
 	// `containarium code stop`, for a caller with no SSH client. Same access as
 	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
 	StopBoxRun(context.Context, *StopBoxRunRequest) (*StopBoxRunResponse, error)
+	// WriteBoxFile writes one file into a box user's home directory through the
+	// container file API, never through a shell (#3548): the way a caller puts
+	// input on a box for a run to read, without SSH and without embedding the
+	// bytes in a `command` run. Same access as StartBoxRun: ssh:write, and the
+	// box owner or one of its collaborators. Advertised as the "box_files"
+	// capability.
+	WriteBoxFile(context.Context, *WriteBoxFileRequest) (*WriteBoxFileResponse, error)
 	// SweepBoxRunCheckouts runs the per-run checkout sweep once on one box
 	// (#3296): removes directories directly under the owner's and the run
 	// user's ~/work named <repo>-run-<8 hex> that are older than the daemon's
@@ -1718,6 +1743,9 @@ func (UnimplementedContainerServiceServer) TailBoxRunLog(context.Context, *TailB
 }
 func (UnimplementedContainerServiceServer) StopBoxRun(context.Context, *StopBoxRunRequest) (*StopBoxRunResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StopBoxRun not implemented")
+}
+func (UnimplementedContainerServiceServer) WriteBoxFile(context.Context, *WriteBoxFileRequest) (*WriteBoxFileResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method WriteBoxFile not implemented")
 }
 func (UnimplementedContainerServiceServer) SweepBoxRunCheckouts(context.Context, *SweepBoxRunCheckoutsRequest) (*SweepBoxRunCheckoutsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SweepBoxRunCheckouts not implemented")
@@ -2444,6 +2472,24 @@ func _ContainerService_StopBoxRun_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).StopBoxRun(ctx, req.(*StopBoxRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_WriteBoxFile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WriteBoxFileRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).WriteBoxFile(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_WriteBoxFile_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).WriteBoxFile(ctx, req.(*WriteBoxFileRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3374,6 +3420,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StopBoxRun",
 			Handler:    _ContainerService_StopBoxRun_Handler,
+		},
+		{
+			MethodName: "WriteBoxFile",
+			Handler:    _ContainerService_WriteBoxFile_Handler,
 		},
 		{
 			MethodName: "SweepBoxRunCheckouts",

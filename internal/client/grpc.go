@@ -755,6 +755,18 @@ func (c *GRPCClient) SweepBoxRunCheckouts(req *pb.SweepBoxRunCheckoutsRequest) (
 	return c.client.SweepBoxRunCheckouts(ctx, req)
 }
 
+// writeBoxFileTimeout bounds one WriteBoxFile call: the file is small (at most
+// coderun.MaxBoxFileBytes) but crosses the container file API and a box exec.
+const writeBoxFileTimeout = 2 * time.Minute
+
+// WriteBoxFile writes one file into a box user's home (#3548). The error is
+// returned UNWRAPPED so an older daemon surfaces as codes.Unimplemented.
+func (c *GRPCClient) WriteBoxFile(req *pb.WriteBoxFileRequest) (*pb.WriteBoxFileResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), writeBoxFileTimeout)
+	defer cancel()
+	return c.client.WriteBoxFile(ctx, req)
+}
+
 // applyBoxSkillSetsTimeout bounds a skill-set apply: the box fetches the
 // installer and the skills bundle from GitHub and copies files as its user.
 const applyBoxSkillSetsTimeout = 10 * time.Minute

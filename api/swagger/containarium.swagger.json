@@ -3977,6 +3977,47 @@
         ]
       }
     },
+    "/v1/containers/{username}/files": {
+      "put": {
+        "summary": "Write a file into a box",
+        "description": "Writes one file under the box user's home directory. The path is relative to the home directory and must stay inside it (no absolute path, no `..`, nothing under .ssh or .containarium). Parent directories are created with mode 0700. The file is written to a temporary name and renamed into place, so a reader never sees a partial file, and it is owned by the box user with mode 0600 (or 0400). When sha256 is set it is checked against the bytes on the box before the rename; a mismatch leaves no file and is DATA_LOSS. Content is capped at 2 MiB per file. An existing regular file is replaced; a directory at the path is FAILED_PRECONDITION. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_WriteBoxFile",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/WriteBoxFileResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/WriteBoxFileBody"
+            }
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
     "/v1/containers/{username}/install-stack": {
       "post": {
         "summary": "Install a software stack on a container",
@@ -22811,7 +22852,7 @@
           "items": {
             "type": "string"
           },
-          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model),\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds) and\n\"box_skill_sets\" (the ApplyBoxSkillSets RPC, #3374).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
+          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model),\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds),\n\"box_skill_sets\" (the ApplyBoxSkillSets RPC, #3374) and \"box_files\" (the\nWriteBoxFile RPC, #3548).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
         },
         "storagePools": {
           "type": "array",
@@ -24360,6 +24401,47 @@
         }
       },
       "description": "WithdrawCapacityResponse confirms the backend is no longer advertising."
+    },
+    "WriteBoxFileBody": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Path relative to the box user's home directory, e.g.\n\"attachments/turn-1/brief.md\". Absolute paths, \"..\" segments, an empty\npath and anything under \".ssh\" or \".containarium\" are INVALID_ARGUMENT."
+        },
+        "content": {
+          "type": "string",
+          "format": "byte",
+          "description": "The file's bytes. At most 2 MiB; larger is INVALID_ARGUMENT."
+        },
+        "mode": {
+          "type": "string",
+          "description": "File mode as octal text. Empty means \"0600\"; only \"0600\" and \"0400\" are\naccepted."
+        },
+        "sha256": {
+          "type": "string",
+          "description": "Lowercase hex SHA-256 of content. Optional; when set, the bytes that land\non the box are checked against it before the file appears."
+        }
+      },
+      "description": "WriteBoxFileRequest writes one file into a box user's home directory (#3548)."
+    },
+    "WriteBoxFileResponse": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Absolute path of the file on the box."
+        },
+        "size": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bytes written."
+        },
+        "sha256": {
+          "type": "string",
+          "description": "Lowercase hex SHA-256 of the file as it is on the box."
+        }
+      }
     },
     "WriteFileInSandboxBody": {
       "type": "object",

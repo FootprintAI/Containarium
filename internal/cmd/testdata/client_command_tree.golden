@@ -60,6 +60,7 @@ code egress-policy set
 code install
 code logs
 code pending
+code put-file
 code run
 code runs
 code skill-sets

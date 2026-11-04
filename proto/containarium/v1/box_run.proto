@@ -285,6 +285,33 @@ enum BoxRunStopSignal {
   BOX_RUN_STOP_SIGNAL_SIGKILL = 3;
 }
 
+// WriteBoxFileRequest writes one file into a box user's home directory (#3548).
+message WriteBoxFileRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // Path relative to the box user's home directory, e.g.
+  // "attachments/turn-1/brief.md". Absolute paths, ".." segments, an empty
+  // path and anything under ".ssh" or ".containarium" are INVALID_ARGUMENT.
+  string path = 2;
+  // The file's bytes. At most 2 MiB; larger is INVALID_ARGUMENT.
+  bytes content = 3;
+  // File mode as octal text. Empty means "0600"; only "0600" and "0400" are
+  // accepted.
+  string mode = 4;
+  // Lowercase hex SHA-256 of content. Optional; when set, the bytes that land
+  // on the box are checked against it before the file appears.
+  string sha256 = 5;
+}
+
+message WriteBoxFileResponse {
+  // Absolute path of the file on the box.
+  string path = 1;
+  // Bytes written.
+  int64 size = 2;
+  // Lowercase hex SHA-256 of the file as it is on the box.
+  string sha256 = 3;
+}
+
 // StopBoxRunRequest stops a box run (#2603): SIGTERM, or SIGKILL with force,
 // to the run's whole process group. Idempotent: stopping a run that has
 // already exited signals nothing and succeeds.
