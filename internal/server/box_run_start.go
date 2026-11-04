@@ -378,6 +378,15 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	lock.Lock()
 	defer lock.Unlock()
 
+	// #3510: refused, before the box is touched, while ApplyBoxSkillSets is
+	// changing the box's skills; held until return (the run's record is
+	// written by then) so an apply arriving meanwhile sees this run.
+	releaseGate, err := s.enterBoxRunStart(box)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseGate()
+
 	collision, rotate, err := checkBoxRunCollision(listExec, box, dir, name)
 	if err != nil {
 		return nil, err

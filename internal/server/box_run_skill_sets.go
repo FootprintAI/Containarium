@@ -400,6 +400,31 @@ func boxSkillSetsRunInProgress(boxName string, codeRuns, skillRuns []string) err
 		fmt.Sprintf("%s has a run in progress (%s); its skills are not changed under a run. Retry once the run has ended, or stop it first.", boxName, strings.Join(parts, "; ")))
 }
 
+// boxSkillSetGate is box's gate between ApplyBoxSkillSets and run starts
+// (#3510). An apply holds it for writing from before its run-in-progress check
+// until it returns, which also serializes applies on one box. A run start holds
+// it for reading from before its first touch of the box until the run's record
+// is written, so an apply that arrives meanwhile waits for that start and then
+// sees the run. The run-in-progress check and the install are therefore atomic
+// against every run start.
+func (s *ContainerServer) boxSkillSetGate(box string) *sync.RWMutex {
+	v, _ := s.boxSkillSetLocks.LoadOrStore(box, &sync.RWMutex{})
+	return v.(*sync.RWMutex)
+}
+
+// enterBoxRunStart takes box's gate for a run start, or refuses the start with
+// APPLY_IN_PROGRESS when an apply holds it or is waiting for it: never a wait,
+// per the decision on #3524 (Q3). The caller runs release once the run's
+// record is written (or the start has failed).
+func (s *ContainerServer) enterBoxRunStart(box string) (release func(), err error) {
+	gate := s.boxSkillSetGate(box)
+	if !gate.TryRLock() {
+		return nil, boxSkillSetsRefusal(pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS, box,
+			fmt.Sprintf("%s is applying skill sets (ApplyBoxSkillSets) right now; a run does not start while its skills are being changed. Retry once the apply has returned.", box))
+	}
+	return gate.RUnlock, nil
+}
+
 func quoteAll(names []string) string {
 	q := make([]string, len(names))
 	for i, n := range names {
@@ -452,10 +477,11 @@ func (s *ContainerServer) ApplyBoxSkillSets(ctx context.Context, req *pb.ApplyBo
 		return nil, status.Errorf(codes.FailedPrecondition, "%q is not running; skill sets are applied to a running box", username)
 	}
 	boxName := username + "-container"
-	lockAny, _ := s.boxSkillSetLocks.LoadOrStore(boxName, &sync.Mutex{})
-	lock := lockAny.(*sync.Mutex)
-	lock.Lock()
-	defer lock.Unlock()
+	// Held until return: no run starts between the check below and the install
+	// (#3510); see boxSkillSetGate.
+	gate := s.boxSkillSetGate(boxName)
+	gate.Lock()
+	defer gate.Unlock()
 
 	// A run in progress: a RUNNING code run, or a skill run in this box.
 	out, err := rootExec(boxName, boxRunListScript(s.boxRunDir()))

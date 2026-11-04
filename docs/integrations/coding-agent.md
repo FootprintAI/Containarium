@@ -75,6 +75,17 @@ the error (a `google.rpc.PreconditionFailure` violation type, or the
 never matches on message text. The daemon advertises the call as
 `box_skill_sets` in `SystemInfo.capabilities`.
 
+An agent re-applies a box's sets with the platform MCP tool
+`apply_box_skill_sets` (#3511), a thin wrapper over the same client function
+as `code skill-sets` and the same REST path. Its arguments are `box`,
+`skill_sets` (the complete target list of set ids; an empty array removes
+every set, and there is no `all` literal) and an optional `release`. It reports
+what was installed, removed or left unchanged, and a refusal comes back as
+`refused (RUN_IN_PROGRESS)`, `refused (SET_PREDATES_MANIFEST)` or
+`refused (UNKNOWN_SKILL_SET)` followed by the daemon's message. A bad box name,
+a bad release tag, or a set id that is not `[a-z0-9-]+` is rejected before any
+request is made. It needs the `containers:write` scope.
+
 To re-apply the **bootstrap bundle** on a box that already has its agent
 (a new skill set, a rotated credential, a changed MCP config), use
 `containarium code bootstrap <box> --url <url>` or `--url-cmd '<command>'`
