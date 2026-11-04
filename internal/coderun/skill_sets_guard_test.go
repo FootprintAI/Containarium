@@ -28,6 +28,12 @@ type boxShellConn struct {
 	// beforeClear runs before a stale-marker clear script, onStart inside
 	// process_start: where a test makes a new apply take the marker.
 	beforeClear, onStart func()
+	// shellCalls counts shell_exec calls; from failShellFrom on (1-based, 0
+	// never) each one exits 1 with shellStderr as its stderr.
+	shellCalls, failShellFrom int
+	shellStderr               string
+	// killErr, when set, makes process_kill fail with it.
+	killErr string
 }
 
 func (c *boxShellConn) Initialize(context.Context, mcp.InitializeRequest) (*mcp.InitializeResult, error) {
@@ -40,6 +46,11 @@ func (c *boxShellConn) CallTool(_ context.Context, req mcp.CallToolRequest) (*mc
 	switch req.Params.Name {
 	case "shell_exec":
 		command := args["command"].(string)
+		c.shellCalls++
+		if c.failShellFrom > 0 && c.shellCalls >= c.failShellFrom {
+			reply = "exit_code: 1\ntimeout_seconds: 30\n--- stdout ---\n\n--- stderr ---\n" + c.shellStderr
+			break
+		}
 		if c.beforeClear != nil && strings.Contains(command, "echo removed") {
 			c.beforeClear()
 		}
@@ -52,6 +63,9 @@ func (c *boxShellConn) CallTool(_ context.Context, req mcp.CallToolRequest) (*mc
 		reply = "name: r\npid: 42\ncommand: x\nlog_path: /tmp/r.log\nstarted_at: 2026-11-04T00:00:00Z\n"
 	case "process_kill":
 		c.kills = append(c.kills, fmt.Sprintf("%v force=%v", args["name"], args["force"]))
+		if c.killErr != "" {
+			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{mcp.TextContent{Type: "text", Text: c.killErr}}}, nil
+		}
 		reply = fmt.Sprintf("name: %v\npid: 42\nsignal: SIGKILL\nexited: true\nlog_path: /tmp/r.log\n", args["name"])
 	default:
 		return nil, errors.New("boxShellConn: unexpected tool " + req.Params.Name)
@@ -221,5 +235,147 @@ func TestProcessStart_RefusalAgeIsSane(t *testing.T) {
 		if msg := err.Error(); strings.Contains(msg, " ago") {
 			t.Errorf("started_at %d: refusal %q states an age it cannot know", started, msg)
 		}
+	}
+}
+
+// #3540: a directory, or a symlink to one, at the marker path is a stale
+// marker like any other: it is removed and the run starts with a warning,
+// and the symlink's target is left alone.
+func TestProcessStart_ADirectoryAtTheMarkerPathIsClearedAndTheRunStarts(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		symlink bool
+	}{{"directory", false}, {"symlink to a directory", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			outside := filepath.Join(home, "outside")
+			for _, d := range []string{outside, filepath.Dir(markerPath(home))} {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.symlink {
+				if err := os.Symlink(outside, markerPath(home)); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.MkdirAll(filepath.Join(markerPath(home), "sub"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			conn := &boxShellConn{t: t, home: home}
+			started, err := sessionWith(conn).ProcessStart(context.Background(), "r", "claude -p hi", "", "")
+			if err != nil {
+				t.Fatalf("a directory at the marker path must not refuse the run: %v", err)
+			}
+			if conn.starts != 1 || !strings.Contains(started.Warning, "cleared a stale skill-set apply marker") {
+				t.Fatalf("starts = %d, warning = %q; want one start with the stale-clear warning", conn.starts, started.Warning)
+			}
+			if _, err := os.Lstat(markerPath(home)); !os.IsNotExist(err) {
+				t.Fatalf("the marker path must be cleared: lstat err = %v", err)
+			}
+			if _, err := os.Stat(outside); err != nil {
+				t.Fatalf("a directory outside the marker path must survive: %v", err)
+			}
+		})
+	}
+}
+
+// #3540: a stale marker the box user cannot remove refuses the run with what
+// is wrong and what to do, not as an apply in progress.
+func TestProcessStart_AMarkerThatCannotBeClearedRefusesWithTheRealCause(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes a read-only directory")
+	}
+	home := t.TempDir()
+	writeMarker(t, home, "junk")
+	skills := filepath.Dir(markerPath(home))
+	if err := os.Chmod(skills, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(skills, 0o755) })
+	conn := &boxShellConn{t: t, home: home}
+	_, err := sessionWith(conn).ProcessStart(context.Background(), "r", "claude -p hi", "", "")
+	if !errors.Is(err, ErrSkillSetsApplyMarkerNotCleared) {
+		t.Fatalf("err = %v, want ErrSkillSetsApplyMarkerNotCleared", err)
+	}
+	if errors.Is(err, ErrSkillSetsApplyInProgress) {
+		t.Fatalf("refusal %q reads as an apply in progress; none is", err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, sdlcskills.ApplyMarkerFile) || !strings.Contains(msg, "remove it by hand") {
+		t.Errorf("refusal %q does not name the path and the fix", msg)
+	}
+	if conn.starts != 0 {
+		t.Fatalf("process_start called %d time(s)", conn.starts)
+	}
+}
+
+// #3540 (a surviving mutation of #3539): a stale marker replaced by another
+// stale one on every pass is given up on after three passes, refused as an
+// apply in progress that will settle, never looped on.
+func TestProcessStart_GivesUpAfterThreeReplacedStaleMarkers(t *testing.T) {
+	home := t.TempDir()
+	writeMarker(t, home, `{"version":1,"started_at":1,"expires_at":2}`)
+	clears := 0
+	conn := &boxShellConn{t: t, home: home}
+	conn.beforeClear = func() {
+		clears++
+		// Another stale marker under a new inode, as a rename would leave.
+		tmp := markerPath(home) + ".other"
+		if err := os.WriteFile(tmp, []byte(fmt.Sprintf(`{"version":1,"started_at":1,"expires_at":%d}`, 2+clears)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(tmp, markerPath(home)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := sessionWith(conn).ProcessStart(context.Background(), "r", "claude -p hi", "", "")
+	if !errors.Is(err, ErrSkillSetsApplyInProgress) || !strings.Contains(err.Error(), "kept changing") {
+		t.Fatalf("err = %v, want the kept-changing refusal", err)
+	}
+	if clears != 3 {
+		t.Fatalf("clear attempts = %d, want 3", clears)
+	}
+	if conn.starts != 0 {
+		t.Fatalf("process_start called %d time(s)", conn.starts)
+	}
+}
+
+// #3540 (a surviving mutation of #3539): the check after the start cannot
+// run, so the run keeps going and the start says so, in a fixed message that
+// does not carry the box's stderr to the caller.
+func TestProcessStart_AFailedRecheckKeepsTheRunWithAWarning(t *testing.T) {
+	home := t.TempDir()
+	// shell_exec #1 is the check before the start, #2 the re-check after it.
+	conn := &boxShellConn{t: t, home: home, failShellFrom: 2, shellStderr: "\x1b[31mtenant-controlled text\x1b[0m"}
+	started, err := sessionWith(conn).ProcessStart(context.Background(), "r", "claude -p hi", "", "")
+	if err != nil {
+		t.Fatalf("a re-check that cannot run must not refuse a started run: %v", err)
+	}
+	if conn.starts != 1 || len(conn.kills) != 0 {
+		t.Fatalf("starts = %d, kills = %v; want the run started and not stopped", conn.starts, conn.kills)
+	}
+	if !strings.Contains(started.Warning, "could not re-check for a skill-set apply after the start") {
+		t.Fatalf("warning = %q, want the re-check note", started.Warning)
+	}
+	if strings.Contains(started.Warning, "tenant-controlled") || strings.Contains(started.Warning, "\x1b") {
+		t.Fatalf("warning %q carries the box's stderr", started.Warning)
+	}
+}
+
+// #3540: when the run that had just started under a new apply's marker cannot
+// be stopped, the refusal says so and names the run, so the caller can stop
+// it.
+func TestProcessStart_AFailedKillIsReportedWithTheRunName(t *testing.T) {
+	stubDial(t, nil, errors.New("no reconnect in this test"), nil)
+	home := t.TempDir()
+	conn := &boxShellConn{t: t, home: home, onStart: func() { takeMarker(t, home) }, killErr: "no such run"}
+	_, err := sessionWith(conn).ProcessStart(context.Background(), "r", "claude -p hi", "", "")
+	if !errors.Is(err, ErrSkillSetsApplyInProgress) {
+		t.Fatalf("err = %v, want ErrSkillSetsApplyInProgress", err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, `the run "r" had just started and could not be stopped`) {
+		t.Fatalf("refusal %q does not say the run could not be stopped", msg)
+	}
+	if len(conn.kills) == 0 || conn.kills[0] != "r force=true" {
+		t.Fatalf("process_kill calls = %v, want a forced kill of %q", conn.kills, "r")
 	}
 }

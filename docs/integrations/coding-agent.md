@@ -106,9 +106,12 @@ too early for the apply's own check to see the run. So the SSH path checks
 the marker again right after the run starts. The helper on the box records
 the run before the start returns, so either the apply sees the run and
 refuses, or this second check sees the marker. In the second case the run
-is stopped at once (its log is kept) and refused with the same message,
-ending `... the run "<name>" had just started and was stopped`. If the
-second check cannot run, the run continues and the start prints a warning.
+is stopped at once with SIGKILL (its log is kept, as for any stopped run)
+and refused with the same message, ending `... the run "<name>" had just
+started and was stopped`. If it cannot be stopped, the message ends `... could
+not be stopped: ...` instead; stop it with `containarium code stop`. If the
+second check cannot run, the run continues and the start prints `warning:
+could not re-check for a skill-set apply after the start ...`.
 
 The marker is a lease. The apply writes an expiry 10 minutes ahead (box
 clock) and renews it every 200 seconds while it runs. If the daemon dies
@@ -116,10 +119,19 @@ mid-apply, the marker therefore stops refusing runs within 10 minutes: the
 next run removes the stale marker, starts, and prints `warning: cleared a
 stale skill-set apply marker ...`. Anything else at that path is cleared the
 same way: a file that cannot be read, is larger than 4 KiB, is not the
-marker's JSON, or has an expiry implausibly far ahead. The clear removes the
-file only if it is still the one the check read (same inode, mtime and
-size), and re-checks when it is not, so a marker a new apply wrote in
-between is kept and refuses the run. One limit: if the box clock steps back
+marker's JSON, or has an expiry implausibly far ahead, and also a directory
+or a symlink (the symlink itself is removed; what it points to is not
+touched). The apply's own write likewise replaces whatever is at that path.
+The clear removes the path only if it is still the one the check read (same
+inode, change time and size), and re-checks when it is not, so a marker a new
+apply wrote in between is kept and refuses the run. The comparison and the
+removal are separate steps on the box, so this narrows the race rather than
+closing it: the clear first renames the path aside and puts it back when it
+is not the file checked, so a new apply's marker caught in that instant is
+restored rather than deleted. If the box user cannot remove the stale marker
+(for example a read-only `~/.claude/skills`), the run is refused with `a
+stale skill-set apply marker could not be removed ... remove it by hand`;
+retrying does not help until it is removed. One limit: if the box clock steps back
 by more than about a minute during a live apply, its marker reads as stale
 until the next renewal (at most 200 seconds), and a run started then is not
 refused.
