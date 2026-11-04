@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/connectcore"
+	"github.com/footprintai/containarium/internal/credentials"
 	"github.com/footprintai/containarium/internal/sshkey"
 	"github.com/spf13/cobra"
 )
@@ -148,12 +149,35 @@ func (c *connectAPI) GetContainer(ctx context.Context, box string) (*connectcore
 	var out connectcore.GetContainerResponse
 	st, err := c.do(ctx, http.MethodGet, "/v1/containers/"+url.PathEscape(box), nil, &out)
 	if st == http.StatusNotFound {
-		return nil, fmt.Errorf("box %q not found (check the name, or `containarium list`)", box)
+		return nil, boxNotFoundError(box, c.server, c.token)
 	}
 	if err != nil {
 		return nil, err
 	}
 	return &out.Container, nil
+}
+
+// boxNotFoundError names the scope that was searched (#3512): the server and,
+// when the credentials file records one for it, the organization and account
+// that session is bound to. A box in another tenant or on another server
+// otherwise reads as one that does not exist. Best-effort, like resolveOrgID:
+// an unreadable credentials file just drops the org clause. The stored
+// identity is named only when token (the one the request used) is that
+// login's: a --token / CONTAINARIUM_TOKEN override may belong to anyone.
+func boxNotFoundError(box, server, token string) error {
+	scope := ""
+	if path, err := credentials.DefaultPath(); err == nil {
+		if cf, err := credentials.Load(path); err == nil {
+			if creds, ok := cf.Get(server); ok && creds.OrgID != "" && creds.Token == token {
+				scope = "org " + creds.OrgID
+				if creds.UserEmail != "" {
+					scope += ", " + creds.UserEmail
+				}
+				scope += "; "
+			}
+		}
+	}
+	return fmt.Errorf("box %q not found on %s (%scheck the name, `containarium list`, or `containarium whoami --server %s`)", box, server, scope, server)
 }
 
 func (c *connectAPI) AuthorizeKey(ctx context.Context, box, pub string) error {

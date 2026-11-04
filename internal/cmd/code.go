@@ -593,23 +593,7 @@ func sdlcSkillsInstallScript(release string, sets sdlcskills.SkillSets) string {
 // or backslash cannot be anything but a path segment there.
 var releaseTagPattern = sdlcskills.ReleaseTagPattern
 
-// bootstrapScript fetches url, unpacks it into a throwaway directory, and
-// runs its apply.sh as the box user — the seam a team uses to drop in skills,
-// an MCP config, or dotfiles without this command growing a flag per item.
-// No sudo anywhere: a bootstrap bundle is the user's own content and gets the
-// user's own privileges.
-func bootstrapScript(url string) string {
-	return `set -e
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-curl -fsSL ` + coderun.ShellQuoteSingle(url) + ` | tar -xz -C "$tmp"
-if [ ! -f "$tmp/apply.sh" ]; then
-  echo "bootstrap bundle has no apply.sh at its root" >&2
-  exit 4
-fi
-chmod +x "$tmp/apply.sh"
-cd "$tmp" && ./apply.sh`
-}
+// bootstrapScript and the preflight that guards it are in code_bootstrap.go.
 
 // claudeVerifyScript replaces #1673's non-interactive prompt, which could not
 // run without a credential this command no longer supplies.
@@ -696,6 +680,16 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// #3512: a bundle URL may be one-shot. Confirm the SSH path and the bundle
+	// step's needs before the first script, so a dead host or a read-only
+	// home fails here, with nothing installed and the URL untouched.
+	bootstrapURL := strings.TrimSpace(codeBootstrapURL)
+	if bootstrapURL != "" {
+		if err := bootstrapPreflight(ctx, kw, target, privPath, box); err != nil {
+			return err
+		}
+	}
+
 	if _, err := run(plan.engine.InstallScript(installOpts)); err != nil {
 		return fmt.Errorf("install %s on %q: %w", plan.engine.Name(), box, err)
 	}
@@ -715,9 +709,9 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(diag, "✓ SDLC skills (%s) installed on %s (from %s)\n", skillSets, box, release)
 	}
 
-	if url := strings.TrimSpace(codeBootstrapURL); url != "" {
-		if _, err := run(bootstrapScript(url)); err != nil {
-			return fmt.Errorf("apply bootstrap bundle on %q: %w", box, err)
+	if bootstrapURL != "" {
+		if err := applyBootstrapBundle(box, bootstrapURL, run); err != nil {
+			return err
 		}
 		fmt.Fprintf(diag, "✓ bootstrap bundle applied on %s\n", box)
 	}
