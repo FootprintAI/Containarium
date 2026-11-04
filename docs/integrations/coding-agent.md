@@ -82,6 +82,15 @@ while an apply is installing on the box is refused at once with
 `BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS` and whose `subject` is the box).
 The start does not queue or wait; retry it once the apply has returned.
 
+An apply that arrives while the box's gate is busy waits for it, at most 30
+seconds, and gives up at once if its caller cancels. On the cap it changes
+nothing and is refused with `FAILED_PRECONDITION`: `APPLY_IN_PROGRESS` when
+another apply on the box is still installing, `RUN_IN_PROGRESS` when run starts
+kept the gate busy (the message names the starts still in flight at that moment;
+a steady stream of overlapping starts can starve an apply for the whole cap).
+Retry either one shortly. Note that `RUN_IN_PROGRESS` on this path can mean a
+run start, not only a live run. See [BOX-RUN-API.md](../BOX-RUN-API.md).
+
 A run started over SSH never reaches the daemon, so it is kept out another
 way (#3529). A run started with `containarium code run` (agent or
 `--command`) or the MCP `code_run` tool is refused before it launches, with

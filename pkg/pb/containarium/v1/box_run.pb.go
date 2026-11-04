@@ -337,7 +337,8 @@ func (BoxRunCheckoutDisposition) EnumDescriptor() ([]byte, []int) {
 // INVALID_ARGUMENT. The violation's subject names the set or the box.
 // APPLY_IN_PROGRESS is the one value carried the other way round: by a
 // StartBoxRun refused because an ApplyBoxSkillSets call is changing the box's
-// skills at that moment (the mirror of RUN_IN_PROGRESS).
+// skills at that moment (the mirror of RUN_IN_PROGRESS), and by an
+// ApplyBoxSkillSets refused because another apply holds the box.
 type BoxSkillSetsRefusal int32
 
 const (
@@ -355,10 +356,12 @@ const (
 	// (FAILED_PRECONDITION). Keep the set in the list: that re-installs and
 	// records it, after which a later call can remove it.
 	BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_SET_PREDATES_MANIFEST BoxSkillSetsRefusal = 3
-	// StartBoxRun only: an ApplyBoxSkillSets call is installing skill sets on
-	// the box (FAILED_PRECONDITION; the subject is the box). The run is refused
-	// before it touches the box, so it never reads a half-written skills tree;
-	// retry once the apply has returned. There is no queueing and no wait.
+	// An ApplyBoxSkillSets call is installing skill sets on the box
+	// (FAILED_PRECONDITION; the subject is the box). Returned to a StartBoxRun,
+	// which is refused before it touches the box, so it never reads a
+	// half-written skills tree; there is no queueing and no wait. Also returned
+	// to a second ApplyBoxSkillSets that could not take the box's gate within 30s
+	// because the first apply still held it. Retry once the apply has returned.
 	BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS BoxSkillSetsRefusal = 4
 )
 

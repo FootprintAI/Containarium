@@ -45,6 +45,24 @@ The reason is typed, not message text: the error's details carry a
 value name) and whose `subject` is the box. A caller should treat it as
 transient and retry the start once the apply has returned.
 
+### The apply's own wait for the box
+
+`ApplyBoxSkillSets` shares a per-box gate with run starts, and applies on one
+box are serialized by it. An apply that finds the gate busy waits for it, at
+most 30 seconds, and stops waiting at once if the caller cancels (the call
+returns `CANCELED`). A waiting apply does not make run starts fail: only an
+apply that holds the gate does. When the 30 seconds pass, the apply changes
+nothing and is refused with `FAILED_PRECONDITION`, and the typed reason says
+what held the gate:
+
+- `APPLY_IN_PROGRESS` when another `ApplyBoxSkillSets` call on the box was
+  still installing. Retry once it has returned.
+- `RUN_IN_PROGRESS` when run starts held it. The message names the starts still
+  in flight at that moment, which is a snapshot, not a claim that they ran for
+  30 seconds. A steady stream of overlapping run starts can keep an apply off
+  the gate for the whole cap, because a waiting apply does not queue ahead of
+  them; retry shortly.
+
 ## Structured output: `structured_output`
 
 With `structured_output: true` (Claude Code boxes only; other engines are

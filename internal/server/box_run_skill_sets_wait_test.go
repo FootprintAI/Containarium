@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/pkg/core/sdlcskills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -82,9 +83,11 @@ func TestApplyBoxSkillSets_RefusesAHeldRunStartPastTheCap(t *testing.T) {
 		t.Fatalf("the held run start must complete: %v", err)
 	}
 	// The refused apply did not leak the gate.
-	if err := s.lockBoxSkillSetGate(context.Background(), "alice-container"); err != nil {
+	unlock, err := s.lockBoxSkillSetGate(context.Background(), "alice-container")
+	if err != nil {
 		t.Fatalf("gate still held after the refused apply: %v", err)
 	}
+	unlock()
 }
 
 func TestApplyBoxSkillSets_StopsWaitingWhenTheContextIsCancelled(t *testing.T) {
@@ -154,5 +157,91 @@ func TestStartBoxRun_NotRefusedWhileAnApplyOnlyWaits(t *testing.T) {
 	}
 	if *installs != 0 {
 		t.Errorf("installer ran %d times", *installs)
+	}
+}
+
+// #3537: an apply that cannot take the gate because ANOTHER APPLY holds it is
+// refused as APPLY_IN_PROGRESS, not as a run start that never finished.
+func TestApplyBoxSkillSets_RefusesAsApplyInProgressWhileAnotherApplyHoldsTheGate(t *testing.T) {
+	shortGateWait(t, 100*time.Millisecond)
+	s, _, _ := skillSetServer(t, t.TempDir(), pb.ContainerState_CONTAINER_STATE_RUNNING)
+	inInstall, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	realInstall := s.boxSkillSetsInstall
+	s.boxSkillSetsInstall = func(box, user, rel string, sets sdlcskills.SkillSets) (string, error) {
+		once.Do(func() { close(inInstall) })
+		<-release
+		return realInstall(box, user, rel, sets)
+	}
+	first := make(chan error, 1)
+	go func() {
+		_, err := apply(t, s, "qa")
+		first <- err
+	}()
+	select {
+	case <-inInstall:
+	case err := <-first:
+		t.Fatalf("first apply returned before its install: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("first apply never reached its install")
+	}
+
+	_, err := apply(t, s, "qa")
+	reason, subject := skillSetRefusalOf(t, err)
+	if status.Code(err) != codes.FailedPrecondition || reason != pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS || subject != "alice-container" {
+		t.Fatalf("err = %v (reason %v, subject %q), want FAILED_PRECONDITION APPLY_IN_PROGRESS on alice-container", err, reason, subject)
+	}
+	if msg := status.Convert(err).Message(); strings.Contains(msg, "()") || strings.Contains(msg, "run start") {
+		t.Errorf("message %q talks about run starts although none is involved", msg)
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	// Once the first apply returns, the gate is free and no apply is recorded.
+	unlock, err := s.lockBoxSkillSetGate(context.Background(), "alice-container")
+	if err != nil {
+		t.Fatalf("gate still held after both applies: %v", err)
+	}
+	unlock()
+}
+
+// The cap message does not claim the named starts "did not finish" and never
+// prints an empty parenthesis.
+func TestApplyBoxSkillSets_CapMessageIsTruthfulAboutRunStarts(t *testing.T) {
+	shortGateWait(t, 100*time.Millisecond)
+	s, _, _ := skillSetServer(t, t.TempDir(), pb.ContainerState_CONTAINER_STATE_RUNNING)
+	release, started := holdFirstRunStart(t, s, "stuck-start")
+	_, err := apply(t, s, "qa")
+	msg := status.Convert(err).Message()
+	if strings.Contains(msg, "did not finish") || strings.Contains(msg, "()") {
+		t.Errorf("message %q makes a claim the holder snapshot cannot support", msg)
+	}
+	if !strings.Contains(msg, `"stuck-start"`) {
+		t.Errorf("message %q does not name the start still in flight", msg)
+	}
+	close(release)
+	<-started
+}
+
+// A run start that returns is no longer a holder, and its box leaves no empty
+// entry behind.
+func TestEnterBoxRunStart_ReleaseRemovesTheHolder(t *testing.T) {
+	s, _, _ := skillSetServer(t, t.TempDir(), pb.ContainerState_CONTAINER_STATE_RUNNING)
+	release, err := s.enterBoxRunStart("alice-container", "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.boxRunStarts.names("alice-container"); len(got) != 1 || got[0] != "r1" {
+		t.Fatalf("holders while held = %v, want [r1]", got)
+	}
+	release()
+	if got := s.boxRunStarts.names("alice-container"); len(got) != 0 {
+		t.Errorf("holders after release = %v, want none", got)
+	}
+	s.boxRunStarts.mu.Lock()
+	defer s.boxRunStarts.mu.Unlock()
+	if _, ok := s.boxRunStarts.byBox["alice-container"]; ok {
+		t.Errorf("empty per-box holder map left behind")
 	}
 }
