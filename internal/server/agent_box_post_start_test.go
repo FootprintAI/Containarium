@@ -35,6 +35,19 @@ type postStartBoxes struct {
 	// onPostStart, when set, runs inside the post_start exec, before it
 	// returns.
 	onPostStart func()
+
+	// exitCodes, when not empty, gives the exit status of each post_start
+	// in turn (exitCode applies once it runs out).
+	exitCodes []int
+	// inFlight and maxConcurrent count the post_starts running at once.
+	inFlight      int
+	maxConcurrent int
+	// pendingAtEnd records, per post_start (in start order), whether the
+	// box still carried the marker when that post_start returned (#3555).
+	pendingAtEnd []bool
+	// getCalls counts Get calls; setConfigErr, when set, fails SetConfig.
+	getCalls     int
+	setConfigErr error
 }
 
 func newPostStartBoxes(exitCode int) *postStartBoxes {
@@ -59,10 +72,25 @@ func (b *postStartBoxes) ExecWithExitCode(name string, command []string) (string
 		return "", "", 0, nil
 	}
 	b.mu.Lock()
+	call := b.postStartRuns
 	b.postStartRuns++
+	b.inFlight++
+	if b.inFlight > b.maxConcurrent {
+		b.maxConcurrent = b.inFlight
+	}
 	b.pendingAtRun = append(b.pendingAtRun, b.boxes[name][incus.PostStartPendingKey] == incus.PostStartPendingValue)
+	b.pendingAtEnd = append(b.pendingAtEnd, false)
 	hook, code := b.onPostStart, b.exitCode
+	if len(b.exitCodes) > 0 {
+		code, b.exitCodes = b.exitCodes[0], b.exitCodes[1:]
+	}
 	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		b.inFlight--
+		b.pendingAtEnd[call] = b.boxes[name][incus.PostStartPendingKey] == incus.PostStartPendingValue
+		b.mu.Unlock()
+	}()
 	if hook != nil {
 		hook()
 	}
@@ -78,6 +106,7 @@ func (b *postStartBoxes) PushFile(string, string, io.ReadSeeker, string) error {
 func (b *postStartBoxes) Get(username string) (*incus.ContainerInfo, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.getCalls++
 	name := username + "-container"
 	cfg, ok := b.boxes[name]
 	if !ok {
@@ -93,6 +122,9 @@ func (b *postStartBoxes) Get(username string) (*incus.ContainerInfo, error) {
 func (b *postStartBoxes) SetConfig(name, key, value string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.setConfigErr != nil {
+		return b.setConfigErr
+	}
 	cfg, ok := b.boxes[name]
 	if !ok {
 		return errors.New("not found")
@@ -120,6 +152,12 @@ func (b *postStartBoxes) pending(name string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.boxes[name][incus.PostStartPendingKey] == incus.PostStartPendingValue
+}
+
+func (b *postStartBoxes) gets() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.getCalls
 }
 
 func (b *postStartBoxes) setExitCode(code int) {
