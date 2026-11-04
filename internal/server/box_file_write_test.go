@@ -174,6 +174,7 @@ func TestWriteBoxFile_RefusesBadInputBeforeTouchingTheBox(t *testing.T) {
 		{"ssh dir", &pb.WriteBoxFileRequest{Path: ".ssh/authorized_keys", Content: []byte("x")}},
 		{"containarium dir", &pb.WriteBoxFileRequest{Path: ".containarium/code.json", Content: []byte("x")}},
 		{"dotted ssh via clean", &pb.WriteBoxFileRequest{Path: "a/../.ssh/x", Content: []byte("x")}},
+		{"segment too long for the temp name", &pb.WriteBoxFileRequest{Path: "d/" + strings.Repeat("a", 201), Content: []byte("x")}},
 		{"nul byte", &pb.WriteBoxFileRequest{Path: "a\x00b", Content: []byte("x")}},
 		{"newline", &pb.WriteBoxFileRequest{Path: "a\nb", Content: []byte("x")}},
 		{"too big", &pb.WriteBoxFileRequest{Path: "big", Content: big}},

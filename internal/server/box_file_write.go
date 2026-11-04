@@ -35,8 +35,9 @@ const (
 	// DaemonCapBoxFiles: the WriteBoxFile RPC (#3548).
 	DaemonCapBoxFiles = "box_files"
 
-	maxBoxFilePathBytes    = 1024
-	maxBoxFileSegmentBytes = 255
+	maxBoxFilePathBytes = 1024
+	// Leaves room for the ".cbf.<pid>" suffix of the temp file (NAME_MAX is 255).
+	maxBoxFileSegmentBytes = 200
 	boxFileDefaultMode     = "0600"
 	boxFileStageDefaultDir = "/tmp"
 	// Printed on the script's stderr so the daemon can tell a refusal from a failure.
