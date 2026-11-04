@@ -40,6 +40,9 @@ func GetVersion() string {
 	return Version
 }
 
+// ReleaseTag is a red-phase stub (#3542).
+func ReleaseTag() string { return "" }
+
 // ClientVersionHeader is the HTTP header the CLI / MCP client sets to
 // advertise its own version to the daemon, e.g.
 //
