@@ -153,13 +153,37 @@ verification of a pushed commit.
 The CLI counterpart is `containarium code run <box> --command '<text>'
 [--timeout 15m] [--name <run>]` (the SSH path, as the box's own user).
 
+## Putting a file on the box: `WriteBoxFile`
+
+`WriteBoxFile` (`PUT /v1/containers/{username}/files`, `containarium code
+put-file`) writes one file into the box user's home so a run can read it. Same
+access as `StartBoxRun`.
+
+- `path` is relative to the home directory and in canonical form: no leading
+  `/`, no `..`, `.`, empty or trailing segment, no control character, and
+  nothing under `.ssh` or `.containarium`. Anything else is `INVALID_ARGUMENT`,
+  before the box is touched.
+- `content` is at most 2 MiB. `mode` is `0600` (default) or `0400`.
+- The bytes go through the container file API into a root-made staging file with
+  an unguessable name, are handed to the box user, and the box user's own script
+  moves them into place. The final write therefore reaches only what the box
+  user could already write, whatever links the user has set up in the home.
+- The file appears whole or not at all (rename), replacing an existing file. A
+  symlink at the path is replaced, not written through. A directory at the path
+  is `FAILED_PRECONDITION`. Parent directories are created `0700`.
+- `sha256` (optional, lowercase hex) is checked over the bytes on the box before
+  the rename. A mismatch leaves no file and is `DATA_LOSS`. The response carries
+  the absolute path, the size and the checksum of what is on the box.
+
+The capability name is `box_files`.
+
 ## Feature detection
 
 The REST gateway rejects request fields it does not know, so a caller must not
 send `run_name`, `structured_output`, `model` or `command` to a daemon that
 predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the optional
 features a daemon supports: `box_run_name`, `box_run_structured_output`,
-`box_run_model` and `box_run_command`. An older daemon does
+`box_run_model`, `box_run_command` and `box_files`. An older daemon does
 not send the field at all; treat a missing name as unsupported. Names are only
 added. `GetSystemInfo` requires an admin principal. A caller that cannot read it
 can gate on the daemon version instead: the first release that contains these

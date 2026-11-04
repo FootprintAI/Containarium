@@ -1455,8 +1455,9 @@ type SystemInfo struct {
 	// added. Currently: "box_run_name" (StartBoxRunRequest.run_name),
 	// "box_run_structured_output" (StartBoxRunRequest.structured_output),
 	// "box_run_model" (StartBoxRunRequest.model, BoxRun.model),
-	// "box_run_command" (StartBoxRunRequest.command, timeout_seconds) and
-	// "box_skill_sets" (the ApplyBoxSkillSets RPC, #3374).
+	// "box_run_command" (StartBoxRunRequest.command, timeout_seconds),
+	// "box_skill_sets" (the ApplyBoxSkillSets RPC, #3374) and "box_files" (the
+	// WriteBoxFile RPC, #3548).
 	// An open string set rather than an enum so a newer daemon's extra names
 	// never fail to decode in an older client.
 	Capabilities []string `protobuf:"bytes,30,rep,name=capabilities,proto3" json:"capabilities,omitempty"`

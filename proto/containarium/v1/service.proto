@@ -582,6 +582,24 @@ service ContainerService {
     };
   }
 
+  // WriteBoxFile writes one file into a box user's home directory through the
+  // container file API, never through a shell (#3548): the way a caller puts
+  // input on a box for a run to read, without SSH and without embedding the
+  // bytes in a `command` run. Same access as StartBoxRun: ssh:write, and the
+  // box owner or one of its collaborators. Advertised as the "box_files"
+  // capability.
+  rpc WriteBoxFile(WriteBoxFileRequest) returns (WriteBoxFileResponse) {
+    option (google.api.http) = {
+      put: "/v1/containers/{username}/files"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Write a file into a box";
+      description: "Writes one file under the box user's home directory. The path is relative to the home directory and must stay inside it (no absolute path, no `..`, nothing under .ssh or .containarium). Parent directories are created with mode 0700. The file is written to a temporary name and renamed into place, so a reader never sees a partial file, and it is owned by the box user with mode 0600 (or 0400). When sha256 is set it is checked against the bytes on the box before the rename; a mismatch leaves no file and is DATA_LOSS. Content is capped at 2 MiB per file. An existing regular file is replaced; a directory at the path is FAILED_PRECONDITION. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
   // SweepBoxRunCheckouts runs the per-run checkout sweep once on one box
   // (#3296): removes directories directly under the owner's and the run
   // user's ~/work named <repo>-run-<8 hex> that are older than the daemon's

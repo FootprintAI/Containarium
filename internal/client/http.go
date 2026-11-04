@@ -1604,6 +1604,35 @@ func (c *HTTPClient) ApplyBoxSkillSets(req *pb.ApplyBoxSkillSetsRequest) (*pb.Ap
 	return out, nil
 }
 
+// WriteBoxFile is the REST form of GRPCClient.WriteBoxFile (#3548). A 404 with
+// no gateway error body (a daemon too old to expose the route) maps to
+// codes.Unimplemented, as on the gRPC transport.
+func (c *HTTPClient) WriteBoxFile(req *pb.WriteBoxFileRequest) (*pb.WriteBoxFileResponse, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), writeBoxFileTimeout)
+	defer cancel()
+	resp, err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v1/containers/%s/files", url.PathEscape(req.GetUsername())), body)
+	if err != nil {
+		return nil, fmt.Errorf("write box file: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound && !bytes.Contains(bodyBytes, []byte(`"code"`)) {
+		return nil, status.Errorf(codes.Unimplemented, "server does not expose WriteBoxFile (HTTP 404)")
+	}
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "write box file")
+	}
+	out := &pb.WriteBoxFileResponse{}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // TailBoxRunLog reads one window of a box run's log via HTTP (#2123).
 func (c *HTTPClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

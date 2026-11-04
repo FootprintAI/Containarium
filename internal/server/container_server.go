@@ -158,6 +158,12 @@ type ContainerServer struct {
 	// boxRunExec's existing tests do for List/Tail.
 	boxRunStartExec boxRunStartFunc
 
+	// WriteBoxFile (#3548, box_file_write.go). boxFileWrite is the file API
+	// seam (nil: the container manager's WriteFile) and boxFileStageDir where
+	// the root-made staging file goes (empty: /tmp); tests set both.
+	boxFileWrite    boxFileWriteFunc
+	boxFileStageDir string
+
 	// approvalSecret is what box approval keys are derived from (#2184,
 	// box_run_inputs.go): the daemon's JWT secret, set by DualServer. Nil
 	// leaves the approval RPCs Unavailable. runInputConfirmWait is a test

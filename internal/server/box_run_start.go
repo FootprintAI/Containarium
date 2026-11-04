@@ -707,11 +707,12 @@ const (
 	DaemonCapBoxRunCommand = "box_run_command"
 	// DaemonCapRunUsage: BoxRun.usage, RunAgentSkillResponse.usage and CrewRun.usage (#3467).
 	DaemonCapRunUsage = "run_usage"
+	// DaemonCapBoxFiles (the WriteBoxFile RPC, #3548) is declared in box_file_write.go.
 )
 
 // daemonCapabilities is the list GetSystemInfo reports.
 func daemonCapabilities() []string {
-	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxSkillSets}
+	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxSkillSets, DaemonCapBoxFiles}
 }
 
 // boxRunNameCollidesWithDerivedFile reports whether name would alias a file or
