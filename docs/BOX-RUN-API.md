@@ -30,6 +30,21 @@ A caller that cannot rely on `code` being free sets `run_name`:
 The CLI counterpart is the existing `containarium code run <box> --name <name>`
 (the SSH path); there is no separate flag.
 
+## Refused while skill sets are being applied: `APPLY_IN_PROGRESS`
+
+A `StartBoxRun` that arrives while `ApplyBoxSkillSets` is installing skill sets
+on the same box is refused at once with `FAILED_PRECONDITION`, before anything
+on the box is touched (a finished run of the same name is not rotated). The
+daemon does not queue the start or wait for the apply, so a run never reads a
+half-written skills tree. It is the mirror of the apply's own `RUN_IN_PROGRESS`
+refusal.
+
+The reason is typed, not message text: the error's details carry a
+`google.rpc.PreconditionFailure` whose violation `type` is
+`BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS` (the `BoxSkillSetsRefusal` enum
+value name) and whose `subject` is the box. A caller should treat it as
+transient and retry the start once the apply has returned.
+
 ## Structured output: `structured_output`
 
 With `structured_output: true` (Claude Code boxes only; other engines are

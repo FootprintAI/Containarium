@@ -75,6 +75,13 @@ the error (a `google.rpc.PreconditionFailure` violation type, or the
 never matches on message text. The daemon advertises the call as
 `box_skill_sets` in `SystemInfo.capabilities`.
 
+The refusal runs the other way too: a run start (`StartBoxRun`) that arrives
+while an apply is installing on the box is refused at once with
+`FAILED_PRECONDITION` and the typed reason `APPLY_IN_PROGRESS` (a
+`google.rpc.PreconditionFailure` violation whose `type` is
+`BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS` and whose `subject` is the box).
+The start does not queue or wait; retry it once the apply has returned.
+
 An agent re-applies a box's sets with the platform MCP tool
 `apply_box_skill_sets` (#3511), a thin wrapper over the same client function
 as `code skill-sets` and the same REST path. Its arguments are `box`,
