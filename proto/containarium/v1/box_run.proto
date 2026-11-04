@@ -400,6 +400,9 @@ message SweepBoxRunCheckoutsResponse {
 // google.rpc.PreconditionFailure violation of a FAILED_PRECONDITION, or as
 // the `reason` of the google.rpc.BadRequest field violation of an
 // INVALID_ARGUMENT. The violation's subject names the set or the box.
+// APPLY_IN_PROGRESS is the one value carried the other way round: by a
+// StartBoxRun refused because an ApplyBoxSkillSets call is changing the box's
+// skills at that moment (the mirror of RUN_IN_PROGRESS).
 enum BoxSkillSetsRefusal {
   BOX_SKILL_SETS_REFUSAL_UNSPECIFIED = 0;
   // A requested set id is not defined in the daemon's skill-set lock
@@ -415,6 +418,11 @@ enum BoxSkillSetsRefusal {
   // (FAILED_PRECONDITION). Keep the set in the list: that re-installs and
   // records it, after which a later call can remove it.
   BOX_SKILL_SETS_REFUSAL_SET_PREDATES_MANIFEST = 3;
+  // StartBoxRun only: an ApplyBoxSkillSets call is installing skill sets on
+  // the box (FAILED_PRECONDITION; the subject is the box). The run is refused
+  // before it touches the box, so it never reads a half-written skills tree;
+  // retry once the apply has returned. There is no queueing and no wait.
+  BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS = 4;
 }
 
 // BoxSkillSetChange is what one call did for one skill set.

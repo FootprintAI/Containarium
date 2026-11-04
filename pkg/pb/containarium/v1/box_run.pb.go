@@ -335,6 +335,9 @@ func (BoxRunCheckoutDisposition) EnumDescriptor() ([]byte, []int) {
 // google.rpc.PreconditionFailure violation of a FAILED_PRECONDITION, or as
 // the `reason` of the google.rpc.BadRequest field violation of an
 // INVALID_ARGUMENT. The violation's subject names the set or the box.
+// APPLY_IN_PROGRESS is the one value carried the other way round: by a
+// StartBoxRun refused because an ApplyBoxSkillSets call is changing the box's
+// skills at that moment (the mirror of RUN_IN_PROGRESS).
 type BoxSkillSetsRefusal int32
 
 const (
@@ -352,6 +355,11 @@ const (
 	// (FAILED_PRECONDITION). Keep the set in the list: that re-installs and
 	// records it, after which a later call can remove it.
 	BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_SET_PREDATES_MANIFEST BoxSkillSetsRefusal = 3
+	// StartBoxRun only: an ApplyBoxSkillSets call is installing skill sets on
+	// the box (FAILED_PRECONDITION; the subject is the box). The run is refused
+	// before it touches the box, so it never reads a half-written skills tree;
+	// retry once the apply has returned. There is no queueing and no wait.
+	BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS BoxSkillSetsRefusal = 4
 )
 
 // Enum value maps for BoxSkillSetsRefusal.
@@ -361,12 +369,14 @@ var (
 		1: "BOX_SKILL_SETS_REFUSAL_UNKNOWN_SKILL_SET",
 		2: "BOX_SKILL_SETS_REFUSAL_RUN_IN_PROGRESS",
 		3: "BOX_SKILL_SETS_REFUSAL_SET_PREDATES_MANIFEST",
+		4: "BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS",
 	}
 	BoxSkillSetsRefusal_value = map[string]int32{
 		"BOX_SKILL_SETS_REFUSAL_UNSPECIFIED":           0,
 		"BOX_SKILL_SETS_REFUSAL_UNKNOWN_SKILL_SET":     1,
 		"BOX_SKILL_SETS_REFUSAL_RUN_IN_PROGRESS":       2,
 		"BOX_SKILL_SETS_REFUSAL_SET_PREDATES_MANIFEST": 3,
+		"BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS":     4,
 	}
 )
 
@@ -2698,12 +2708,13 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	")BOX_RUN_CHECKOUT_DISPOSITION_KEPT_SYMLINK\x10\x06\x123\n" +
 	"/BOX_RUN_CHECKOUT_DISPOSITION_KEPT_NOT_DIRECTORY\x10\a\x12-\n" +
 	")BOX_RUN_CHECKOUT_DISPOSITION_KEPT_CHANGED\x10\b\x12.\n" +
-	"*BOX_RUN_CHECKOUT_DISPOSITION_REMOVE_FAILED\x10\t*\xc9\x01\n" +
+	"*BOX_RUN_CHECKOUT_DISPOSITION_REMOVE_FAILED\x10\t*\xf7\x01\n" +
 	"\x13BoxSkillSetsRefusal\x12&\n" +
 	"\"BOX_SKILL_SETS_REFUSAL_UNSPECIFIED\x10\x00\x12,\n" +
 	"(BOX_SKILL_SETS_REFUSAL_UNKNOWN_SKILL_SET\x10\x01\x12*\n" +
 	"&BOX_SKILL_SETS_REFUSAL_RUN_IN_PROGRESS\x10\x02\x120\n" +
-	",BOX_SKILL_SETS_REFUSAL_SET_PREDATES_MANIFEST\x10\x03*M\n" +
+	",BOX_SKILL_SETS_REFUSAL_SET_PREDATES_MANIFEST\x10\x03\x12,\n" +
+	"(BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS\x10\x04*M\n" +
 	"\fRunInputKind\x12\x1e\n" +
 	"\x1aRUN_INPUT_KIND_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19RUN_INPUT_KIND_PERMISSION\x10\x01*i\n" +
