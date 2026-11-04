@@ -2,8 +2,10 @@ package version
 
 import (
 	"fmt"
+	"regexp"
 	"runtime"
 	"runtime/debug"
+	"strings"
 )
 
 var (
@@ -40,8 +42,28 @@ func GetVersion() string {
 	return Version
 }
 
-// ReleaseTag is a red-phase stub (#3542).
-func ReleaseTag() string { return "" }
+// releaseVersion is the version shape a release tag carries, without its v:
+// MAJOR.MINOR.PATCH[-prerelease] — the same shape
+// scripts/ci/validate-release-version.sh accepts before anything is tagged
+// or published.
+var releaseVersion = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$`)
+
+// ReleaseTag returns the git/registry release tag of this build: "v" +
+// Version (e.g. "v0.129.0"; a Version that already carries the v is not
+// prefixed twice). Release images are tagged with it (sidecars.yml). A
+// Version that is not a release version (a `VERSION=dev` build, an empty
+// one) has no tag and returns "", so nothing composes a reference that was
+// never published.
+//
+// A plain `go build` between releases reports the constant above, the last
+// release cut, so it names a tag that exists.
+func ReleaseTag() string {
+	v := strings.TrimPrefix(Version, "v")
+	if !releaseVersion.MatchString(v) {
+		return ""
+	}
+	return "v" + v
+}
 
 // ClientVersionHeader is the HTTP header the CLI / MCP client sets to
 // advertise its own version to the daemon, e.g.
