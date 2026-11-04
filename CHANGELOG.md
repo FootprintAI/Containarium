@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.129.0] - 2026-11-04
+
+
+### Added
+
+- **MCP tool `apply_box_skill_sets` re-applies a box's SDLC skill sets** (#3511).
+  A thin wrapper over the function `containarium code skill-sets` calls, so an
+  agent can make a box's installed sets exactly a target list (an empty list
+  removes every set) at an optional release. It reports what was installed,
+  removed or unchanged; the typed refusals `RUN_IN_PROGRESS`,
+  `SET_PREDATES_MANIFEST` and `UNKNOWN_SKILL_SET` are returned with their
+  reason, now also over the REST transport, which previously dropped the error
+  details. Invalid input is rejected before any request is made.
+- **`containarium code bootstrap <box>` re-applies a bootstrap bundle without re-installing the agent** (#3512).
+  It runs only the bundle step of `code install --bootstrap-url`: no engine,
+  agent-box or skills reinstall, and `~/.containarium/code.json` is left
+  alone. The URL comes from `--url`, or from `--url-cmd '<command>'`, which
+  runs through your shell with `CONTAINARIUM_BOX` set and prints the URL on
+  its first line; a hook still running after 30s is killed. The hook runs
+  only after the SSH preflight has confirmed that the box is reachable,
+  accepts your key, and has a writable home, `curl` and `tar`. So a one-shot
+  URL is not requested for a box that fails those checks, though the fetch
+  itself can still fail afterwards. `--url` and `--url-cmd` together is an
+  error. See
+  `docs/integrations/coding-agent.md`.
+
+### Changed
+
+- **`code install --bootstrap-url` checks the box before it uses the URL, and says whether a failed bundle step spent it** (#3512).
+  A bundle URL may be one-shot. Before the first install script, one silent
+  SSH round trip confirms the box is reachable, accepts the key, has a
+  writable home and a temp directory, and has `curl` and `tar`; a failure
+  there reports that nothing was requested or applied. The bundle step now
+  fetches and applies separately. A download that never reached the server
+  (host not resolved, connection refused) reports that the URL was not
+  consumed and a retry is safe. A download that reached the server and then
+  failed (an HTTP error such as 404 or 410, or a broken transfer) reports
+  that the URL may already be consumed: if a retry fails, request a new one.
+  A bundle with no `apply.sh` or a failing `apply.sh` reports that the URL is
+  spent and a new one must be requested. The URL is never printed. "box not found" now names the server
+  that was asked and, when your login records one, the organization and
+  account it is bound to.
+
+### Fixed
+
+- **A run no longer starts while `ApplyBoxSkillSets` is installing skills** (#3510).
+  `StartBoxRun` (engine and command runs) is refused with `FAILED_PRECONDITION`
+  and the typed reason `BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS` naming the box
+  while an apply on that box is in flight, before the run touches the box, so it
+  never reads or stages a half-written `~/.claude/skills` tree. Retry once the
+  apply has returned; there is no queueing. An apply that arrives while a run is
+  starting waits for that start to finish and then refuses with `RUN_IN_PROGRESS`.
+- **`ApplyBoxSkillSets` no longer waits on a stuck run start without limit** (#3530).
+  It retries for the per-box gate until the request is cancelled or 30 seconds
+  have passed, then refuses with `RUN_IN_PROGRESS` naming the run start that holds
+  it. An apply that is only waiting no longer makes runs on that box fail with the
+  "is applying skill sets" refusal; that message now means an apply is installing.
+
 ## [0.128.0] - 2026-11-04
 
 
