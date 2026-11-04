@@ -188,6 +188,10 @@ re-applies the same installer through the daemon, with no SSH client, and
 removes only what the dropped sets installed. Re-running this command with a
 different --skill-sets also works, at the cost of re-installing the engine.
 
+--bootstrap-url applies a bundle (a .tar.gz with an apply.sh) after the
+toolchain lands. To re-apply a bundle later without re-installing anything,
+use ` + "`containarium code bootstrap <box> --url <url>`" + ` (or --url-cmd).
+
 After installing it prints the binary version and reports which credential
 SOURCE the box has — names only, never a value. On the Claude path it also
 asserts the install created no ~/.claude/.credentials.json.
@@ -619,6 +623,21 @@ func buildClaudeSSHArgs(target connectcore.Target, identity, execCmd string) []s
 	return connectcore.BuildSSHArgs(target, identity, execCmd)
 }
 
+// codeSSHRunner returns the function `code install` and `code bootstrap` run
+// each remote script through: one ssh exec as the box user, under kw.
+func codeSSHRunner(ctx context.Context, kw connectcore.KeyWait, target connectcore.Target, privPath string, diag io.Writer) func(string) (string, error) {
+	probe := probeSSHArgs(connectcore.BuildSSHArgs(target, privPath, ""))
+	return func(script string) (string, error) {
+		var out string
+		err := sshWithKeyWait(ctx, kw, probe, func() error {
+			var e error
+			out, e = sshExec(diag, buildClaudeSSHArgs(target, privPath, script))
+			return e
+		})
+		return out, err
+	}
+}
+
 func runCodeInstall(cmd *cobra.Command, args []string) error {
 	box := args[0]
 	if err := validateBoxName(box); err != nil {
@@ -645,16 +664,7 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	probe := probeSSHArgs(connectcore.BuildSSHArgs(target, privPath, ""))
-	run := func(script string) (string, error) {
-		var out string
-		err := sshWithKeyWait(ctx, kw, probe, func() error {
-			var e error
-			out, e = sshExec(diag, buildClaudeSSHArgs(target, privPath, script))
-			return e
-		})
-		return out, err
-	}
+	run := codeSSHRunner(ctx, kw, target, privPath, diag)
 
 	// #1727: resolve the engine and its credential source from the flags, and
 	// run the credential source's own install-time preflight BEFORE installing

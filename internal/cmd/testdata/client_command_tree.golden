@@ -53,6 +53,7 @@ cluster node-pool
 cluster status
 code answer
 code attach
+code bootstrap
 code egress-policy delete
 code egress-policy get
 code egress-policy set

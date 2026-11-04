@@ -75,6 +75,24 @@ the error (a `google.rpc.PreconditionFailure` violation type, or the
 never matches on message text. The daemon advertises the call as
 `box_skill_sets` in `SystemInfo.capabilities`.
 
+To re-apply the **bootstrap bundle** on a box that already has its agent
+(a new skill set, a rotated credential, a changed MCP config), use
+`containarium code bootstrap <box> --url <url>` or `--url-cmd '<command>'`
+(#3512). It runs the bundle step of `code install --bootstrap-url` and nothing
+else: no engine, agent-box or skills reinstall, and `~/.containarium/code.json`
+is left alone. `--url-cmd` runs through your `$SHELL` with
+`CONTAINARIUM_BOX=<box>` set and its first stdout line is the URL, so a control
+plane that hands out one-shot bundle URLs can document one command for every
+box. The URL is requested only after one silent SSH round trip has confirmed
+the box is reachable, accepts your key, and has a writable home, `curl` and
+`tar`; a failure there means nothing was requested or applied. If the download
+fails, the URL was not consumed and a retry is safe. If the bundle was fetched
+but is unreadable or its `apply.sh` fails, the one-shot URL is spent (and a
+control plane may have rotated the box's credential on fetch): request a new
+URL and re-run. `code install --bootstrap-url` runs the same check before its
+first script and reports bundle failures the same way. The URL is never
+printed.
+
 Which namespaces a set covers is defined next to the pin, in the `set.<id>=`
 lines of `pkg/core/sdlcskills/sdlc-skills.lock`, so a caller sends set ids and
 never has to track upstream namespaces. That lock has one `[source]` section
