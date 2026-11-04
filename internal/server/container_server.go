@@ -189,7 +189,8 @@ type ContainerServer struct {
 	// a temp home. boxSkillSetLocks is the per-box gate (boxSkillSetGate): an
 	// apply holds it for writing, a run start for reading (#3510).
 	boxSkillSetsInstall boxSkillSetsInstallFunc
-	boxSkillSetLocks    sync.Map // key: box name -> *sync.RWMutex
+	boxSkillSetLocks    sync.Map           // key: box name -> *sync.RWMutex
+	boxRunStarts        boxRunStartHolders // run starts holding a box's gate, for naming in a refused apply (#3530)
 
 	// boxRunToolAccess overrides how StartBoxRun reads the tool-access level
 	// recorded for a box (#2944): "" = none recorded, so the run keeps the
