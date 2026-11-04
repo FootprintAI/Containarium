@@ -72,6 +72,35 @@ then prints the server's `Message:` (if any) and how to follow the run with
 `containarium crew logs <run-id>`. With neither an artifact nor a run id it
 prints `(no artifact returned)`.
 
+### The skill's box: created once, then reused
+
+The first run of a skill deploys its box (`agent-<skill-id>-container`) from
+the skill's recipe, which runs the recipe's `post_start` to prepare it. Every
+later run, and every crew run that includes the skill, reuses that box: it is
+started if stopped, and `post_start` is not run again.
+
+That reuse only applies to a box whose `post_start` completed. The deploy sets
+the Incus config key `user.containarium.post_start_pending` on the box before
+`post_start` runs and removes it when `post_start` succeeds. The key stays on
+the box when `post_start` fails or the daemon stops while it runs. A run that
+finds the key on the box:
+
+1. runs `post_start` again, with the same recipe parameters as the first
+   deploy;
+2. on success removes the key and goes on with the run (later runs skip
+   `post_start` again);
+3. on failure fails with `FailedPrecondition`, naming the box and the
+   `post_start` exit status. The box is **kept** so you can inspect it
+   (`containarium connect agent-<skill-id>-container`). Delete it to have the
+   next run deploy a fresh one.
+
+A guardrail-gated recipe is not re-run on an existing box, because its dataset
+is verified only as part of a deploy; the run fails the same way and the box
+has to be deleted. The daemon never deletes the box itself. A box without the
+key (prepared, or made before the key existed) is reused as before. To check a
+box by hand: `incus config get agent-<skill-id>-container
+user.containarium.post_start_pending` prints `true` while it is not prepared.
+
 ### Scopes
 
 The operator/agent token that drives the AgentSkillService needs:

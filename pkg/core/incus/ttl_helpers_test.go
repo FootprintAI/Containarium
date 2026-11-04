@@ -104,3 +104,27 @@ func TestPodmanEnabledFromConfig(t *testing.T) {
 		})
 	}
 }
+
+// TestPostStartPendingFromConfig (#3546): only the exact marker value is
+// pending; an absent key is a prepared box (every box made before the key).
+// The key name is pinned because boxes already carry it.
+func TestPostStartPendingFromConfig(t *testing.T) {
+	if PostStartPendingKey != "user.containarium.post_start_pending" {
+		t.Errorf("PostStartPendingKey = %q, must remain stable across releases", PostStartPendingKey)
+	}
+	for _, tc := range []struct {
+		name string
+		cfg  map[string]string
+		want bool
+	}{
+		{"absent is prepared", map[string]string{}, false},
+		{"marker value is pending", map[string]string{PostStartPendingKey: PostStartPendingValue}, true},
+		{"other value is not pending", map[string]string{PostStartPendingKey: "false"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := postStartPendingFromConfig(tc.cfg); got != tc.want {
+				t.Errorf("postStartPendingFromConfig = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
