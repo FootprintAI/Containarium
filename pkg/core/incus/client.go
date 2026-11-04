@@ -639,6 +639,12 @@ type ContainerInfo struct {
 	// those runs keep today's behaviour.
 	ToolAccess string
 
+	// PostStartPending mirrors user.containarium.post_start_pending (#3546):
+	// true while the recipe post_start of a recipe-deployed box has not
+	// completed (it failed, or the daemon stopped while it ran). False when
+	// the key is absent, which covers every box made before the key existed.
+	PostStartPending bool
+
 	// Image is a human-readable description of the image the container was
 	// launched from (Incus's auto-populated image.description config key,
 	// falling back to the volatile.base_image fingerprint). Empty if Incus
@@ -728,6 +734,24 @@ const DeletePolicyProtected = "protected"
 // recorded: those runs keep today's behaviour. Operators can set it directly
 // (`incus config set <box> user.containarium.tool_access build_tools`).
 const ToolAccessKey = "user.containarium.tool_access"
+
+// PostStartPendingKey is the Incus config key a recipe deploy sets on a box
+// before its post_start runs and removes once post_start succeeds (#3546).
+// A box that still carries it was never fully prepared: its post_start
+// failed, or the daemon stopped while it ran. A skill or crew run that finds
+// it on the box it would reuse runs post_start again instead of skipping it.
+// The value is PostStartPendingValue; absent means prepared (or a box made
+// before the key existed).
+const PostStartPendingKey = "user.containarium.post_start_pending"
+
+// PostStartPendingValue is the value PostStartPendingKey is set to.
+const PostStartPendingValue = "true"
+
+// postStartPendingFromConfig reads PostStartPendingKey. Only the exact value
+// PostStartPendingValue counts as pending.
+func postStartPendingFromConfig(cfg map[string]string) bool {
+	return cfg[PostStartPendingKey] == PostStartPendingValue
+}
 
 // The recorded tool-access values. A stable string contract, like
 // DeletePolicyProtected; the proto enum BoxToolAccess is the typed API.
@@ -1336,6 +1360,7 @@ func containerInfoFromInstance(inst *api.Instance) ContainerInfo {
 			DeleteAfterStoppedSeconds: parseDeleteAfterStoppedSeconds(inst.Config),
 			DeletePolicy:              inst.Config[DeletePolicyKey],
 			ToolAccess:                inst.Config[ToolAccessKey],
+			PostStartPending:          postStartPendingFromConfig(inst.Config),
 			Stack:                     inst.Config[StackKey],
 			PodmanEnabled:             podmanEnabledFromConfig(inst.Config),
 			Image:                     imageDescriptionFromConfig(inst.Config),
@@ -1413,6 +1438,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		TTLExpiresAt:         parseTTLExpiresAt(inst.Config),
 		DeletePolicy:         inst.Config[DeletePolicyKey],
 		ToolAccess:           inst.Config[ToolAccessKey],
+		PostStartPending:     postStartPendingFromConfig(inst.Config),
 		Stack:                inst.Config[StackKey],
 		PodmanEnabled:        podmanEnabledFromConfig(inst.Config),
 		Image:                imageDescriptionFromConfig(inst.Config),
