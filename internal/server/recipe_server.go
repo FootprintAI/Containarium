@@ -62,10 +62,13 @@ type RecipeServer struct {
 	gateway    *recipeGateway // nil unless the daemon serves the model-gateway
 	boxes      recipeBoxes    // nil = the ContainerServer; tests substitute a fake
 
-	// postStartRetry serialises re-running a box's unfinished post_start
-	// (#3546, rerunPendingPostStart): box name -> *sync.Mutex, so two runs
-	// that find the same not-ready box do not run post_start at once.
-	postStartRetry sync.Map
+	// postStartLocks is one lock per box name, held by deploy from before
+	// it creates the box until its post_start is done (sync and async), and
+	// by rerunPendingPostStart while it reads and re-runs a box's unfinished
+	// post_start (#3546, #3555). So two post_starts never run in one box at
+	// once, and a run that would reuse a box waits for its preparation
+	// instead of reading a mark that is about to change.
+	postStartLocks boxLocks
 
 	// The guardrail deploy gate (#2368, recipe_guardrail_gate.go). nil
 	// provider or "" root: a gated recipe is refused; ungated recipes are
@@ -512,6 +515,29 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	if req.Gpu != "" {
 		createReq.Gpus = []string{req.Gpu}
 	}
+
+	// Hold the box's post_start lock from before the box exists until its
+	// post_start is done (#3555): a skill or crew run that finds the box in
+	// the meantime waits in rerunPendingPostStart, then reads the mark this
+	// deploy left, instead of running a second post_start at the same time
+	// or clearing the mark while this one still runs. Released on every
+	// return below, a panic included; the async path hands it to its
+	// goroutine instead.
+	//
+	// The lock is only tried, never waited for: a second deploy of a name
+	// that is still being prepared would fail on "already exists" anyway, so
+	// it fails at once instead of after the first post_start. A skill run
+	// that loses this race waits for the box and reuses it (provisionBoxOnly).
+	release := func() {}
+	if len(recipe.PostStart) > 0 {
+		unlock, ok := s.postStartLocks.tryAcquire(req.Name)
+		if !ok {
+			return nil, &boxBeingPreparedError{containerName: req.Name + "-container"}
+		}
+		release = unlock
+	}
+	defer func() { release() }()
+
 	if _, err := s.boxOps().CreateContainer(ctx, createReq); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to provision container: %v", err)
 	}
@@ -523,8 +549,9 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	// failed post_start, or a daemon that stops while it runs, leaves the box
 	// marked, and a skill or crew run that would reuse it runs post_start
 	// again (rerunPendingPostStart) instead of skipping it.
+	var markErr error
 	if len(recipe.PostStart) > 0 {
-		markPostStartPending(s.boxOps(), containerName)
+		markErr = markPostStartPending(s.boxOps(), containerName)
 	}
 
 	// Gated: place exactly the verified bytes at dataset_path before
@@ -552,7 +579,10 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	// context and return the freshly-created box now (state CREATING). The box
 	// becomes fully functional once post_start completes; the caller polls.
 	if req.Async {
+		unlock := release
+		release = func() {} // the goroutine releases it now
 		go func() {
+			defer unlock()
 			bg := context.WithoutCancel(ctx)
 			if len(recipe.PostStart) > 0 {
 				script := buildPostStartScript(recipe, params, gatewayEnv)
@@ -575,10 +605,12 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 			st := boxlxc.StatusFromInfo(info)
 			container = toProtoContainer(&st)
 		}
-		return &pb.DeployRecipeResponse{
-			Container: container,
-			Message:   fmt.Sprintf("Recipe %q deploying as %s (post_start running in background)", recipe.Id, containerName),
-		}, nil
+		msg := fmt.Sprintf("Recipe %q deploying as %s (post_start running in background)", recipe.Id, containerName)
+		if markErr != nil {
+			// The outcome is not known yet, so say what it means if it fails.
+			msg += "; warning: " + unmarkedNote(containerName, markErr)
+		}
+		return &pb.DeployRecipeResponse{Container: container, Message: msg}, nil
 	}
 
 	// 2. Run the recipe's post_start commands inside the container, with env
@@ -586,6 +618,9 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	if len(recipe.PostStart) > 0 {
 		script := buildPostStartScript(recipe, params, gatewayEnv)
 		if err := completePostStart(s.boxOps(), containerName, script); err != nil {
+			if markErr != nil {
+				return nil, status.Errorf(codes.Internal, "post_start failed on %s: %v; %s", containerName, err, unmarkedNote(containerName, markErr))
+			}
 			return nil, status.Errorf(codes.Internal, "post_start failed on %s: %v", containerName, err)
 		}
 	}
@@ -615,13 +650,45 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 }
 
 // markPostStartPending sets the post_start-pending mark on a box (#3546). A
-// failure to write it is logged and the deploy goes on: refusing here would
-// leave a box that exists, is unmarked and never ran post_start, which is
-// the state the mark exists to prevent.
-func markPostStartPending(boxes recipeBoxes, containerName string) {
+// failure to write it is logged and returned, and the deploy goes on with
+// post_start: refusing here would leave a box that exists, is unmarked and
+// never ran post_start, which is the state the mark exists to prevent. The
+// box is not deleted. deploy reports the failure to its caller (#3555): in
+// the post_start error when post_start then fails, and as a warning in an
+// async deploy's message. A post_start that succeeds needs no mark, so then
+// the failure is only logged.
+func markPostStartPending(boxes recipeBoxes, containerName string) error {
 	if err := boxes.SetConfig(containerName, incus.PostStartPendingKey, incus.PostStartPendingValue); err != nil {
 		log.Printf("[recipe] could not mark %q as not prepared before post_start: %v", containerName, err)
+		return err
 	}
+	return nil
+}
+
+// unmarkedNote says what a failed mark write means for the caller (#3555).
+func unmarkedNote(containerName string, markErr error) string {
+	return fmt.Sprintf("%s could not be marked as not prepared (%v), so if its post_start does not complete, a later skill or crew run reuses it without running post_start again; delete the box to provision a fresh one",
+		containerName, markErr)
+}
+
+// boxBeingPreparedError is deploy's error when another deploy or re-run is
+// still preparing the box (#3555). It is a gRPC FailedPrecondition; the
+// skill run path tells it apart with errors.As and waits for the box.
+type boxBeingPreparedError struct{ containerName string }
+
+func (e *boxBeingPreparedError) GRPCStatus() *status.Status {
+	return status.Newf(codes.FailedPrecondition,
+		"box %s is already being prepared by another deploy or run; retry once it has finished", e.containerName)
+}
+
+func (e *boxBeingPreparedError) Error() string { return e.GRPCStatus().Err().Error() }
+
+// preparationWaitErr is the error of a call whose context ended while it
+// waited for another call preparing box name (#3555): Canceled or
+// DeadlineExceeded, from the context.
+func preparationWaitErr(name string, err error) error {
+	return status.Errorf(status.FromContextError(err).Code(),
+		"stopped waiting for an earlier preparation of %s-container to finish: %v", name, err)
 }
 
 // completePostStart runs post_start and, only when it succeeds, removes the
@@ -640,7 +707,9 @@ func completePostStart(boxes recipeBoxes, containerName, script string) error {
 
 // rerunPendingPostStart is the reuse half of the post_start-pending mark
 // (#3546). A skill or crew run that is about to reuse box name (the
-// daemon-provisioned agent-<skill> box) calls it; when the box still carries
+// daemon-provisioned agent-<skill> box) calls it, whether or not it saw the
+// mark: it first waits for any deploy or re-run still preparing the box
+// (#3555), then reads the box again. When the box still carries
 // the mark, the recipe's post_start runs again with the parameters the first
 // deploy used, and the mark is removed only if it succeeds. A box without the
 // mark (prepared, or one deploy never marked) is left alone. When post_start
@@ -651,15 +720,30 @@ func completePostStart(boxes recipeBoxes, containerName, script string) error {
 // A guardrail-gated recipe is not re-run: its dataset is verified and
 // delivered as part of a deploy, and re-running post_start over whatever is
 // in the box now would skip that check. The run fails with the same advice.
-func (s *RecipeServer) rerunPendingPostStart(ctx context.Context, recipeID, name string, parameters map[string]string) error {
-	lock, _ := s.postStartRetry.LoadOrStore(name, &sync.Mutex{})
-	mu := lock.(*sync.Mutex)
-	mu.Lock()
-	defer mu.Unlock()
+//
+// It returns the box as read under the lock, or after the re-run when one
+// ran (nil when that read failed; the caller keeps its own).
+func (s *RecipeServer) rerunPendingPostStart(ctx context.Context, recipeID, name string, parameters map[string]string) (*incus.ContainerInfo, error) {
+	// Wait for a deploy or another re-run that is preparing the box (#3555),
+	// for as long as this run's own context allows.
+	unlock, err := s.postStartLocks.acquire(ctx, name)
+	if err != nil {
+		return nil, preparationWaitErr(name, err)
+	}
+	defer unlock()
 
 	// Re-read under the lock: a concurrent run may have finished it.
 	info, err := s.boxOps().Get(name)
-	if err != nil || info == nil || !info.PostStartPending {
+	if err != nil || info == nil {
+		return nil, nil
+	}
+	if !info.PostStartPending {
+		return info, nil
+	}
+	reread := func() *incus.ContainerInfo {
+		if after, err := s.boxOps().Get(name); err == nil {
+			return after
+		}
 		return nil
 	}
 	containerName := name + "-container"
@@ -670,33 +754,33 @@ func (s *RecipeServer) rerunPendingPostStart(ctx context.Context, recipeID, name
 	}
 	recipe, err := s.catalog.Get(recipeID)
 	if err != nil {
-		return notPrepared("its recipe %q is no longer in the catalog", recipeID)
+		return nil, notPrepared("its recipe %q is no longer in the catalog", recipeID)
 	}
 	if recipe.GetGuardrailGate() != nil {
-		return notPrepared("recipe %q is guardrail-gated, so post_start is not re-run on an existing box", recipeID)
+		return nil, notPrepared("recipe %q is guardrail-gated, so post_start is not re-run on an existing box", recipeID)
 	}
 	params, err := recipes.ResolveParameters(recipe, parameters)
 	if err != nil {
-		return notPrepared("its parameters no longer resolve: %v", err)
+		return nil, notPrepared("its parameters no longer resolve: %v", err)
 	}
 	if len(recipe.PostStart) == 0 {
 		// Nothing left to run: the recipe no longer has a post_start.
 		if err := s.boxOps().UnsetConfig(containerName, incus.PostStartPendingKey); err != nil {
 			log.Printf("[recipe] could not remove the not-prepared mark from %q: %v", containerName, err)
 		}
-		return nil
+		return reread(), nil
 	}
 	provider, keyOwner := resolveRecipeGatewayProvider(recipe, name, params, nil)
 	script := buildPostStartScript(recipe, params, s.gatewayEnvForRecipe(recipe, name, provider, keyOwner))
 	log.Printf("[recipe] %q was not fully prepared by an earlier run; running post_start again", containerName)
 	if err := completePostStart(s.boxOps(), containerName, script); err != nil {
-		return notPrepared("running it again failed: %v", err)
+		return nil, notPrepared("running it again failed: %v", err)
 	}
 	// The first deploy returned before exposing ports; finish that too.
 	if _, _, warnings := s.exposePorts(ctx, recipe, name); len(warnings) > 0 {
 		log.Printf("[recipe] expose warnings on %q after re-running post_start: %q", containerName, strings.Join(warnings, "; "))
 	}
-	return nil
+	return reread(), nil
 }
 
 // runPostStart runs a post_start script in the box and fails on a non-zero
@@ -894,4 +978,89 @@ func (s *RecipeServer) exposePassthroughPort(ctx context.Context, recipe *pb.Rec
 		host = "<this host>"
 	}
 	return fmt.Sprintf("%s:%d/%s", host, externalPort, protocolLabel), nil
+}
+
+// boxLocks is one lock per box name (#3555). Unlike a sync.Mutex, a waiter
+// gives up when its context ends. An entry exists only while some call holds
+// or waits for that box's lock, so the map never grows past the number of
+// boxes being prepared at once.
+type boxLocks struct {
+	mu    sync.Mutex
+	locks map[string]*boxLock
+}
+
+type boxLock struct {
+	held chan struct{} // capacity 1: full while the lock is held
+	refs int           // holders and waiters; the entry goes at 0
+}
+
+// acquire takes name's lock, waiting until it is free or ctx ends (then it
+// returns ctx's error). A free lock is taken even when ctx has already
+// ended, which tryAcquire relies on. release is safe to call more than once.
+func (l *boxLocks) acquire(ctx context.Context, name string) (release func(), err error) {
+	l.mu.Lock()
+	if l.locks == nil {
+		l.locks = map[string]*boxLock{}
+	}
+	bl := l.locks[name]
+	if bl == nil {
+		bl = &boxLock{held: make(chan struct{}, 1)}
+		l.locks[name] = bl
+	}
+	bl.refs++
+	l.mu.Unlock()
+
+	select {
+	case bl.held <- struct{}{}:
+	default:
+		select {
+		case bl.held <- struct{}{}:
+		case <-ctx.Done():
+			l.drop(name, bl)
+			return nil, ctx.Err()
+		}
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			<-bl.held
+			l.drop(name, bl)
+		})
+	}, nil
+}
+
+func (l *boxLocks) drop(name string, bl *boxLock) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	bl.refs--
+	if bl.refs == 0 {
+		delete(l.locks, name)
+	}
+}
+
+// tryAcquire takes name's lock only when it is free right now; ok is false
+// when another call holds it.
+func (l *boxLocks) tryAcquire(name string) (release func(), ok bool) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	release, err := l.acquire(ctx, name)
+	return release, err == nil
+}
+
+// wait returns once name's lock is free (taking and releasing it), or with
+// ctx's error when ctx ends first.
+func (l *boxLocks) wait(ctx context.Context, name string) error {
+	release, err := l.acquire(ctx, name)
+	if err != nil {
+		return err
+	}
+	release()
+	return nil
+}
+
+// len is the number of boxes whose lock is held or waited for.
+func (l *boxLocks) len() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.locks)
 }

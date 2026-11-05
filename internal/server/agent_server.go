@@ -1199,43 +1199,57 @@ func (s *AgentSkillServer) provisionBoxOnly(ctx context.Context, skill *pb.Agent
 	// an earlier run left half-prepared (post_start failed, or the daemon
 	// stopped mid-way) still carries it, and post_start runs again here. If it
 	// fails again the run fails with FailedPrecondition and the box is kept.
-	if info, gerr := s.recipes.boxOps().Get(name); gerr == nil && info != nil {
-		if info.State != "Running" {
-			if err := s.recipes.containers.manager.Start(name); err != nil {
-				return "", nil, false, status.Errorf(codes.Internal, "failed to start existing agent box %s: %v", name, err)
+	// rerunPendingPostStart is called even when this read saw no mark: it
+	// waits for a deploy still preparing the box (#3555) and reads it again.
+	//
+	// Two first runs of one skill can both miss the lookup and both deploy.
+	// The deploy that loses fails at once (boxBeingPreparedError); its run
+	// waits for the winner's preparation and goes round again, now finding
+	// the box (#3555). The bound only stops a loop if the box keeps
+	// vanishing between attempts.
+	const provisionAttempts = 3
+	for attempt := 1; ; attempt++ {
+		if info, gerr := s.recipes.boxOps().Get(name); gerr == nil && info != nil {
+			if info.State != "Running" {
+				if err := s.recipes.containers.manager.Start(name); err != nil {
+					return "", nil, false, status.Errorf(codes.Internal, "failed to start existing agent box %s: %v", name, err)
+				}
 			}
-			if reread, rerr := s.recipes.boxOps().Get(name); rerr == nil && reread != nil {
-				info = reread
-			}
-		}
-		if info.PostStartPending {
-			if err := s.recipes.rerunPendingPostStart(ctx, recipeID, name, agentBoxDeployParams()); err != nil {
+			after, err := s.recipes.rerunPendingPostStart(ctx, recipeID, name, agentBoxDeployParams())
+			if err != nil {
 				return "", nil, false, err
 			}
-			if reread, rerr := s.recipes.boxOps().Get(name); rerr == nil && reread != nil {
-				info = reread
+			if after != nil {
+				info = after
 			}
+			st := boxlxc.StatusFromInfo(info)
+			return skillBoxName(skill.Id), toProtoContainer(&st), false, nil
 		}
-		st := boxlxc.StatusFromInfo(info)
-		return skillBoxName(skill.Id), toProtoContainer(&st), false, nil
-	}
 
-	// First provision. Pass the daemon's version as the agent-runtime
-	// recipe's `release` param so the box's post_start pulls matching
-	// agent-box + agent-runtime artifacts (box-image assembly). Recipes that
-	// don't declare these params ignore the extras; assembly is best-effort
-	// (a dev/unpublished version just skips it).
-	dep, derr := s.recipes.deploy(ctx, &pb.DeployRecipeRequest{
-		RecipeId:   recipeID,
-		Name:       name,
-		BackendId:  backendID,
-		Pool:       pool,
-		Parameters: agentBoxDeployParams(),
-	})
-	if derr != nil {
-		return "", nil, false, derr // already a gRPC status from deploy/CreateContainer
+		// First provision. Pass the daemon's version as the agent-runtime
+		// recipe's `release` param so the box's post_start pulls matching
+		// agent-box + agent-runtime artifacts (box-image assembly). Recipes
+		// that don't declare these params ignore the extras; assembly is
+		// best-effort (a dev/unpublished version just skips it).
+		dep, derr := s.recipes.deploy(ctx, &pb.DeployRecipeRequest{
+			RecipeId:   recipeID,
+			Name:       name,
+			BackendId:  backendID,
+			Pool:       pool,
+			Parameters: agentBoxDeployParams(),
+		})
+		var preparing *boxBeingPreparedError
+		if errors.As(derr, &preparing) && attempt < provisionAttempts {
+			if err := s.recipes.postStartLocks.wait(ctx, name); err != nil {
+				return "", nil, false, preparationWaitErr(name, err)
+			}
+			continue
+		}
+		if derr != nil {
+			return "", nil, false, derr // already a gRPC status from deploy/CreateContainer
+		}
+		return skillBoxName(skill.Id), dep.Container, true, nil
 	}
-	return skillBoxName(skill.Id), dep.Container, true, nil
 }
 
 // agentBoxDeployParams are the recipe parameters a skill's box is deployed
