@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.131.0] - 2026-11-05
+
+
+### Added
+
+- **`put_file`: an MCP tool that writes a file into a box** (#3548). The
+  platform MCP server's `put_file` is a thin wrapper over the same client
+  function as `containarium code put-file`, over `PUT
+  /v1/containers/{username}/files`. The bytes are passed inline, as `content`
+  (text) or `content_base64` (binary), at most 2 MiB; the tool never reads a
+  file on the MCP server's host. A refusal names its reason, for example
+  `refused (INVALID_ARGUMENT)` for a path outside the home directory or
+  `refused (DATA_LOSS)` for a checksum mismatch. Needs the `ssh:write` scope.
+  Over REST, `WriteBoxFile` errors now keep their status code, so `code
+  put-file --http` reports the same refusals as the gRPC transport.
+  `docs/BOX-RUN-API.md` now states that the 2 MiB cap is per call and that the
+  total is bounded by the box's own disk limit, with no daemon-side quota
+  (#3559).
+- **`WriteBoxFileStream`: files above 2 MiB, up to 64 MiB** (#3548). A
+  client-streaming form of `WriteBoxFile` (`POST /v1/box-files:stream`, a
+  header and then data, newline-delimited JSON over REST) with the same path
+  rules, ownership, mode, atomic rename and on-box checksum. The daemon writes
+  the bytes into its staging file as they arrive. A stream that ends early,
+  carries more than its declared size or fails its checksum leaves no file.
+  `containarium code put-file` uses it on its own for a file above 2 MiB and
+  says so when the daemon is too old. The 2 MiB `WriteBoxFile` call is
+  unchanged. Advertised as the `box_files_stream` capability.
+- **`containarium code install` records the installed coding agent** (#3565). After a Claude install verifies, the CLI calls the new `SetCodingAgent` RPC (`POST /v1/containers/{username}/coding-agent`), so a control plane that keeps a per-box coding-agent record sees an install made over SSH. A server that keeps no such record answers Unimplemented and the install reports nothing to update; recording never fails the install. This daemon keeps no record and answers Unimplemented after its usual container-write checks.
+
+### Fixed
+
+- **Box-file errors over REST keep their reason** (#3548). `code put-file
+  --http` and the MCP `put_file` tool read the daemon's REST error body
+  correctly, so a refusal shows as `refused (DATA_LOSS)`,
+  `refused (INVALID_ARGUMENT)` and so on rather than as an untyped error. A
+  daemon that predates `WriteBoxFile` is now reported as needing an upgrade
+  rather than as "Not Found".
+
 ## [0.130.0] - 2026-11-05
 
 
