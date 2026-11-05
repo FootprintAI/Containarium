@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -10,7 +8,6 @@ import (
 
 	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/internal/coderun"
-	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
 
@@ -43,9 +40,7 @@ func init() {
 }
 
 // boxFileWriter is what the command needs from a daemon client.
-type boxFileWriter interface {
-	WriteBoxFile(req *pb.WriteBoxFileRequest) (*pb.WriteBoxFileResponse, error)
-}
+type boxFileWriter = client.BoxFileWriter
 
 func runCodePutFile(cmd *cobra.Command, args []string) error {
 	if err := client.ValidateBoxName(args[0]); err != nil {
@@ -93,16 +88,14 @@ func codePutFile(c boxFileWriter, box, local, remote string, w io.Writer) error 
 	if remote == "" {
 		remote = filepath.Base(local)
 	}
-	sum := sha256.Sum256(content)
-	resp, err := c.WriteBoxFile(&pb.WriteBoxFileRequest{
-		Username: box, Path: remote, Content: content, Sha256: hex.EncodeToString(sum[:]),
-	})
+	// client.PutBoxFile is the function the MCP tool put_file calls too.
+	resp, err := client.PutBoxFile(c, client.BoxFileParams{Box: box, Path: remote, Content: content})
 	if isUnimplemented(err) {
-		return fmt.Errorf("this daemon does not support writing files into a box (WriteBoxFile); upgrade it")
+		return fmt.Errorf("%s", client.BoxFilesUnsupportedMessage)
 	}
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(w, "%s: wrote %s (%d bytes, sha256 %s)\n", box, resp.GetPath(), resp.GetSize(), resp.GetSha256())
+	_, err = io.WriteString(w, client.RenderBoxFileWrite(box, resp))
 	return err
 }

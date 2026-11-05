@@ -177,6 +177,24 @@ access as `StartBoxRun`.
   the rename. A mismatch leaves no file and is `DATA_LOSS`. The response carries
   the absolute path, the size and the checksum of what is on the box.
 
+**Limits.** The 2 MiB cap applies to each call; there is no daemon-side quota
+across calls (#3559). The total a caller can write is bounded by the box's own
+disk limit, the same limit every write inside the box is under, and a write that
+hits it fails without leaving a partial file (the bytes are staged and renamed).
+A caller that writes many files bounds how many it writes itself.
+
+**Agents.** The platform MCP tool `put_file` is a thin wrapper over the same
+client function as `code put-file`, over the same REST path. Its arguments are
+`box`, `path`, the bytes inline as exactly one of `content` (UTF-8 text) or
+`content_base64` (standard padded base64, at most 2 MiB decoded), and optional
+`mode` and `sha256` (default: the checksum of the content sent). It never reads
+a file on the MCP server's host. A refusal comes back as `refused (<CODE>)`, for
+example `refused (INVALID_ARGUMENT)` for an escaping path or
+`refused (DATA_LOSS)` for a checksum mismatch, followed by the daemon's message.
+A bad box name, a missing or doubled content argument, invalid base64, content
+over the cap, or a bad mode or checksum is rejected before any request is made.
+It needs the `ssh:write` scope.
+
 The capability name is `box_files`.
 
 ## Feature detection

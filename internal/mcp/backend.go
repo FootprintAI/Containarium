@@ -67,6 +67,8 @@ type API interface {
 
 	// Re-apply a box's SDLC skill sets (#3511), through the CLI's shared function.
 	ApplyBoxSkillSets(box string, skillSets []string, release string) (*pb.ApplyBoxSkillSetsResponse, error)
+	// Write one file into a box (#3548), through the CLI's shared function.
+	PutBoxFile(p client.BoxFileParams) (*pb.WriteBoxFileResponse, error)
 
 	// Secrets / KMS.
 	SetSecret(username, name, value string) (*SecretResponse, error)

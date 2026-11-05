@@ -1910,6 +1910,8 @@ func (s *Server) registerTools() {
 	s.tools = append(s.tools, codeEgressTools()...)
 	// Re-apply a box's SDLC skill sets (#3511): wraps `containarium code skill-sets`.
 	s.tools = append(s.tools, applyBoxSkillSetsTool())
+	// Write a file into a box (#3548): wraps `containarium code put-file`.
+	s.tools = append(s.tools, putFileTool())
 	// SSH session control (#2522): wraps `containarium sessions terminate`.
 	s.tools = append(s.tools, sessionTools()...)
 
@@ -1966,6 +1968,9 @@ func toolScopeAssignments() map[string]string {
 		"code_egress_policy": auth.ScopeCodeEgressRead,
 		// #3511: changes what is installed in a box, scoped like other box writes.
 		"apply_box_skill_sets": auth.ScopeContainersWrite,
+		// #3548: writes into a box user's home; ssh:write is the daemon's own
+		// gate on WriteBoxFile (same access as StartBoxRun).
+		"put_file": auth.ScopeSSHWrite,
 
 		"tracker_route_list":   auth.ScopeTrackerAdmin,
 		"tracker_create_issue": auth.ScopeTrackerWrite,
