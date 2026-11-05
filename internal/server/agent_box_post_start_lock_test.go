@@ -186,6 +186,38 @@ func TestSkillBox_WaitingRunHonoursCancel(t *testing.T) {
 	if err := <-first; err != nil {
 		t.Errorf("first run: %v", err)
 	}
+	if n := s.recipes.postStartLocks.len(); n != 0 {
+		t.Errorf("%d per-box lock entries left after every run finished, want 0", n)
+	}
+}
+
+// TestBoxLocks_EntriesLastOnlyWhileUsed: a box's lock entry exists only
+// while a call holds or waits for it, a cancelled waiter leaves none behind,
+// and a second release is harmless.
+func TestBoxLocks_EntriesLastOnlyWhileUsed(t *testing.T) {
+	var l boxLocks
+	release, err := l.acquire(context.Background(), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := l.acquire(ctx, "a"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("acquire on a held lock with a cancelled context = %v, want context.Canceled", err)
+	}
+	if n := l.len(); n != 1 {
+		t.Errorf("%d entries while one box is held, want 1", n)
+	}
+	release()
+	release()
+	if n := l.len(); n != 0 {
+		t.Errorf("%d entries after every holder and waiter left, want 0", n)
+	}
+	again, err := l.acquire(context.Background(), "a")
+	if err != nil {
+		t.Fatalf("acquire after release: %v", err)
+	}
+	again()
 }
 
 // TestSkillBox_FailedMarkWriteIsReported: when the not-prepared mark cannot

@@ -1199,6 +1199,8 @@ func (s *AgentSkillServer) provisionBoxOnly(ctx context.Context, skill *pb.Agent
 	// an earlier run left half-prepared (post_start failed, or the daemon
 	// stopped mid-way) still carries it, and post_start runs again here. If it
 	// fails again the run fails with FailedPrecondition and the box is kept.
+	// rerunPendingPostStart is called even when this read saw no mark: it
+	// waits for a deploy still preparing the box (#3555) and reads it again.
 	if info, gerr := s.recipes.boxOps().Get(name); gerr == nil && info != nil {
 		if info.State != "Running" {
 			if err := s.recipes.containers.manager.Start(name); err != nil {
@@ -1208,13 +1210,11 @@ func (s *AgentSkillServer) provisionBoxOnly(ctx context.Context, skill *pb.Agent
 				info = reread
 			}
 		}
-		if info.PostStartPending {
-			if err := s.recipes.rerunPendingPostStart(ctx, recipeID, name, agentBoxDeployParams()); err != nil {
-				return "", nil, false, err
-			}
-			if reread, rerr := s.recipes.boxOps().Get(name); rerr == nil && reread != nil {
-				info = reread
-			}
+		if err := s.recipes.rerunPendingPostStart(ctx, recipeID, name, agentBoxDeployParams()); err != nil {
+			return "", nil, false, err
+		}
+		if reread, rerr := s.recipes.boxOps().Get(name); rerr == nil && reread != nil {
+			info = reread
 		}
 		st := boxlxc.StatusFromInfo(info)
 		return skillBoxName(skill.Id), toProtoContainer(&st), false, nil
