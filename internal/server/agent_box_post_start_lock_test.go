@@ -38,15 +38,33 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 // blockFirstPostStart makes the first post_start on boxes wait until the
 // returned release func is called; later post_starts return at once.
 func blockFirstPostStart(boxes *postStartBoxes) (release func()) {
+	hook, release := blockFirstCall()
+	boxes.onPostStart = hook
+	return release
+}
+
+// blockFirstCall returns a hook whose first call waits until release is
+// called; later calls return at once. release is safe to call twice.
+func blockFirstCall() (hook func(), release func()) {
 	gate := make(chan struct{})
 	var calls atomic.Int32
-	boxes.onPostStart = func() {
+	hook = func() {
 		if calls.Add(1) == 1 {
 			<-gate
 		}
 	}
 	var closeOnce sync.Once
-	return func() { closeOnce.Do(func() { close(gate) }) }
+	return hook, func() { closeOnce.Do(func() { close(gate) }) }
+}
+
+// refsFor is the number of calls holding or waiting for name's lock.
+func (l *boxLocks) refsFor(name string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if bl := l.locks[name]; bl != nil {
+		return bl.refs
+	}
+	return 0
 }
 
 // startFirstDeploy runs the box's first deploy: through a skill run's
@@ -330,6 +348,179 @@ func TestRerunPendingPostStart_RefusedBranches(t *testing.T) {
 			}
 			if !boxes.pending(container) {
 				t.Error("the box must stay marked")
+			}
+		})
+	}
+}
+
+// skillRunResult is what one provisionBoxOnly call returned.
+type skillRunResult struct {
+	fresh bool
+	err   error
+}
+
+// runSkill starts provisionBoxOnly for skill and returns its result channel.
+func runSkill(ctx context.Context, s *AgentSkillServer, skill *pb.AgentSkill) chan skillRunResult {
+	done := make(chan skillRunResult, 1)
+	go func() {
+		_, _, fresh, err := s.provisionBoxOnly(ctx, skill, "", "")
+		done <- skillRunResult{fresh, err}
+	}()
+	return done
+}
+
+// waitForWaiterOrDone waits until name's lock has two holders/waiters (the
+// run under test is waiting) or that run has already returned.
+func waitForWaiterOrDone(t *testing.T, s *AgentSkillServer, name string, done chan skillRunResult) (res skillRunResult, finished bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		select {
+		case res = <-done:
+			return res, true
+		default:
+		}
+		if s.recipes.postStartLocks.refsFor(name) >= 2 {
+			return skillRunResult{}, false
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the second run to wait or return")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestSkillBox_RunDuringMarkWriteWaitsForPreparation (#3555 review): a run
+// whose lookup lands after the first deploy created the box but before it
+// wrote the not-prepared mark finds an unmarked box. It must still wait for
+// that deploy, then read the mark it left: here the first post_start fails,
+// so the second run re-runs it and fails too, instead of reusing a box that
+// was never prepared and reporting success (#3546).
+func TestSkillBox_RunDuringMarkWriteWaitsForPreparation(t *testing.T) {
+	boxes := newPostStartBoxes(1)
+	hook, release := blockFirstCall()
+	boxes.onSetConfig = hook
+	defer release()
+	s, skill := newPostStartSkillServer(t, boxes)
+	ctx := ctxAs("admin", true)
+
+	first := runSkill(ctx, s, skill)
+	waitFor(t, "the first deploy to create the box", func() bool {
+		boxes.mu.Lock()
+		defer boxes.mu.Unlock()
+		_, ok := boxes.boxes[postStartSkillBox]
+		return ok
+	})
+	if boxes.pending(postStartSkillBox) {
+		t.Fatal("the mark write is held; the box must not be marked yet")
+	}
+	second := runSkill(ctx, s, skill)
+	res, finished := waitForWaiterOrDone(t, s, "agent-prep-skill", second)
+	release()
+	if !finished {
+		res = <-second
+	}
+	if r := <-first; r.err == nil {
+		t.Error("first run: its post_start failed, the run must fail")
+	}
+	if res.err == nil {
+		t.Fatal("second run reused a box whose post_start never completed and reported success")
+	}
+	if status.Code(res.err) != codes.FailedPrecondition {
+		t.Errorf("second run: code = %v (%v), want FailedPrecondition", status.Code(res.err), res.err)
+	}
+	if got := boxes.runs(); got != 2 {
+		t.Errorf("post_start ran %d time(s), want 2 (the deploy's, then the second run's re-run)", got)
+	}
+	if !boxes.pending(postStartSkillBox) {
+		t.Error("both post_starts failed; the box must stay marked")
+	}
+}
+
+// TestSkillBox_TwoFirstRunsOfOneSkillBothSucceed (#3555 review): two first
+// runs of one skill that both find no box both try to deploy it. The one that
+// loses does not wait inside deploy and then fail on "already exists": it
+// waits for the winner's preparation, then reuses the box. One post_start
+// runs.
+func TestSkillBox_TwoFirstRunsOfOneSkillBothSucceed(t *testing.T) {
+	boxes := newPostStartBoxes(0)
+	hook, release := blockFirstCall()
+	boxes.onCreate = hook
+	defer release()
+	s, skill := newPostStartSkillServer(t, boxes)
+	ctx := ctxAs("admin", true)
+
+	first := runSkill(ctx, s, skill)
+	waitFor(t, "the first deploy to take the box's lock", func() bool {
+		return s.recipes.postStartLocks.refsFor("agent-prep-skill") == 1
+	})
+	second := runSkill(ctx, s, skill)
+	res, finished := waitForWaiterOrDone(t, s, "agent-prep-skill", second)
+	release()
+	if !finished {
+		res = <-second
+	}
+	r1 := <-first
+	if r1.err != nil || !r1.fresh {
+		t.Errorf("first run: fresh=%v err=%v, want a fresh box", r1.fresh, r1.err)
+	}
+	if res.err != nil || res.fresh {
+		t.Errorf("second run: fresh=%v err=%v, want the first run's box reused", res.fresh, res.err)
+	}
+	boxes.mu.Lock()
+	defer boxes.mu.Unlock()
+	if boxes.postStartRuns != 1 || boxes.maxConcurrent != 1 {
+		t.Errorf("post_start ran %d time(s), %d at once; want 1, 1", boxes.postStartRuns, boxes.maxConcurrent)
+	}
+}
+
+// TestDeploy_SecondDeployOfInFlightNameFailsFast (#3555 review): a direct
+// deploy of a name another deploy is still preparing fails at once with
+// FailedPrecondition, not after the first deploy's whole post_start.
+func TestDeploy_SecondDeployOfInFlightNameFailsFast(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		async bool
+	}{
+		{"sync first deploy", false},
+		{"async first deploy", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			boxes := newPostStartBoxes(0)
+			release := blockFirstPostStart(boxes)
+			defer release()
+			s, skill := newPostStartSkillServer(t, boxes)
+			first := startFirstDeploy(t, s, skill, tc.async)
+			waitFor(t, "the first post_start to start", func() bool { return boxes.runs() == 1 })
+
+			second := make(chan error, 1)
+			go func() {
+				_, err := s.recipes.deploy(ctxAs("admin", true), &pb.DeployRecipeRequest{
+					RecipeId: skill.GetRecipeId(), Name: "agent-" + skill.Id, Async: tc.async,
+				})
+				second <- err
+			}()
+			select {
+			case err := <-second:
+				if status.Code(err) != codes.FailedPrecondition {
+					t.Errorf("second deploy: code = %v (%v), want FailedPrecondition", status.Code(err), err)
+				}
+				for _, w := range []string{"agent-prep-skill-container", "already being prepared"} {
+					if err != nil && !strings.Contains(err.Error(), w) {
+						t.Errorf("second deploy: error %q does not mention %q", err, w)
+					}
+				}
+			case <-time.After(2 * time.Second):
+				t.Error("second deploy waited for the first deploy's post_start instead of failing at once")
+				release()
+				<-second
+			}
+			release()
+			if err := <-first; err != nil {
+				t.Errorf("first deploy: %v", err)
+			}
+			if got := boxes.runs(); got != 1 {
+				t.Errorf("post_start ran %d time(s), want 1", got)
 			}
 		})
 	}

@@ -48,6 +48,11 @@ type postStartBoxes struct {
 	// getCalls counts Get calls; setConfigErr, when set, fails SetConfig.
 	getCalls     int
 	setConfigErr error
+	// onCreate and onSetConfig, when set, run at the start of
+	// CreateContainer and SetConfig, before the fake's state changes
+	// (#3555: they hold a deploy inside the create or the mark write).
+	onCreate    func()
+	onSetConfig func()
 }
 
 func newPostStartBoxes(exitCode int) *postStartBoxes {
@@ -55,6 +60,12 @@ func newPostStartBoxes(exitCode int) *postStartBoxes {
 }
 
 func (b *postStartBoxes) CreateContainer(_ context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error) {
+	b.mu.Lock()
+	hook := b.onCreate
+	b.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	name := req.GetUsername() + "-container"
@@ -120,6 +131,12 @@ func (b *postStartBoxes) Get(username string) (*incus.ContainerInfo, error) {
 }
 
 func (b *postStartBoxes) SetConfig(name, key, value string) error {
+	b.mu.Lock()
+	hook := b.onSetConfig
+	b.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.setConfigErr != nil {
