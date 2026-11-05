@@ -137,6 +137,14 @@ RUN mkdir -p /opt/open-slide/template/.agents \
     && printf 'node_modules\ndist\n.DS_Store\n' > /opt/open-slide/template/.gitignore \
     && rm -rf /opt/open-slide/src
 
+# Label the seeded starter deck so it cannot pass for the user's own deck
+# (#3560). Edits only the template copy; fails the build if the pinned upstream
+# deck no longer has the shape the script anchors on.
+COPY images/slides-agent/label-starter-deck.mjs /tmp/label-starter-deck.mjs
+RUN node /tmp/label-starter-deck.mjs /opt/open-slide/template/slides/getting-started/index.tsx \
+    && grep -q STARTER_DECK_LABEL /opt/open-slide/template/slides/getting-started/index.tsx \
+    && rm -f /tmp/label-starter-deck.mjs
+
 WORKDIR /opt/open-slide/app
 RUN rm -rf slides themes netlify.toml vercel.json README.md
 COPY images/slides-agent/open-slide.config.ts ./open-slide.config.ts
