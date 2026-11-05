@@ -312,6 +312,46 @@ message WriteBoxFileResponse {
   string sha256 = 3;
 }
 
+// WriteBoxFileStreamRequest is one message of a WriteBoxFileStream upload
+// (#3548): the first message is the header, every later one carries data.
+message WriteBoxFileStreamRequest {
+  oneof part {
+    // First message only.
+    WriteBoxFileStreamHeader header = 1;
+    // A slice of the file, in order. Any size up to the transport's message
+    // cap; the client sends 1 MiB.
+    bytes data = 2;
+  }
+}
+
+// WriteBoxFileStreamHeader names the file a WriteBoxFileStream writes. The
+// fields mean what they mean on WriteBoxFileRequest.
+message WriteBoxFileStreamHeader {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // Path relative to the box user's home directory, same rules as
+  // WriteBoxFileRequest.path.
+  string path = 2;
+  // "0600" (default when empty) or "0400".
+  string mode = 3;
+  // Lowercase hex SHA-256 of the whole file. Optional; when set, the bytes on
+  // the box are checked against it before the file appears.
+  string sha256 = 4;
+  // Total bytes the stream carries, at most 64 MiB. A stream that ends short
+  // of it, or carries more, is INVALID_ARGUMENT and leaves no file.
+  int64 size = 5;
+}
+
+// WriteBoxFileStreamResponse is WriteBoxFileResponse for the streamed form.
+message WriteBoxFileStreamResponse {
+  // Absolute path of the file on the box.
+  string path = 1;
+  // Bytes written.
+  int64 size = 2;
+  // Lowercase hex SHA-256 of the file as it is on the box.
+  string sha256 = 3;
+}
+
 // StopBoxRunRequest stops a box run (#2603): SIGTERM, or SIGKILL with force,
 // to the run's whole process group. Idempotent: stopping a run that has
 // already exited signals nothing and succeeds.

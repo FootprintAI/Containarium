@@ -120,7 +120,11 @@ func (c *HTTPClient) doRequest(ctx context.Context, method, path string, body []
 	if body != nil {
 		bodyReader = bytes.NewReader(body)
 	}
+	return c.doRequestBody(ctx, method, path, bodyReader)
+}
 
+// doRequestBody is doRequest with a streamed body (nil for none).
+func (c *HTTPClient) doRequestBody(ctx context.Context, method, path string, bodyReader io.Reader) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)

@@ -163,6 +163,9 @@ type ContainerServer struct {
 	// the root-made staging file goes (empty: /tmp); tests set both.
 	boxFileWrite    boxFileWriteFunc
 	boxFileStageDir string
+	// boxFileWriteStream is the streaming file API seam of WriteBoxFileStream
+	// (box_file_stream.go; nil: the container manager's WriteFileStream).
+	boxFileWriteStream boxFileStreamWriteFunc
 
 	// approvalSecret is what box approval keys are derived from (#2184,
 	// box_run_inputs.go): the daemon's JWT secret, set by DualServer. Nil

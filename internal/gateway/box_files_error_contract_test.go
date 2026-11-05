@@ -1,16 +1,22 @@
 package gateway
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/client"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // #3548: the REST client's reading of a WriteBoxFile error must match what this
@@ -60,6 +66,58 @@ func TestBoxFilesClient_AnOldDaemonIsUnimplemented(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = client.PutBoxFile(hc, client.BoxFileParams{Box: "alice", Path: "a", Content: []byte("x")})
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("err = %v, want Unimplemented", err)
+	}
+}
+
+// The streamed form through the daemon's own mux: the gateway's client-stream
+// handler in front of a gRPC server, and the daemon's ErrorHandler on the way
+// back, so a refusal arrives typed and an old daemon reads as Unimplemented.
+type refusingBoxFileStreamServer struct {
+	pb.UnimplementedContainerServiceServer
+	err error
+}
+
+func (f *refusingBoxFileStreamServer) WriteBoxFileStream(s pb.ContainerService_WriteBoxFileStreamServer) error {
+	for {
+		if _, err := s.Recv(); err != nil {
+			break
+		}
+	}
+	return f.err
+}
+
+func TestBoxFilesStreamClient_ThroughTheDaemonsMux(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := grpc.NewServer()
+	pb.RegisterContainerServiceServer(gs, &refusingBoxFileStreamServer{err: status.Error(codes.DataLoss, "the bytes on the box do not match")})
+	go func() { _ = gs.Serve(lis) }()
+	t.Cleanup(gs.Stop)
+	mux := NewRESTMux()
+	if err := pb.RegisterContainerServiceHandlerFromEndpoint(context.Background(), mux, lis.Addr().String(),
+		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	hc, _ := client.NewHTTPClient(srv.URL, "tok")
+	body := bytes.Repeat([]byte("x"), 3<<20)
+	_, err = client.PutBoxFileStream(hc, client.BoxFileStreamParams{Box: "alice", Path: "a", Content: bytes.NewReader(body), Size: int64(len(body))})
+	var refused *client.BoxFileRefusedError
+	if !errors.As(err, &refused) || refused.Code != codes.DataLoss {
+		t.Fatalf("err = %v, want a DATA_LOSS refusal", err)
+	}
+}
+
+func TestBoxFilesStreamClient_AnOldDaemonIsUnimplemented(t *testing.T) {
+	srv := httptest.NewServer(NewRESTMux()) // no routes registered
+	defer srv.Close()
+	hc, _ := client.NewHTTPClient(srv.URL, "tok")
+	_, err := client.PutBoxFileStream(hc, client.BoxFileStreamParams{Box: "alice", Path: "a", Content: bytes.NewReader(make([]byte, 3<<20)), Size: 3 << 20})
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("err = %v, want Unimplemented", err)
 	}

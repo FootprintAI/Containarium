@@ -65,6 +65,10 @@ func BuildClaudeRunCommand(prompt string, streamJSON bool) string {
 // the daemon and the CLI so the CLI can refuse before reading a huge file.
 const MaxBoxFileBytes = 2 << 20
 
+// MaxBoxFileStreamBytes is the largest file WriteBoxFileStream accepts (#3548):
+// the streamed form `code put-file` switches to above MaxBoxFileBytes.
+const MaxBoxFileStreamBytes = 64 << 20
+
 // Command mode (#3322): a shell command runs in the engine's place, under a
 // timeout the box enforces. Shared by the daemon's StartBoxRun and the CLI's
 // `code run --command`, so the two surfaces run the same thing.

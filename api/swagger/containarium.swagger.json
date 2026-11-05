@@ -2015,6 +2015,41 @@
         ]
       }
     },
+    "/v1/box-files:stream": {
+      "post": {
+        "summary": "Write a large file into a box (streamed)",
+        "description": "Client-streaming form of WriteBoxFile for files above 2 MiB, up to 64 MiB. Over REST the body is newline-delimited JSON: one {\"header\": {...}} object naming username, path, mode, sha256 and the total size, then {\"data\": \"\u003cbase64\u003e\"} objects in order. Same path rules, mode, ownership, atomic rename and checksum check as WriteBoxFile. A stream that ends before size bytes, carries more than size, or declares more than 64 MiB is INVALID_ARGUMENT; a checksum mismatch is DATA_LOSS; none of them leaves a file. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_WriteBoxFileStream",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/WriteBoxFileStreamResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "WriteBoxFileStreamRequest is one message of a WriteBoxFileStream upload\n(#3548): the first message is the header, every later one carries data. (streaming inputs)",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/WriteBoxFileStreamRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
     "/v1/capabilities/profile": {
       "get": {
         "summary": "Get a backend's capability profile",
@@ -22852,7 +22887,7 @@
           "items": {
             "type": "string"
           },
-          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model),\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds),\n\"box_skill_sets\" (the ApplyBoxSkillSets RPC, #3374) and \"box_files\" (the\nWriteBoxFile RPC, #3548).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
+          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model),\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds),\n\"box_skill_sets\" (the ApplyBoxSkillSets RPC, #3374), \"box_files\" (the\nWriteBoxFile RPC, #3548) and \"box_files_stream\" (the WriteBoxFileStream\nRPC, files up to 64 MiB, #3548).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
         },
         "storagePools": {
           "type": "array",
@@ -24442,6 +24477,67 @@
           "description": "Lowercase hex SHA-256 of the file as it is on the box."
         }
       }
+    },
+    "WriteBoxFileStreamHeader": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string",
+          "description": "The box owner's username (the box is \u003cusername\u003e-container)."
+        },
+        "path": {
+          "type": "string",
+          "description": "Path relative to the box user's home directory, same rules as\nWriteBoxFileRequest.path."
+        },
+        "mode": {
+          "type": "string",
+          "description": "\"0600\" (default when empty) or \"0400\"."
+        },
+        "sha256": {
+          "type": "string",
+          "description": "Lowercase hex SHA-256 of the whole file. Optional; when set, the bytes on\nthe box are checked against it before the file appears."
+        },
+        "size": {
+          "type": "string",
+          "format": "int64",
+          "description": "Total bytes the stream carries, at most 64 MiB. A stream that ends short\nof it, or carries more, is INVALID_ARGUMENT and leaves no file."
+        }
+      },
+      "description": "WriteBoxFileStreamHeader names the file a WriteBoxFileStream writes. The\nfields mean what they mean on WriteBoxFileRequest."
+    },
+    "WriteBoxFileStreamRequest": {
+      "type": "object",
+      "properties": {
+        "header": {
+          "$ref": "#/definitions/WriteBoxFileStreamHeader",
+          "description": "First message only."
+        },
+        "data": {
+          "type": "string",
+          "format": "byte",
+          "description": "A slice of the file, in order. Any size up to the transport's message\ncap; the client sends 1 MiB."
+        }
+      },
+      "description": "WriteBoxFileStreamRequest is one message of a WriteBoxFileStream upload\n(#3548): the first message is the header, every later one carries data."
+    },
+    "WriteBoxFileStreamResponse": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Absolute path of the file on the box."
+        },
+        "size": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bytes written."
+        },
+        "sha256": {
+          "type": "string",
+          "description": "Lowercase hex SHA-256 of the file as it is on the box."
+        }
+      },
+      "description": "WriteBoxFileStreamResponse is WriteBoxFileResponse for the streamed form."
     },
     "WriteFileInSandboxBody": {
       "type": "object",

@@ -600,6 +600,25 @@ service ContainerService {
     };
   }
 
+  // WriteBoxFileStream is WriteBoxFile for a file above 2 MiB (#3548): a
+  // client stream of a header and then data, at most 64 MiB in all. The bytes
+  // go straight into the same root-made staging file as WriteBoxFile and are
+  // placed by the same box-user script, so the confinement, the atomic rename
+  // and the checksum are the same; a stream that ends early, runs past its
+  // declared size or fails its checksum leaves no file. Same access as
+  // StartBoxRun. Advertised as the "box_files_stream" capability.
+  rpc WriteBoxFileStream(stream WriteBoxFileStreamRequest) returns (WriteBoxFileStreamResponse) {
+    option (google.api.http) = {
+      post: "/v1/box-files:stream"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Write a large file into a box (streamed)";
+      description: "Client-streaming form of WriteBoxFile for files above 2 MiB, up to 64 MiB. Over REST the body is newline-delimited JSON: one {\"header\": {...}} object naming username, path, mode, sha256 and the total size, then {\"data\": \"<base64>\"} objects in order. Same path rules, mode, ownership, atomic rename and checksum check as WriteBoxFile. A stream that ends before size bytes, carries more than size, or declares more than 64 MiB is INVALID_ARGUMENT; a checksum mismatch is DATA_LOSS; none of them leaves a file. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
   // SweepBoxRunCheckouts runs the per-run checkout sweep once on one box
   // (#3296): removes directories directly under the owner's and the run
   // user's ~/work named <repo>-run-<8 hex> that are older than the daemon's

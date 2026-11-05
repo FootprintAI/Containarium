@@ -197,13 +197,40 @@ It needs the `ssh:write` scope.
 
 The capability name is `box_files`.
 
+### Files above 2 MiB: `WriteBoxFileStream`
+
+`WriteBoxFileStream` (`POST /v1/box-files:stream`) is the client-streaming
+form, for files up to **64 MiB**. `code put-file` uses it on its own for a file
+above 2 MiB; the 2 MiB `WriteBoxFile` call is unchanged. The MCP tool keeps the
+2 MiB inline cap.
+
+- The first message is a `header`: `username`, `path`, `mode`, `sha256` (same
+  rules as `WriteBoxFile`) and `size`, the total byte count (0 to 64 MiB). Every
+  later message is `data`, in order; the client sends 1 MiB per message.
+- Over REST the body is newline-delimited JSON: `{"header": {...}}` and then
+  `{"data": "<base64>"}` objects.
+- The data goes straight into the same root-made staging file as `WriteBoxFile`
+  as it arrives (the daemon does not hold the whole file in memory), and the
+  same box-user script checks the checksum and renames the file into place. The
+  final path is touched only after every byte has arrived.
+- A stream that ends before `size` bytes, carries more than `size`, sends a
+  second header, or declares more than 64 MiB is `INVALID_ARGUMENT`; a checksum
+  mismatch is `DATA_LOSS`; a client that cancels gets `CANCELLED`. None of them
+  leaves a file at or beside the path, and the staging file is removed.
+- The per-call limit is 64 MiB; as with `WriteBoxFile`, nothing bounds the total
+  but the box's own disk limit.
+
+The capability name is `box_files_stream`. A daemon without it answers
+`Unimplemented` (over REST, the gateway's 404 for an unknown route); `code
+put-file` then says the daemon needs an upgrade for files above 2 MiB.
+
 ## Feature detection
 
 The REST gateway rejects request fields it does not know, so a caller must not
 send `run_name`, `structured_output`, `model` or `command` to a daemon that
 predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the optional
 features a daemon supports: `box_run_name`, `box_run_structured_output`,
-`box_run_model`, `box_run_command` and `box_files`. An older daemon does
+`box_run_model`, `box_run_command`, `box_files` and `box_files_stream`. An older daemon does
 not send the field at all; treat a missing name as unsupported. Names are only
 added. `GetSystemInfo` requires an admin principal. A caller that cannot read it
 can gate on the daemon version instead: the first release that contains these

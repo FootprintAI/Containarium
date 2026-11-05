@@ -52,6 +52,7 @@ const (
 	ContainerService_TailBoxRunLog_FullMethodName             = "/containarium.v1.ContainerService/TailBoxRunLog"
 	ContainerService_StopBoxRun_FullMethodName                = "/containarium.v1.ContainerService/StopBoxRun"
 	ContainerService_WriteBoxFile_FullMethodName              = "/containarium.v1.ContainerService/WriteBoxFile"
+	ContainerService_WriteBoxFileStream_FullMethodName        = "/containarium.v1.ContainerService/WriteBoxFileStream"
 	ContainerService_SweepBoxRunCheckouts_FullMethodName      = "/containarium.v1.ContainerService/SweepBoxRunCheckouts"
 	ContainerService_ApplyBoxSkillSets_FullMethodName         = "/containarium.v1.ContainerService/ApplyBoxSkillSets"
 	ContainerService_GetRunApprovalKey_FullMethodName         = "/containarium.v1.ContainerService/GetRunApprovalKey"
@@ -302,6 +303,14 @@ type ContainerServiceClient interface {
 	// box owner or one of its collaborators. Advertised as the "box_files"
 	// capability.
 	WriteBoxFile(ctx context.Context, in *WriteBoxFileRequest, opts ...grpc.CallOption) (*WriteBoxFileResponse, error)
+	// WriteBoxFileStream is WriteBoxFile for a file above 2 MiB (#3548): a
+	// client stream of a header and then data, at most 64 MiB in all. The bytes
+	// go straight into the same root-made staging file as WriteBoxFile and are
+	// placed by the same box-user script, so the confinement, the atomic rename
+	// and the checksum are the same; a stream that ends early, runs past its
+	// declared size or fails its checksum leaves no file. Same access as
+	// StartBoxRun. Advertised as the "box_files_stream" capability.
+	WriteBoxFileStream(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse], error)
 	// SweepBoxRunCheckouts runs the per-run checkout sweep once on one box
 	// (#3296): removes directories directly under the owner's and the run
 	// user's ~/work named <repo>-run-<8 hex> that are older than the daemon's
@@ -817,6 +826,19 @@ func (c *containerServiceClient) WriteBoxFile(ctx context.Context, in *WriteBoxF
 	}
 	return out, nil
 }
+
+func (c *containerServiceClient) WriteBoxFileStream(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &ContainerService_ServiceDesc.Streams[0], ContainerService_WriteBoxFileStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ContainerService_WriteBoxFileStreamClient = grpc.ClientStreamingClient[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse]
 
 func (c *containerServiceClient) SweepBoxRunCheckouts(ctx context.Context, in *SweepBoxRunCheckoutsRequest, opts ...grpc.CallOption) (*SweepBoxRunCheckoutsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -1462,6 +1484,14 @@ type ContainerServiceServer interface {
 	// box owner or one of its collaborators. Advertised as the "box_files"
 	// capability.
 	WriteBoxFile(context.Context, *WriteBoxFileRequest) (*WriteBoxFileResponse, error)
+	// WriteBoxFileStream is WriteBoxFile for a file above 2 MiB (#3548): a
+	// client stream of a header and then data, at most 64 MiB in all. The bytes
+	// go straight into the same root-made staging file as WriteBoxFile and are
+	// placed by the same box-user script, so the confinement, the atomic rename
+	// and the checksum are the same; a stream that ends early, runs past its
+	// declared size or fails its checksum leaves no file. Same access as
+	// StartBoxRun. Advertised as the "box_files_stream" capability.
+	WriteBoxFileStream(grpc.ClientStreamingServer[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse]) error
 	// SweepBoxRunCheckouts runs the per-run checkout sweep once on one box
 	// (#3296): removes directories directly under the owner's and the run
 	// user's ~/work named <repo>-run-<8 hex> that are older than the daemon's
@@ -1746,6 +1776,9 @@ func (UnimplementedContainerServiceServer) StopBoxRun(context.Context, *StopBoxR
 }
 func (UnimplementedContainerServiceServer) WriteBoxFile(context.Context, *WriteBoxFileRequest) (*WriteBoxFileResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method WriteBoxFile not implemented")
+}
+func (UnimplementedContainerServiceServer) WriteBoxFileStream(grpc.ClientStreamingServer[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse]) error {
+	return status.Error(codes.Unimplemented, "method WriteBoxFileStream not implemented")
 }
 func (UnimplementedContainerServiceServer) SweepBoxRunCheckouts(context.Context, *SweepBoxRunCheckoutsRequest) (*SweepBoxRunCheckoutsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SweepBoxRunCheckouts not implemented")
@@ -2493,6 +2526,13 @@ func _ContainerService_WriteBoxFile_Handler(srv interface{}, ctx context.Context
 	}
 	return interceptor(ctx, in, info, handler)
 }
+
+func _ContainerService_WriteBoxFileStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(ContainerServiceServer).WriteBoxFileStream(&grpc.GenericServerStream[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ContainerService_WriteBoxFileStreamServer = grpc.ClientStreamingServer[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse]
 
 func _ContainerService_SweepBoxRunCheckouts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SweepBoxRunCheckoutsRequest)
@@ -3602,6 +3642,12 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ContainerService_SetTenantKMSKey_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "WriteBoxFileStream",
+			Handler:       _ContainerService_WriteBoxFileStream_Handler,
+			ClientStreams: true,
+		},
+	},
 	Metadata: "containarium/v1/service.proto",
 }
