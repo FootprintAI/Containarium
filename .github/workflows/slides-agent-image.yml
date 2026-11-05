@@ -38,6 +38,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Test the starter-deck labeller
+        run: node --test images/slides-agent/label-starter-deck.test.mjs
       - name: Build slides-agent image
         run: docker build -f images/slides-agent/Dockerfile -t containarium-slides-agent:ci .
       - name: Smoke-check the image
@@ -56,6 +58,7 @@ jobs:
             command -v node
             test -f /opt/open-slide/app/node_modules/@open-slide/core/bin.js
             test -f /opt/open-slide/template/.claude/skills/create-slide/SKILL.md
+            grep -q STARTER_DECK_LABEL /opt/open-slide/template/slides/getting-started/index.tsx
             id -u | grep -qx 1000
           '
           if docker run --rm --network none containarium-slides-agent:ci; then
