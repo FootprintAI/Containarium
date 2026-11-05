@@ -50,7 +50,8 @@ func applyBoxSkillSetsTool() Tool {
 			"touched); the files of sets kept are refreshed to the release's pin. Idempotent: " +
 			"repeating it reports 'unchanged'. An empty array removes every set. Refused with a " +
 			"typed reason, shown as 'refused (REASON)': RUN_IN_PROGRESS (a run is active in the " +
-			"box; retry once it ends), SET_PREDATES_MANIFEST (a set installed before the per-box " +
+			"box, or run starts held the box for 30s; retry once it ends), APPLY_IN_PROGRESS " +
+			"(another apply on the box was still installing after 30s; retry once it returns), SET_PREDATES_MANIFEST (a set installed before the per-box " +
 			"manifest existed would be removed; keep it in the list once to adopt it), " +
 			"UNKNOWN_SKILL_SET (an id the release's lock does not define). " +
 			"Same function as `containarium code skill-sets`.",

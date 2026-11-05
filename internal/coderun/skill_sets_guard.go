@@ -18,6 +18,17 @@ import (
 // tree (sdlcskills.ApplyMarkerFile) rather than from the daemon.
 var ErrSkillSetsApplyInProgress = errors.New("skill sets are being applied on this box")
 
+// ErrSkillSetsApplyMarkerNotCleared: a stale skill-set apply marker (no apply
+// holds it) is in the way and the box user cannot remove it, so a run over
+// SSH does not start (#3540). Unlike ErrSkillSetsApplyInProgress, retrying
+// does not help: the path has to be removed by hand.
+var ErrSkillSetsApplyMarkerNotCleared = errors.New("a stale skill-set apply marker could not be removed")
+
+// recheckFailedWarning is the start's note when the re-check after the start
+// cannot run. It is a constant: the failure's detail is the box's own
+// shell_exec stderr, which is not passed on to the caller (#3540).
+const recheckFailedWarning = "could not re-check for a skill-set apply after the start; the check before the start passed, so the run continues"
+
 // shellExecFunc runs a command on the box as the box user and returns
 // agent-box's shell_exec reply (Session.ShellExec).
 type shellExecFunc func(context.Context, string) (string, error)
@@ -30,10 +41,11 @@ const applyMarkerAgeLimit = 24 * time.Hour
 // GuardSkillSetsApply checks the skill-set apply marker as the box user before
 // a run launches. A held marker is ErrSkillSetsApplyInProgress naming the
 // apply. A stale one (its lease lapsed, or it cannot be read) is removed and
-// reported in warning, and the run goes ahead. When the clear finds the marker
-// is no longer the stale one it read (a new apply took it in between), it
-// checks again, so the new apply's marker refuses the run. A check that cannot
-// run refuses the start: a run that did not look is not known to be safe.
+// reported in warning, and the run goes ahead; one the box user cannot remove
+// is ErrSkillSetsApplyMarkerNotCleared. When the clear finds the marker is no
+// longer the stale one it read (a new apply took it in between), it checks
+// again, so the new apply's marker refuses the run. A check that cannot run
+// refuses the start: a run that did not look is not known to be safe.
 func GuardSkillSetsApply(ctx context.Context, shellExec func(context.Context, string) (string, error)) (warning string, err error) {
 	// Each pass either decides or saw its stale marker replaced; three
 	// replacements in a row is not a box that will settle.
@@ -56,12 +68,16 @@ func GuardSkillSetsApply(ctx context.Context, shellExec func(context.Context, st
 		if err != nil {
 			return "", fmt.Errorf("clear a stale skill-set apply marker: %w", err)
 		}
-		removed, err := sdlcskills.ParseApplyMarkerCleared(out)
+		cleared, err := sdlcskills.ParseApplyMarkerCleared(out)
 		if err != nil {
 			return "", fmt.Errorf("clear a stale skill-set apply marker: %w", err)
 		}
-		if removed {
+		switch cleared {
+		case sdlcskills.ApplyMarkerClearRemoved:
 			return fmt.Sprintf("cleared a stale skill-set apply marker (~/.claude/skills/%s): %s", sdlcskills.ApplyMarkerFile, c.Why), nil
+		case sdlcskills.ApplyMarkerClearFailed:
+			return "", fmt.Errorf("%w: ~/.claude/skills/%s is not held by any apply (%s), but the box user cannot remove it; remove it by hand, then retry the run",
+				ErrSkillSetsApplyMarkerNotCleared, sdlcskills.ApplyMarkerFile, c.Why)
 		}
 	}
 	return "", fmt.Errorf("%w: the apply marker (~/.claude/skills/%s) kept changing while a stale one was being cleared; retry the run", ErrSkillSetsApplyInProgress, sdlcskills.ApplyMarkerFile)
@@ -97,12 +113,13 @@ func applyInProgressError(c sdlcskills.ApplyMarkerCheck, note string) error {
 // see the run. agent-box writes the record before process_start returns, so
 // either that apply saw the run (and refused), or its marker was already
 // written when the record was, and this re-check sees it: the run is stopped
-// (forced, its log kept) and refused. A re-check that cannot run leaves the
-// run going with a note in warning; the check before the start passed.
+// with SIGKILL (force; agent-box keeps a run's log however it is stopped) and
+// refused. A re-check that cannot run leaves the run going with
+// recheckFailedWarning; the check before the start passed.
 func (s *Session) recheckSkillSetsApplyAfterStart(ctx context.Context, name string) (warning string, err error) {
 	c, err := checkApplyMarker(ctx, s.ShellExec)
 	if err != nil {
-		return fmt.Sprintf("could not re-check for a skill-set apply after the start: %v", err), nil
+		return recheckFailedWarning, nil
 	}
 	if c.Status != sdlcskills.ApplyMarkerHeld {
 		return "", nil

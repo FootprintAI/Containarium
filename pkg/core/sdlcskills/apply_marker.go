@@ -63,6 +63,14 @@ const applyMarkerPath = `"$HOME/.claude/skills/` + ApplyMarkerFile + `"`
 // removes again so an apply that changes nothing leaves no trace. startedAt 0
 // takes a new marker (the start is now); a renewal passes the start the first
 // write printed.
+//
+// Whatever the box user left at the marker path is replaced, so the marker
+// held is the one runs read (#3540): the temporary file is removed first (a
+// symlink there is removed, never written through), a directory at the
+// marker path is removed, and the rename never moves into a directory (-T),
+// so a symlink to one is replaced as a link. Nothing is removed but those two
+// exact paths, and rm neither follows a symlink nor crosses a mount. A path
+// that cannot be replaced fails the write, with rm's or mv's own error.
 func ApplyMarkerWriteScript(startedAt int64, lease time.Duration) string {
 	start := `"$now"`
 	if startedAt > 0 {
@@ -70,14 +78,17 @@ func ApplyMarkerWriteScript(startedAt int64, lease time.Duration) string {
 	}
 	return `set -e
 d="$HOME/.claude/skills"
+f=` + applyMarkerPath + `
 made=0
 [ -d "$d" ] || made=1
 [ -d "$HOME/.claude" ] || made=2
 mkdir -p "$d"
+rm -rf --one-file-system "$f.tmp"
 now="$(date +%s)"
 start=` + start + `
-printf '{"version":` + strconv.Itoa(ApplyMarkerVersion) + `,"started_at":%s,"expires_at":%s}\n' "$start" "$((now + ` + strconv.FormatInt(int64(lease/time.Second), 10) + `))" > ` + applyMarkerPath + `.tmp
-mv -f ` + applyMarkerPath + `.tmp ` + applyMarkerPath + `
+printf '{"version":` + strconv.Itoa(ApplyMarkerVersion) + `,"started_at":%s,"expires_at":%s}\n' "$start" "$((now + ` + strconv.FormatInt(int64(lease/time.Second), 10) + `))" > "$f.tmp"
+if [ -d "$f" ] && [ ! -L "$f" ]; then rm -rf --one-file-system "$f"; fi
+mv -fT "$f.tmp" "$f"
 echo "$start $made"
 `
 }
@@ -124,22 +135,32 @@ func ParseApplyMarkerTaken(out string) (ApplyMarkerTaken, error) {
 // is stale (and removed) rather than read in full.
 const ApplyMarkerReadLimit = 4096
 
-// applyMarkerIDPattern is a marker file's identity as the check prints it,
-// inode:mtime:size. Every write replaces the file by rename, so a marker an
-// apply writes after a check never has the identity the check saw.
-var applyMarkerIDPattern = regexp.MustCompile(`^[0-9]+:[0-9]+:[0-9]+$`)
+// applyMarkerIDFormat is the stat format of a marker path's identity,
+// inode:ctime:size, of the path itself (a symlink is not followed). Every
+// write replaces the file by rename, so a marker an apply writes after a
+// check never has the identity the check saw. The time is the change time,
+// which the box user cannot set (#3540: an mtime is theirs to set, before
+// 1970 or past 2038, and stat then prints it negative); it can still print
+// negative on a box whose clock is, so the pattern allows a sign there.
+const applyMarkerIDFormat = `%i:%Z:%s`
+
+// applyMarkerIDPattern is an identity as the check prints it. The identity is
+// put into the clear's script, so nothing but digits, the two colons and a
+// sign on the time gets through.
+var applyMarkerIDPattern = regexp.MustCompile(`^[0-9]+:-?[0-9]+:[0-9]+$`)
 
 // ApplyMarkerCheckScript prints, as the box user, the box clock on the first
 // line; then "absent" when there is no marker, "unreadable <id>" when there is
-// one the user cannot read as a regular file, or "present <id>"; and for a
-// present marker, at most ApplyMarkerReadLimit+1 bytes of it after that. <id>
-// is the file's inode:mtime:size, what ApplyMarkerClearStaleScript compares
-// before it removes anything.
+// one the user cannot read as a regular file (a directory, a symlink to
+// anything but a readable file, a FIFO), or "present <id>"; and for a present
+// marker, at most ApplyMarkerReadLimit+1 bytes of it after that. <id> is the
+// path's identity (applyMarkerIDFormat), what ApplyMarkerClearStaleScript
+// compares before it removes anything.
 func ApplyMarkerCheckScript() string {
 	return `f=` + applyMarkerPath + `
 date +%s
 if [ ! -e "$f" ] && [ ! -L "$f" ]; then echo absent; exit 0; fi
-id="$(stat -c '%i:%Y:%s' "$f" 2>/dev/null)" || { echo "apply marker exists but cannot be inspected" >&2; exit 1; }
+id="$(stat -c '` + applyMarkerIDFormat + `' "$f" 2>/dev/null)" || { echo "apply marker exists but cannot be inspected" >&2; exit 1; }
 if [ ! -f "$f" ] || [ ! -r "$f" ]; then echo "unreadable $id"; exit 0; fi
 echo "present $id"
 head -c ` + strconv.Itoa(ApplyMarkerReadLimit+1) + ` "$f"
@@ -166,7 +187,7 @@ type ApplyMarkerCheck struct {
 	Marker ApplyMarker
 	// Now is the box clock, unix seconds.
 	Now int64
-	// ID is the marker file's identity (inode:mtime:size) when there is one:
+	// ID is the marker path's identity (inode:ctime:size) when there is one:
 	// what a stale clear compares, so it never removes a marker a new apply
 	// wrote since the check.
 	ID string
@@ -221,34 +242,88 @@ func ParseApplyMarkerCheck(out string) (ApplyMarkerCheck, error) {
 	return c, nil
 }
 
+// ApplyMarkerClearResult is what ApplyMarkerClearStaleScript did.
+type ApplyMarkerClearResult int
+
+const (
+	// ApplyMarkerClearUnknown is the zero value; no clear reports it.
+	ApplyMarkerClearUnknown ApplyMarkerClearResult = iota
+	// ApplyMarkerClearRemoved: the stale marker is gone; a run may start.
+	ApplyMarkerClearRemoved
+	// ApplyMarkerClearKept: the marker path no longer holds the stale marker
+	// checked (a new apply's marker, or nothing), and is left as it is; check
+	// again.
+	ApplyMarkerClearKept
+	// ApplyMarkerClearFailed: the stale marker is still there and the box
+	// user cannot remove it (for example a read-only ~/.claude/skills).
+	ApplyMarkerClearFailed
+)
+
 // Outputs of ApplyMarkerClearStaleScript.
 const (
 	applyMarkerRemoved = "removed"
 	applyMarkerKept    = "kept"
+	applyMarkerFailed  = "failed"
 )
 
-// ApplyMarkerClearStaleScript removes the marker as the box user only while
-// its identity is still id (ApplyMarkerCheck.ID), so a marker a new apply
-// wrote since the check survives, and prints whether it removed it
-// (ParseApplyMarkerCleared). id is validated, never quoted: it is digits and
-// colons only.
+// ApplyMarkerClearStaleScript removes the marker path as the box user only
+// while its identity is still id (ApplyMarkerCheck.ID), so a marker a new
+// apply wrote since the check survives, and prints what it did
+// (ParseApplyMarkerCleared). id is validated, never quoted: it is digits,
+// colons and a minus only.
+//
+// Anything at the path is removed, a directory included (#3540), and nothing
+// else: the path is first renamed to a capture name beside it, which moves a
+// symlink as a link and never follows it, and rm on the capture neither
+// follows a symlink inside a directory nor crosses a mount. The rename also
+// narrows the race with a new apply to the instant between the identity
+// check and the rename (both in this one script), and is undone when the
+// captured file turns out not to be the one checked: a new apply's marker
+// caught in that instant is put back, not deleted (a run checking in that
+// same instant could still start; the re-check after a start then sees the
+// marker). The capture is compared by inode and size, since the rename moves
+// its change time.
 func ApplyMarkerClearStaleScript(id string) (string, error) {
+	return applyMarkerClearStaleScript(id, "")
+}
+
+// applyMarkerClearStaleScript is ApplyMarkerClearStaleScript with between run
+// after the identity check and before the capture: where a test lands a new
+// apply's marker. Production passes "".
+func applyMarkerClearStaleScript(id, between string) (string, error) {
 	if !applyMarkerIDPattern.MatchString(id) {
 		return "", fmt.Errorf("apply marker: %q is not a marker identity", id)
 	}
+	fields := strings.Split(id, ":")
+	captured := fields[0] + ":" + fields[2]
 	return `f=` + applyMarkerPath + `
-if [ "$(stat -c '%i:%Y:%s' "$f" 2>/dev/null)" = '` + id + `' ] && rm -f "$f"; then echo ` + applyMarkerRemoved + `; else echo ` + applyMarkerKept + `; fi
+c="$f.stale.$$"
+if [ "$(stat -c '` + applyMarkerIDFormat + `' "$f" 2>/dev/null)" != '` + id + `' ]; then echo ` + applyMarkerKept + `; exit 0; fi
+` + between + `rm -rf --one-file-system "$c" 2>/dev/null
+if ! mv -T "$f" "$c" 2>/dev/null; then
+  if [ -e "$f" ] || [ -L "$f" ]; then echo ` + applyMarkerFailed + `; else echo ` + applyMarkerKept + `; fi
+  exit 0
+fi
+if [ "$(stat -c '%i:%s' "$c" 2>/dev/null)" != '` + captured + `' ]; then
+  mv -nT "$c" "$f" 2>/dev/null
+  if [ -e "$f" ] || [ -L "$f" ]; then rm -rf --one-file-system "$c" 2>/dev/null; fi
+  echo ` + applyMarkerKept + `
+  exit 0
+fi
+rm -rf --one-file-system "$c" 2>/dev/null
+echo ` + applyMarkerRemoved + `
 `, nil
 }
 
-// ParseApplyMarkerCleared reads ApplyMarkerClearStaleScript's output: whether
-// the stale marker was removed (false: the file is no longer the one checked).
-func ParseApplyMarkerCleared(out string) (bool, error) {
+// ParseApplyMarkerCleared reads ApplyMarkerClearStaleScript's output.
+func ParseApplyMarkerCleared(out string) (ApplyMarkerClearResult, error) {
 	switch strings.TrimSpace(out) {
 	case applyMarkerRemoved:
-		return true, nil
+		return ApplyMarkerClearRemoved, nil
 	case applyMarkerKept:
-		return false, nil
+		return ApplyMarkerClearKept, nil
+	case applyMarkerFailed:
+		return ApplyMarkerClearFailed, nil
 	}
-	return false, fmt.Errorf("apply marker: unexpected clear output %q", strings.TrimSpace(out))
+	return ApplyMarkerClearUnknown, fmt.Errorf("apply marker: unexpected clear output %q", strings.TrimSpace(out))
 }

@@ -4,6 +4,8 @@ package server
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -20,11 +22,46 @@ import (
 // the caller's cancellation, and an apply that only waits does not make runs
 // fail with the "installing" refusal.
 
+// heldRunCommand is what the held start runs: long enough to still be live when
+// a test applies right after, short enough that settleDetachedRuns is quick.
+const heldRunCommand = "sleep 2"
+
+// settleDetachedRuns waits, at the end of the test, until every run recorded in
+// logDir has written its exit sidecar. A started run is a setsid-detached
+// process that keeps writing (tools probe, exit sidecar) into logDir after
+// StartBoxRun returns, so without this the t.TempDir cleanup races it and fails
+// with "directory not empty" (#3541). Register it after the server's TempDir
+// exists: cleanups run last-in first-out, so it runs before that cleanup.
+func settleDetachedRuns(t *testing.T, logDir string) {
+	t.Helper()
+	t.Cleanup(func() {
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			records, _ := filepath.Glob(filepath.Join(logDir, "*.json"))
+			pending := 0
+			for _, r := range records {
+				if _, err := os.Stat(strings.TrimSuffix(r, ".json") + ".exit"); err != nil {
+					pending++
+				}
+			}
+			if pending == 0 {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Errorf("%d detached run(s) still had not exited after 30s", pending)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+}
+
 // holdFirstRunStart makes the first run start on s stop at its first user exec
 // until release is closed; later execs pass straight through. It returns once
 // the start is in flight.
 func holdFirstRunStart(t *testing.T, s *ContainerServer, runName string) (release chan struct{}, started chan error) {
 	t.Helper()
+	settleDetachedRuns(t, s.boxRunLogDir)
 	inStart, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	user := s.boxRunStartExec
@@ -38,7 +75,7 @@ func holdFirstRunStart(t *testing.T, s *ContainerServer, runName string) (releas
 	}
 	started = make(chan error, 1)
 	go func() {
-		_, err := s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{Username: "alice", Command: "sleep 5", RunName: runName})
+		_, err := s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{Username: "alice", Command: heldRunCommand, RunName: runName})
 		started <- err
 	}()
 	select {
@@ -198,7 +235,11 @@ func TestApplyBoxSkillSets_RefusesAsApplyInProgressWhileAnotherApplyHoldsTheGate
 	if err := <-first; err != nil {
 		t.Fatalf("first apply: %v", err)
 	}
-	// Once the first apply returns, the gate is free and no apply is recorded.
+	// Once the first apply returns, the gate is free and no apply is recorded:
+	// a stale flag would make every later cap refusal say APPLY_IN_PROGRESS.
+	if s.boxRunStarts.applyHeld("alice-container") {
+		t.Error("apply flag still set after the first apply returned")
+	}
 	unlock, err := s.lockBoxSkillSetGate(context.Background(), "alice-container")
 	if err != nil {
 		t.Fatalf("gate still held after both applies: %v", err)
@@ -222,6 +263,55 @@ func TestApplyBoxSkillSets_CapMessageIsTruthfulAboutRunStarts(t *testing.T) {
 	}
 	close(release)
 	<-started
+}
+
+// #3541: when the gate is held by something that is not a recorded run start
+// (here: its read side taken directly), the cap message names no starts and
+// must not print an empty list.
+func TestApplyBoxSkillSets_CapMessageWithNoRecordedHolderNamesNoStarts(t *testing.T) {
+	shortGateWait(t, 100*time.Millisecond)
+	s, _, installs := skillSetServer(t, t.TempDir(), pb.ContainerState_CONTAINER_STATE_RUNNING)
+	gate := s.boxSkillSetGate("alice-container")
+	gate.RLock()
+	defer gate.RUnlock()
+
+	_, err := apply(t, s, "qa")
+	reason, _ := skillSetRefusalOf(t, err)
+	if status.Code(err) != codes.FailedPrecondition || reason != pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_RUN_IN_PROGRESS {
+		t.Fatalf("err = %v (reason %v), want FAILED_PRECONDITION RUN_IN_PROGRESS", err, reason)
+	}
+	msg := status.Convert(err).Message()
+	if strings.Contains(msg, "now:") || strings.Contains(msg, "()") || strings.Contains(msg, ": .") {
+		t.Errorf("message %q prints an empty holder list", msg)
+	}
+	if !strings.Contains(msg, "No run start is recorded in flight") {
+		t.Errorf("message %q does not say no run start is recorded", msg)
+	}
+	if *installs != 0 {
+		t.Errorf("installer ran %d times; the refused apply must change nothing", *installs)
+	}
+}
+
+// #3541: a holder that released between the last poll and the cap must not get
+// the apply refused. The poll interval is longer than the cap, so only the
+// final TryLock at the cap can see the gate free.
+func TestApplyBoxSkillSets_TakesTheGateIfItIsFreeWhenTheCapFires(t *testing.T) {
+	shortGateWait(t, 200*time.Millisecond)
+	boxSkillSetsGatePoll = time.Hour // set after shortGateWait; its cleanup restores it
+	s, _, installs := skillSetServer(t, t.TempDir(), pb.ContainerState_CONTAINER_STATE_RUNNING)
+	gate := s.boxSkillSetGate("alice-container")
+	gate.RLock()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		gate.RUnlock()
+	}()
+
+	if _, err := apply(t, s, "qa"); err != nil {
+		t.Fatalf("apply refused although the gate was free when the cap fired: %v", err)
+	}
+	if *installs != 1 {
+		t.Errorf("installer ran %d times, want 1", *installs)
+	}
 }
 
 // A run start that returns is no longer a holder, and its box leaves no empty
