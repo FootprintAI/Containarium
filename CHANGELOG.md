@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.130.0] - 2026-11-05
+
+
+### Added
+
+- **`WriteBoxFile`: write a file into a box user's home through the daemon** (#3548).
+  `PUT /v1/containers/{username}/files` and `containarium code put-file <box>
+  <local-file> [<remote-path>]` put one file (at most 2 MiB) where a run on the
+  box can read it, with no SSH client and without embedding the bytes in a
+  `command` run. The bytes go through the container file API, never a shell. The
+  path is relative to the home directory and must stay inside it (no absolute
+  path, no `..`, nothing under `.ssh` or `.containarium`); parent directories
+  are created `0700`; the file appears whole or not at all, owned by the box user
+  with mode `0600` (or `0400`), and replaces an existing file, including a
+  symlink at the path, which is replaced rather than written through. An optional
+  `sha256` is checked against the bytes on the box before the file appears; a
+  mismatch leaves nothing and is `DATA_LOSS`. Same access as `StartBoxRun`
+  (`ssh:write`, box owner or collaborator). Advertised as the `box_files`
+  capability in `SystemInfo.capabilities`.
+
+### Changed
+
+- **A recipe whose `post_start` failed silently now fails its deploy** (#3545, follows #3542). Every `post_start` in the catalog already runs under `set -euo pipefail`, so a recipe that stopped partway and was reported deployed is now reported failed (synchronous deploy: an `Internal` error naming the box and exit status). Skill and crew runs share the same path and are affected the same way. A failed `post_start` also skips exposing the recipe's ports (fail closed): an asynchronous deploy leaves the box running with no route, and the daemon journal line now says `ports were not exposed`. A step that exits 0 with output past the exec capture cap still succeeds, but a timeout or transport error that also exceeded the cap now fails the step instead of passing.
+
+### Fixed
+
+- **A directory or an odd timestamp at the skill-set apply marker path no longer blocks every run over SSH** (#3540, follows #3529). A directory, or a symlink to one, at `~/.claude/skills/.sdlc-skill-sets.applying` used to make every `containarium code run` and MCP `code_run` refuse with "kept changing"; it is now cleared as a stale marker (a symlink is removed as a link, its target untouched), and the apply's own write replaces it. A file there dated before 1970 or far in the future no longer makes the check fail. A stale marker the box user cannot remove now refuses with `a stale skill-set apply marker could not be removed ... remove it by hand` instead of reading as an apply in progress. The "could not re-check" warning no longer carries the box's own error text.
+- **Skill-set apply refusals are described accurately, and a test race is gone** (#3541). The `apply_box_skill_sets` tool description and `containarium code skill-sets --help` now list both `RUN_IN_PROGRESS` (a run, or run starts that held the box for the 30s wait) and `APPLY_IN_PROGRESS` (another apply still installing). An apply whose wait for the box ends just as the box frees up now takes it instead of being refused, and the refusal with no run start in flight no longer prints an empty list. `docs/BOX-RUN-API.md` names `DEADLINE_EXCEEDED` for a caller deadline.
+- **A skill or crew run no longer reuses a half-prepared box silently** (#3546). When the recipe `post_start` of a skill's box failed, or the daemon stopped while it ran, the box was left behind and the next run reused it without running `post_start`, so the first run failed and the second appeared to succeed on a box that was never set up. A recipe deploy now sets `user.containarium.post_start_pending` on the box before `post_start` and removes it only when `post_start` succeeds. A run that finds the key on the box it would reuse runs `post_start` again; if it fails again the run fails with `FailedPrecondition` naming the box, and the box is kept for debugging (delete it to get a fresh one on the next run). A box whose `post_start` succeeded, or one made before this release, is reused as before.
+- **Two runs of one skill no longer run its box's `post_start` at the same time** (#3555). A run that reached a skill's box while the first deploy was still running `post_start` started a second `post_start` in the same box, and could remove the not-prepared key before the first one finished, so a failing first `post_start` left the box unmarked and the next run reused it silently. The deploy now holds a per-box lock until its `post_start` is done, and a run that would reuse the box waits for it (or stops waiting when its own request is cancelled) and then reads the box again; two first runs of one skill both succeed on one box. A direct `recipe deploy` of a name that is still being prepared fails at once with `FailedPrecondition` instead of waiting. When the daemon cannot write the not-prepared key, the failure is now reported in the `post_start` error, or as a warning in an async deploy's message, instead of only in the daemon log; the deploy still goes on and no box is deleted.
+
+### Upgrading
+
+- **Skill and crew runs now fail visibly on a box whose recipe `post_start` did not finish** (#3545, #3546, #3555). Before, a `post_start` that failed or was cut short was reported as deployed and the next run reused the box unprepared, so a run could appear to work on a box that was never set up. Now a failed `post_start` fails the deploy (and the skill or crew run that shares its path), keeps the recipe's ports closed (an asynchronous deploy leaves the box running with no route and the daemon journal says `ports were not exposed`), and marks the box `user.containarium.post_start_pending`. The next run that finds the mark runs `post_start` again; if that fails too, the run fails with `FailedPrecondition` naming the box and the box is kept for debugging (delete it to get a fresh one). A box whose `post_start` succeeded, and boxes made before this release, are reused as before. After upgrading, a run that used to appear to succeed on a half-prepared box can fail: check the daemon journal for `post_start failed`. No flag or host-side step is needed.
+
 ## [0.129.1] - 2026-11-04
 
 
