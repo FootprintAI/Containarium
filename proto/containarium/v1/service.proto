@@ -467,6 +467,19 @@ service ContainerService {
     };
   }
 
+  // SetCodingAgent records the coding agent installed on a container
+  rpc SetCodingAgent(SetCodingAgentRequest) returns (SetCodingAgentResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{username}/coding-agent"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Record the box's coding agent";
+      description: "Records that a coding agent was installed on the box. `containarium code install` installs the agent over SSH, so a control plane that keeps a per-box record (for example, to list the boxes a coding session can use) learns of the install only from this call, which the CLI makes after the install is verified. A server that keeps no such record answers Unimplemented (HTTP 501), and the CLI treats that as nothing to update. CODING_AGENT_UNSPECIFIED is rejected: this records an install, never a removal.";
+      tags: "Container Operations";
+    };
+  }
+
   // AddSSHKey adds an SSH public key to a container
   rpc AddSSHKey(AddSSHKeyRequest) returns (AddSSHKeyResponse) {
     option (google.api.http) = {

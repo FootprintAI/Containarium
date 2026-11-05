@@ -985,6 +985,27 @@ message SetContainerAttributionResponse {
   map<string, string> labels = 1;
 }
 
+// CodingAgent names a coding agent installed on a box.
+enum CodingAgent {
+  // No agent recorded.
+  CODING_AGENT_UNSPECIFIED = 0;
+  // Claude Code.
+  CODING_AGENT_CLAUDE_CODE = 1;
+}
+
+// SetCodingAgentRequest records the coding agent `containarium code install`
+// installed on a box.
+message SetCodingAgentRequest {
+  // Username of the container
+  string username = 1;
+
+  // The agent that is now installed. Must not be CODING_AGENT_UNSPECIFIED.
+  CodingAgent coding_agent = 2;
+}
+
+// SetCodingAgentResponse is the response from recording a coding agent.
+message SetCodingAgentResponse {}
+
 // AddSSHKeyRequest is the request to add an SSH key to a container
 message AddSSHKeyRequest {
   // Username of the container

@@ -17,6 +17,7 @@ import (
 	"github.com/footprintai/containarium/internal/connectcore"
 	"github.com/footprintai/containarium/internal/credentials"
 	"github.com/footprintai/containarium/internal/sshkey"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
 
@@ -178,6 +179,15 @@ func boxNotFoundError(box, server, token string) error {
 		}
 	}
 	return fmt.Errorf("box %q not found on %s (%scheck the name, `containarium list`, or `containarium whoami --server %s`)", box, server, scope, server)
+}
+
+// SetCodingAgent records that agent is installed on box. It returns the HTTP
+// status so the caller can tell a server that keeps no coding-agent record
+// (501, or 404 on a server without the route) from a failed call.
+func (c *connectAPI) SetCodingAgent(ctx context.Context, box string, agent pb.CodingAgent) (int, error) {
+	return c.do(ctx, http.MethodPost,
+		"/v1/containers/"+url.PathEscape(box)+"/coding-agent",
+		connectcore.SetCodingAgentRequest{CodingAgent: agent.String()}, nil)
 }
 
 func (c *connectAPI) AuthorizeKey(ctx context.Context, box, pub string) error {

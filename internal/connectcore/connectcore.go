@@ -40,6 +40,13 @@ type AuthorizeKeyRequest struct {
 	SshPublicKey string `json:"sshPublicKey"`
 }
 
+// SetCodingAgentRequest is the body of POST /v1/containers/{username}/coding-agent.
+// CodingAgent carries the proto enum's name (pb.CodingAgent.String()), the form
+// grpc-gateway expects for an enum in JSON.
+type SetCodingAgentRequest struct {
+	CodingAgent string `json:"codingAgent"`
+}
+
 // Target is a resolved SSH destination.
 type Target struct {
 	User string

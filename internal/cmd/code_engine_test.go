@@ -44,6 +44,9 @@ func runInstallEngine(t *testing.T, box string, flags map[string]string,
 
 	origSSH, origResolve := sshExec, resolveCodeTargetFn
 	origMint, origSecrets := mintGatewayTokenFn, listSecretsFn
+	origRecord := recordCodingAgentFn
+	t.Cleanup(func() { recordCodingAgentFn = origRecord })
+	recordCodingAgentFn = func(context.Context, string, pb.CodingAgent, io.Writer) {}
 	origFlags := []*string{
 		&codeEngine, &codeCredential, &codeProvider, &codeSecretName,
 		&codeProviderBaseURL, &codeModel, &codePiVersion, &codeCodexVersion,

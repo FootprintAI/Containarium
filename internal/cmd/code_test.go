@@ -208,6 +208,9 @@ type installFakes struct {
 	// urlCmd, when set, answers `code bootstrap --url-cmd` in place of the
 	// canned output (runCodeBootstrapWith only).
 	urlCmd func(ctx context.Context, command, box string, stderr io.Writer) (string, error)
+	// recordAgent, when set, receives every coding-agent record the install
+	// makes. The real server call is always stubbed out.
+	recordAgent func(box string, agent pb.CodingAgent)
 }
 
 // runInstallWith is runInstall with control over the remote side; it also
@@ -215,12 +218,17 @@ type installFakes struct {
 func runInstallWith(t *testing.T, box string, flags map[string]string, f installFakes) ([]installRun, string, string, error) {
 	t.Helper()
 
-	origSSH, origResolve := sshExec, resolveCodeTargetFn
+	origSSH, origResolve, origRecord := sshExec, resolveCodeTargetFn, recordCodingAgentFn
 	origBootstrap, origRelease, origVersion := codeBootstrapURL, codeRelease, codeClaudeCodeVersion
 	t.Cleanup(func() {
-		sshExec, resolveCodeTargetFn = origSSH, origResolve
+		sshExec, resolveCodeTargetFn, recordCodingAgentFn = origSSH, origResolve, origRecord
 		codeBootstrapURL, codeRelease, codeClaudeCodeVersion = origBootstrap, origRelease, origVersion
 	})
+	recordCodingAgentFn = func(_ context.Context, box string, agent pb.CodingAgent, _ io.Writer) {
+		if f.recordAgent != nil {
+			f.recordAgent(box, agent)
+		}
+	}
 
 	codeBootstrapURL, codeRelease, codeClaudeCodeVersion = flags["bootstrap-url"], flags["release"], flags["claude-code-version"]
 
