@@ -223,6 +223,9 @@ func TestBoxLocks_EntriesLastOnlyWhileUsed(t *testing.T) {
 	if _, err := l.acquire(ctx, "a"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("acquire on a held lock with a cancelled context = %v, want context.Canceled", err)
 	}
+	if _, ok := l.tryAcquire("a"); ok {
+		t.Fatal("tryAcquire took a lock another call holds")
+	}
 	if n := l.len(); n != 1 {
 		t.Errorf("%d entries while one box is held, want 1", n)
 	}
@@ -231,11 +234,14 @@ func TestBoxLocks_EntriesLastOnlyWhileUsed(t *testing.T) {
 	if n := l.len(); n != 0 {
 		t.Errorf("%d entries after every holder and waiter left, want 0", n)
 	}
-	again, err := l.acquire(context.Background(), "a")
-	if err != nil {
-		t.Fatalf("acquire after release: %v", err)
+	again, ok := l.tryAcquire("a")
+	if !ok {
+		t.Fatal("tryAcquire did not take a free lock")
 	}
 	again()
+	if n := l.len(); n != 0 {
+		t.Errorf("%d entries after tryAcquire's release, want 0", n)
+	}
 }
 
 // TestSkillBox_FailedMarkWriteIsReported: when the not-prepared mark cannot
@@ -334,7 +340,7 @@ func TestRerunPendingPostStart_RefusedBranches(t *testing.T) {
 			boxes := newPostStartBoxes(0)
 			boxes.boxes[container] = map[string]string{incus.PostStartPendingKey: incus.PostStartPendingValue}
 			s := &RecipeServer{catalog: catalog, boxes: boxes}
-			err := s.rerunPendingPostStart(ctxAs("admin", true), tc.recipeID, name, nil)
+			_, err := s.rerunPendingPostStart(ctxAs("admin", true), tc.recipeID, name, nil)
 			if status.Code(err) != codes.FailedPrecondition {
 				t.Fatalf("code = %v (%v), want FailedPrecondition", status.Code(err), err)
 			}

@@ -98,11 +98,16 @@ A guardrail-gated recipe is not re-run on an existing box, because its dataset
 is verified only as part of a deploy; the run fails the same way and the box
 has to be deleted. The daemon never deletes the box itself.
 
-Only one `post_start` runs in a box at a time. A run that reaches the box while
-another run is still preparing it (its first deploy, or a re-run) waits for that
-to finish, then reads the key again: it goes on if the box is now prepared, and
-re-runs `post_start` if the key is still there. A waiting run stops waiting when
-its own request is cancelled or times out (`Canceled` / `DeadlineExceeded`).
+Only one `post_start` runs in a box at a time. A skill or crew run that reaches
+the box while another run is still preparing it (its first deploy, or a re-run)
+waits for that to finish, then reads the key again: it goes on if the box is now
+prepared, and re-runs `post_start` if the key is still there. That includes two
+first runs of one skill: the second waits for the first one's deploy and then
+reuses its box. A waiting run stops waiting when its own request is cancelled or
+times out (`Canceled` / `DeadlineExceeded`). A direct `recipe deploy` of a name
+that is still being prepared does not wait: it fails at once with
+`FailedPrecondition` ("already being prepared"); retry it once the other deploy
+has finished.
 
 A box without the key is reused as before, without running `post_start`. That
 includes a box whose `post_start` failed **on a daemon from before the key
