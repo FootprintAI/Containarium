@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/auth"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -37,7 +39,8 @@ func TestSetCodingAgent_GatedThenUnimplemented(t *testing.T) {
 }
 
 func TestSetCodingAgent_NeedsContainersWrite(t *testing.T) {
-	_, err := (&ContainerServer{}).SetCodingAgent(scopedCtx("alice", "containers:read"),
+	ctx := auth.ContextWithTestSubjectScopes(context.Background(), "alice", []string{"user"}, []string{auth.ScopeContainersRead})
+	_, err := (&ContainerServer{}).SetCodingAgent(ctx,
 		&pb.SetCodingAgentRequest{Username: "alice", CodingAgent: pb.CodingAgent_CODING_AGENT_CLAUDE_CODE})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("got %v (code %v), want PermissionDenied for a token without containers:write", err, status.Code(err))
