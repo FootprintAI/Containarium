@@ -1624,6 +1624,10 @@ func (c *HTTPClient) WriteBoxFile(req *pb.WriteBoxFileRequest) (*pb.WriteBoxFile
 		return nil, status.Errorf(codes.Unimplemented, "server does not expose WriteBoxFile (HTTP 404)")
 	}
 	if resp.StatusCode >= 400 {
+		// Keep the gateway's status code so a refusal stays typed (PutBoxFile).
+		if err := typedStatusError(bodyBytes); err != nil {
+			return nil, err
+		}
 		return nil, httpError(bodyBytes, resp.StatusCode, "write box file")
 	}
 	out := &pb.WriteBoxFileResponse{}
