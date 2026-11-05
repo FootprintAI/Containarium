@@ -77,18 +77,11 @@ var boxFileSHA256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // RPC) is returned as is, so the caller can say BoxFilesUnsupportedMessage; a
 // refusal comes back as *BoxFileRefusedError.
 func PutBoxFile(c BoxFileWriter, p BoxFileParams) (*pb.WriteBoxFileResponse, error) {
-	if err := ValidateBoxName(p.Box); err != nil {
+	if err := validateBoxFileParams(p.Box, p.Path, p.Mode, p.SHA256); err != nil {
 		return nil, err
 	}
-	switch {
-	case p.Path == "":
-		return nil, fmt.Errorf("a remote path is required")
-	case len(p.Content) > coderun.MaxBoxFileBytes:
+	if len(p.Content) > coderun.MaxBoxFileBytes {
 		return nil, fmt.Errorf("content is %d bytes; the limit is %d", len(p.Content), coderun.MaxBoxFileBytes)
-	case p.Mode != "" && p.Mode != "0600" && p.Mode != "0400":
-		return nil, fmt.Errorf(`mode must be "0600" or "0400", got %q`, p.Mode)
-	case p.SHA256 != "" && !boxFileSHA256Pattern.MatchString(p.SHA256):
-		return nil, fmt.Errorf("sha256 must be 64 lowercase hex characters")
 	}
 	want := p.SHA256
 	if want == "" {
@@ -99,16 +92,38 @@ func PutBoxFile(c BoxFileWriter, p BoxFileParams) (*pb.WriteBoxFileResponse, err
 		Username: p.Box, Path: p.Path, Content: p.Content, Mode: p.Mode, Sha256: want,
 	})
 	if err != nil {
-		st, ok := status.FromError(err)
-		switch {
-		case ok && st.Code() == codes.Unimplemented:
-			return nil, err
-		case ok && boxFileCodeNames[st.Code()] != "":
-			return nil, &BoxFileRefusedError{Box: p.Box, Path: p.Path, Code: st.Code(), Message: st.Message()}
-		}
-		return nil, fmt.Errorf("put %s on %s: %w", p.Path, p.Box, err)
+		return nil, boxFileError(p.Box, p.Path, err)
 	}
 	return resp, nil
+}
+
+// boxFileError sorts a failed write: Unimplemented as is, a refusal typed,
+// anything else wrapped.
+func boxFileError(box, path string, err error) error {
+	st, ok := status.FromError(err)
+	switch {
+	case ok && st.Code() == codes.Unimplemented:
+		return err
+	case ok && boxFileCodeNames[st.Code()] != "":
+		return &BoxFileRefusedError{Box: box, Path: path, Code: st.Code(), Message: st.Message()}
+	}
+	return fmt.Errorf("put %s on %s: %w", path, box, err)
+}
+
+// validateBoxFileParams checks what both forms refuse before any request.
+func validateBoxFileParams(box, path, mode, sha string) error {
+	if err := ValidateBoxName(box); err != nil {
+		return err
+	}
+	switch {
+	case path == "":
+		return fmt.Errorf("a remote path is required")
+	case mode != "" && mode != "0600" && mode != "0400":
+		return fmt.Errorf(`mode must be "0600" or "0400", got %q`, mode)
+	case sha != "" && !boxFileSHA256Pattern.MatchString(sha):
+		return fmt.Errorf("sha256 must be 64 lowercase hex characters")
+	}
+	return nil
 }
 
 // RenderBoxFileWrite is the one-line report of a write.

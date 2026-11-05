@@ -93,75 +93,111 @@ func cleanBoxFilePath(p string) (string, error) {
 
 // WriteBoxFile implements pb.ContainerServiceServer.
 func (s *ContainerServer) WriteBoxFile(ctx context.Context, req *pb.WriteBoxFileRequest) (*pb.WriteBoxFileResponse, error) {
-	if err := validateBoxRunOwner(req.GetUsername()); err != nil {
-		return nil, err
-	}
-	rel, err := cleanBoxFilePath(req.GetPath())
+	f, err := validateBoxFileTarget(req.GetUsername(), req.GetPath(), req.GetMode(), req.GetSha256())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, err
 	}
 	if len(req.GetContent()) > MaxBoxFileBytes {
 		return nil, status.Errorf(codes.InvalidArgument, "content is %d bytes; the limit is %d", len(req.GetContent()), MaxBoxFileBytes)
 	}
-	mode := req.GetMode()
+	if err := s.authorizeBoxRuns(ctx, req.GetUsername()); err != nil {
+		return nil, err
+	}
+	write := s.boxFileWriteFn()
+	if write == nil {
+		return nil, status.Error(codes.Unavailable, "no container backend to write a file on")
+	}
+	got, err := s.placeBoxFile(f, func(box, stage string) error {
+		if err := write(box, stage, req.GetContent(), "0600"); err != nil {
+			return status.Errorf(codes.Unavailable, "write %s: %v", req.GetPath(), err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &pb.WriteBoxFileResponse{Path: f.dst, Size: int64(len(req.GetContent())), Sha256: got}, nil
+}
+
+// boxFileTarget is a validated write request: who, where, how. dst is set by
+// placeBoxFile once the home directory is known.
+type boxFileTarget struct {
+	username, rel, mode, want string
+	dst                       string
+}
+
+// validateBoxFileTarget checks what WriteBoxFile and WriteBoxFileStream share,
+// before the box is touched: the owner, the path, the mode and the checksum.
+func validateBoxFileTarget(username, p, mode, want string) (*boxFileTarget, error) {
+	if err := validateBoxRunOwner(username); err != nil {
+		return nil, err
+	}
+	rel, err := cleanBoxFilePath(p)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	if mode == "" {
 		mode = boxFileDefaultMode
 	}
 	if mode != "0600" && mode != "0400" {
 		return nil, status.Error(codes.InvalidArgument, `mode must be "0600" or "0400"`)
 	}
-	want := req.GetSha256()
 	if want != "" && !boxFileSHA256Pattern.MatchString(want) {
 		return nil, status.Error(codes.InvalidArgument, "sha256 must be 64 lowercase hex characters")
 	}
-	if err := s.authorizeBoxRuns(ctx, req.GetUsername()); err != nil {
-		return nil, err
-	}
+	return &boxFileTarget{username: username, rel: rel, mode: mode, want: want}, nil
+}
 
-	rootExec, userExec, write := s.boxRunExecFn(), s.boxRunStartExecFn(), s.boxFileWriteFn()
-	if rootExec == nil || userExec == nil || write == nil {
-		return nil, status.Error(codes.Unavailable, "no container backend to write a file on")
+// placeBoxFile resolves the home, has writeStage fill a root-made staging file
+// with an unguessable name, hands it to the box user and runs the box user's
+// placement script; it returns the checksum of the bytes on the box. Every
+// failure removes the staging file, so nothing is left at or beside f.dst.
+// writeStage returns a status error.
+func (s *ContainerServer) placeBoxFile(f *boxFileTarget, writeStage func(box, stage string) error) (string, error) {
+	rootExec, userExec := s.boxRunExecFn(), s.boxRunStartExecFn()
+	if rootExec == nil || userExec == nil {
+		return "", status.Error(codes.Unavailable, "no container backend to write a file on")
 	}
-	box := req.GetUsername() + "-container"
-	home, err := resolveBoxRunHome(userExec, box, req.GetUsername())
+	box := f.username + "-container"
+	home, err := resolveBoxRunHome(userExec, box, f.username)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	home = strings.TrimSpace(home)
 	if !path.IsAbs(home) || path.Clean(home) != home || strings.ContainsAny(home, "\n\x00") {
-		return nil, status.Errorf(codes.FailedPrecondition, "the box user's home directory %q is not a plain absolute path", home)
+		return "", status.Errorf(codes.FailedPrecondition, "the box user's home directory %q is not a plain absolute path", home)
 	}
-	dst := path.Join(home, rel)
+	f.dst = path.Join(home, f.rel)
 
 	stage, err := s.newBoxFileStagePath()
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "stage name: %v", err)
+		return "", status.Errorf(codes.Internal, "stage name: %v", err)
 	}
 	removeStage := func() { _, _ = rootExec(box, "rm -f -- "+shellSingleQuote(stage)) }
-	if err := write(box, stage, req.GetContent(), "0600"); err != nil {
+	if err := writeStage(box, stage); err != nil {
 		removeStage()
-		return nil, status.Errorf(codes.Unavailable, "write %s: %v", req.GetPath(), err)
+		return "", err
 	}
-	if _, err := rootExec(box, "chown -- "+shellSingleQuote(req.GetUsername())+" "+shellSingleQuote(stage)); err != nil {
+	if _, err := rootExec(box, "chown -- "+shellSingleQuote(f.username)+" "+shellSingleQuote(stage)); err != nil {
 		removeStage()
-		return nil, status.Errorf(codes.Unavailable, "hand the staged file to %s: %v", req.GetUsername(), err)
+		return "", status.Errorf(codes.Unavailable, "hand the staged file to %s: %v", f.username, err)
 	}
-	out, err := userExec(box, req.GetUsername(), boxFilePlaceScript(dst, stage, want, mode))
+	out, err := userExec(box, f.username, boxFilePlaceScript(f.dst, stage, f.want, f.mode))
 	if err != nil {
 		removeStage()
 		switch {
 		case strings.Contains(err.Error(), boxFileMarkerSHA):
-			return nil, status.Errorf(codes.DataLoss, "the bytes on the box do not match sha256 %s; no file was written", want)
+			return "", status.Errorf(codes.DataLoss, "the bytes on the box do not match sha256 %s; no file was written", f.want)
 		case strings.Contains(err.Error(), boxFileMarkerDir):
-			return nil, status.Errorf(codes.FailedPrecondition, "%s is a directory", req.GetPath())
+			return "", status.Errorf(codes.FailedPrecondition, "%s is a directory", f.rel)
 		}
-		return nil, status.Errorf(codes.FailedPrecondition, "place %s: %v", req.GetPath(), err)
+		return "", status.Errorf(codes.FailedPrecondition, "place %s: %v", f.rel, err)
 	}
 	got := strings.TrimSpace(out)
 	if !boxFileSHA256Pattern.MatchString(got) {
-		return nil, status.Errorf(codes.Internal, "the box reported no checksum for %s", req.GetPath())
+		return "", status.Errorf(codes.Internal, "the box reported no checksum for %s", f.rel)
 	}
-	return &pb.WriteBoxFileResponse{Path: dst, Size: int64(len(req.GetContent())), Sha256: got}, nil
+	return got, nil
 }
 
 func (s *ContainerServer) newBoxFileStagePath() (string, error) {

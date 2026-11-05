@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,7 +52,14 @@ func newBoxFileHarness(t *testing.T) *boxFileHarness {
 			h.mu.Lock()
 			h.rootCmds = append(h.rootCmds, script)
 			h.mu.Unlock()
-			return "", nil // chown cannot run unprivileged here
+			// The staging cleanup runs for real so a test can see it; chown
+			// cannot run unprivileged here.
+			if strings.HasPrefix(script, "rm -f -- ") {
+				if out, err := exec.Command("sh", "-c", script).CombinedOutput(); err != nil {
+					return "", fmt.Errorf("%v: %s", err, out)
+				}
+			}
+			return "", nil
 		},
 		boxRunStartExec: func(box, username, script string) (string, error) {
 			cmd := exec.Command("sh", "-c", script)
@@ -67,6 +75,22 @@ func newBoxFileHarness(t *testing.T) *boxFileHarness {
 			h.pushed = append(h.pushed, path)
 			h.mu.Unlock()
 			return os.WriteFile(path, content, 0o600)
+		},
+		// The stream seam (#3548): the staging file grows as the bytes arrive,
+		// so a broken stream leaves a partial file only cleanup can remove.
+		boxFileWriteStream: func(box, path string, content io.Reader, mode string) error {
+			h.mu.Lock()
+			h.pushed = append(h.pushed, path)
+			h.mu.Unlock()
+			f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(f, content)
+			if cerr := f.Close(); err == nil {
+				err = cerr
+			}
+			return err
 		},
 	}
 	return h

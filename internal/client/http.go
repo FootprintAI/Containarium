@@ -120,7 +120,11 @@ func (c *HTTPClient) doRequest(ctx context.Context, method, path string, body []
 	if body != nil {
 		bodyReader = bytes.NewReader(body)
 	}
+	return c.doRequestBody(ctx, method, path, bodyReader)
+}
 
+// doRequestBody is doRequest with a streamed body (nil for none).
+func (c *HTTPClient) doRequestBody(ctx context.Context, method, path string, bodyReader io.Reader) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -1604,9 +1608,9 @@ func (c *HTTPClient) ApplyBoxSkillSets(req *pb.ApplyBoxSkillSetsRequest) (*pb.Ap
 	return out, nil
 }
 
-// WriteBoxFile is the REST form of GRPCClient.WriteBoxFile (#3548). A 404 with
-// no gateway error body (a daemon too old to expose the route) maps to
-// codes.Unimplemented, as on the gRPC transport.
+// WriteBoxFile is the REST form of GRPCClient.WriteBoxFile (#3548). A daemon
+// too old to expose the route maps to codes.Unimplemented, as on the gRPC
+// transport, and a refusal keeps its gRPC code (boxFileHTTPError).
 func (c *HTTPClient) WriteBoxFile(req *pb.WriteBoxFileRequest) (*pb.WriteBoxFileResponse, error) {
 	body, err := protojson.Marshal(req)
 	if err != nil {
@@ -1620,15 +1624,9 @@ func (c *HTTPClient) WriteBoxFile(req *pb.WriteBoxFileRequest) (*pb.WriteBoxFile
 	}
 	defer drainClose(resp)
 	bodyBytes, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode == http.StatusNotFound && !bytes.Contains(bodyBytes, []byte(`"code"`)) {
-		return nil, status.Errorf(codes.Unimplemented, "server does not expose WriteBoxFile (HTTP 404)")
-	}
 	if resp.StatusCode >= 400 {
-		// Keep the gateway's status code so a refusal stays typed (PutBoxFile).
-		if err := typedStatusError(bodyBytes); err != nil {
-			return nil, err
-		}
-		return nil, httpError(bodyBytes, resp.StatusCode, "write box file")
+		// Keeps the gRPC code so a refusal stays typed (http_box_files.go).
+		return nil, boxFileHTTPError(resp.StatusCode, bodyBytes, "WriteBoxFile")
 	}
 	out := &pb.WriteBoxFileResponse{}
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {

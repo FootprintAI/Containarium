@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -94,16 +95,20 @@ func TestPutFileTool_EmptyTextIsAnEmptyFile(t *testing.T) {
 }
 
 // The daemon owns the path rules and the checksum check: its refusal comes
-// back typed, with the reason.
+// back typed, with the reason. The replies are in the daemon's error-body shape
+// (internal/gateway ErrorHandler: HTTP status in "code", gRPC status in "error").
 func TestPutFileTool_TypedRefusalCarriesReason(t *testing.T) {
+	daemonErr := func(grpcCode string, httpStatus int, msg string) string {
+		return fmt.Sprintf(`{"error":"rpc error: code = %s desc = %s","code":%d,"message":"%s"}`, grpcCode, msg, httpStatus, msg)
+	}
 	cases := []struct {
 		name, path, reply, reason string
 		status                    int
 	}{
-		{"escape path", "../x", `{"code":3,"message":"path must stay inside the home directory"}`, "INVALID_ARGUMENT", http.StatusBadRequest},
-		{"platform dir", ".ssh/authorized_keys", `{"code":3,"message":"path must not be under .ssh"}`, "INVALID_ARGUMENT", http.StatusBadRequest},
-		{"checksum mismatch", "a", `{"code":15,"message":"the bytes on the box do not match sha256; no file was written"}`, "DATA_LOSS", http.StatusInternalServerError},
-		{"directory at the path", "a", `{"code":9,"message":"a is a directory"}`, "FAILED_PRECONDITION", http.StatusBadRequest},
+		{"escape path", "../x", daemonErr("InvalidArgument", 400, "path must stay inside the home directory"), "INVALID_ARGUMENT", http.StatusBadRequest},
+		{"platform dir", ".ssh/authorized_keys", daemonErr("InvalidArgument", 400, "path must not be under .ssh"), "INVALID_ARGUMENT", http.StatusBadRequest},
+		{"checksum mismatch", "a", daemonErr("DataLoss", 500, "the bytes on the box do not match sha256; no file was written"), "DATA_LOSS", http.StatusInternalServerError},
+		{"directory at the path", "a", daemonErr("FailedPrecondition", 400, "a is a directory"), "FAILED_PRECONDITION", http.StatusBadRequest},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
