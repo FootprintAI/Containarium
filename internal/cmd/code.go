@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/footprintai/containarium/internal/gatewayprovider"
 	"github.com/footprintai/containarium/internal/sshkey"
 	"github.com/footprintai/containarium/pkg/core/sdlcskills"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
 	"github.com/spf13/cobra"
 )
@@ -306,6 +308,58 @@ func codeRunName() string {
 	return defaultCodeRunName
 }
 
+// codeAPIServer is the server every code subcommand resolves the box against:
+// --ssh-server, else --server / CONTAINARIUM_SERVER, else the logged-in one.
+func codeAPIServer() string {
+	sshServer := codeSSHServer
+	if sshServer == "" {
+		sshServer = serverAddr
+	}
+	return pickSSHServer(sshServer)
+}
+
+// recordCodingAgentFn is the seam tests replace; production uses
+// recordCodingAgent.
+var recordCodingAgentFn = recordCodingAgent
+
+// codingAgentForEngine maps an installed engine to the coding agent a server
+// records. Only Claude Code has a CodingAgent value; other engines are not
+// recorded.
+func codingAgentForEngine(name engine.Name) (pb.CodingAgent, bool) {
+	if name == engine.NameClaude {
+		return pb.CodingAgent_CODING_AGENT_CLAUDE_CODE, true
+	}
+	return pb.CodingAgent_CODING_AGENT_UNSPECIFIED, false
+}
+
+// recordCodingAgent tells the server that agent is now installed on box, so a
+// control plane that keeps a per-box record (and lists the boxes a coding
+// session can use from it) sees an install made over SSH. Best-effort: the
+// install has already been verified, so nothing here fails the command.
+func recordCodingAgent(ctx context.Context, box string, agent pb.CodingAgent, diag io.Writer) {
+	api, err := newConnectAPI(codeAPIServer())
+	if err != nil {
+		reportCodingAgentRecord(diag, box, agent, 0, err)
+		return
+	}
+	st, err := api.SetCodingAgent(ctx, box, agent)
+	reportCodingAgentRecord(diag, box, agent, st, err)
+}
+
+// reportCodingAgentRecord says what became of the record. A server that keeps
+// no coding-agent record answers 501 (or 404 when it predates the route): that
+// is not a failure, there is simply nothing to update.
+func reportCodingAgentRecord(diag io.Writer, box string, agent pb.CodingAgent, status int, err error) {
+	switch {
+	case err == nil:
+		fmt.Fprintf(diag, "✓ recorded coding agent %s for %s on the server\n", agent, box)
+	case status == http.StatusNotImplemented || status == http.StatusNotFound:
+		fmt.Fprintf(diag, "  the server keeps no coding-agent record for %s; nothing to update\n", box)
+	default:
+		fmt.Fprintf(diag, "! could not record the coding agent for %s on the server (%v); the install itself succeeded. Re-run `containarium code install %s` to retry\n", box, err, box)
+	}
+}
+
 // resolveCodeTarget authorizes the caller's managed SSH key on box (same
 // flow as `containarium connect`) and returns the resolved SSH target plus
 // the private key path to authenticate with. Shared by every code
@@ -316,12 +370,7 @@ func resolveCodeTarget(ctx context.Context, box string, diag io.Writer) (connect
 		return connectcore.Target{}, "", err
 	}
 
-	sshServer := codeSSHServer
-	if sshServer == "" {
-		sshServer = serverAddr
-	}
-	server := pickSSHServer(sshServer)
-	api, err := newConnectAPI(server)
+	api, err := newConnectAPI(codeAPIServer())
 	if err != nil {
 		return connectcore.Target{}, "", err
 	}
@@ -751,6 +800,10 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 	}
 	stdout := cmd.OutOrStdout()
 	fmt.Fprintf(stdout, "✓ %s verified on %s:\n%s\n", plan.engine.Name(), box, strings.TrimSpace(out))
+	// Only now, with the install verified, is there something true to record.
+	if agent, ok := codingAgentForEngine(plan.engine.Name()); ok {
+		recordCodingAgentFn(ctx, box, agent, diag)
+	}
 	fmt.Fprint(stdout, codeNextStepsHelp(box, plan))
 	return nil
 }

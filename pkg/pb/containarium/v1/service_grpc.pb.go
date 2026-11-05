@@ -43,6 +43,7 @@ const (
 	ContainerService_SetContainerDeletePolicy_FullMethodName  = "/containarium.v1.ContainerService/SetContainerDeletePolicy"
 	ContainerService_SetContainerToolAccess_FullMethodName    = "/containarium.v1.ContainerService/SetContainerToolAccess"
 	ContainerService_SetContainerAttribution_FullMethodName   = "/containarium.v1.ContainerService/SetContainerAttribution"
+	ContainerService_SetCodingAgent_FullMethodName            = "/containarium.v1.ContainerService/SetCodingAgent"
 	ContainerService_AddSSHKey_FullMethodName                 = "/containarium.v1.ContainerService/AddSSHKey"
 	ContainerService_SetSSHKeys_FullMethodName                = "/containarium.v1.ContainerService/SetSSHKeys"
 	ContainerService_RemoveSSHKey_FullMethodName              = "/containarium.v1.ContainerService/RemoveSSHKey"
@@ -265,6 +266,8 @@ type ContainerServiceClient interface {
 	// named are left intact. Cloud→daemon plumbing (like /authorized-keys/sentinel),
 	// not a standalone operator action — no CLI verb.
 	SetContainerAttribution(ctx context.Context, in *SetContainerAttributionRequest, opts ...grpc.CallOption) (*SetContainerAttributionResponse, error)
+	// SetCodingAgent records the coding agent installed on a container
+	SetCodingAgent(ctx context.Context, in *SetCodingAgentRequest, opts ...grpc.CallOption) (*SetCodingAgentResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(ctx context.Context, in *AddSSHKeyRequest, opts ...grpc.CallOption) (*AddSSHKeyResponse, error)
 	// SetSSHKeys replaces the caller-managed SSH public keys of a container
@@ -731,6 +734,16 @@ func (c *containerServiceClient) SetContainerAttribution(ctx context.Context, in
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetContainerAttributionResponse)
 	err := c.cc.Invoke(ctx, ContainerService_SetContainerAttribution_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) SetCodingAgent(ctx context.Context, in *SetCodingAgentRequest, opts ...grpc.CallOption) (*SetCodingAgentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetCodingAgentResponse)
+	err := c.cc.Invoke(ctx, ContainerService_SetCodingAgent_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1446,6 +1459,8 @@ type ContainerServiceServer interface {
 	// named are left intact. Cloud→daemon plumbing (like /authorized-keys/sentinel),
 	// not a standalone operator action — no CLI verb.
 	SetContainerAttribution(context.Context, *SetContainerAttributionRequest) (*SetContainerAttributionResponse, error)
+	// SetCodingAgent records the coding agent installed on a container
+	SetCodingAgent(context.Context, *SetCodingAgentRequest) (*SetCodingAgentResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error)
 	// SetSSHKeys replaces the caller-managed SSH public keys of a container
@@ -1749,6 +1764,9 @@ func (UnimplementedContainerServiceServer) SetContainerToolAccess(context.Contex
 }
 func (UnimplementedContainerServiceServer) SetContainerAttribution(context.Context, *SetContainerAttributionRequest) (*SetContainerAttributionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetContainerAttribution not implemented")
+}
+func (UnimplementedContainerServiceServer) SetCodingAgent(context.Context, *SetCodingAgentRequest) (*SetCodingAgentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetCodingAgent not implemented")
 }
 func (UnimplementedContainerServiceServer) AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddSSHKey not implemented")
@@ -2361,6 +2379,24 @@ func _ContainerService_SetContainerAttribution_Handler(srv interface{}, ctx cont
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).SetContainerAttribution(ctx, req.(*SetContainerAttributionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_SetCodingAgent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetCodingAgentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).SetCodingAgent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_SetCodingAgent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).SetCodingAgent(ctx, req.(*SetCodingAgentRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3428,6 +3464,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetContainerAttribution",
 			Handler:    _ContainerService_SetContainerAttribution_Handler,
+		},
+		{
+			MethodName: "SetCodingAgent",
+			Handler:    _ContainerService_SetCodingAgent_Handler,
 		},
 		{
 			MethodName: "AddSSHKey",
