@@ -182,7 +182,10 @@ func TestWriteBoxFileStream_OversizedStreamIsRefused(t *testing.T) {
 	})
 	t.Run("more data than declared: nothing left", func(t *testing.T) {
 		h := newBoxFileHarness(t)
-		_, err := h.stream(tenantCtx("alice"), chunked(&pb.WriteBoxFileStreamHeader{Path: "o/over.bin", Size: 5}, []byte("0123456789"), 4), nil)
+		// The stream then breaks instead of closing cleanly, so only the
+		// size check made while the data arrives can answer InvalidArgument
+		// (a check left to EOF would see the break and answer Unavailable).
+		_, err := h.stream(tenantCtx("alice"), chunked(&pb.WriteBoxFileStreamHeader{Path: "o/over.bin", Size: 5}, []byte("0123456789"), 4), io.ErrUnexpectedEOF)
 		if status.Code(err) != codes.InvalidArgument {
 			t.Fatalf("err = %v, want InvalidArgument", err)
 		}

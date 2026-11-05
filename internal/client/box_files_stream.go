@@ -85,7 +85,8 @@ func (e *boxFileLocalReadError) Error() string { return "read the local file: " 
 func (e *boxFileLocalReadError) Unwrap() error { return e.err }
 
 // forEachChunk reads content in chunks and calls send with each; a read error
-// is returned as *boxFileLocalReadError.
+// is returned as *boxFileLocalReadError. The buffer is reused after send
+// returns, so send must not keep the slice.
 func forEachChunk(content io.Reader, send func([]byte) error) error {
 	buf := make([]byte, BoxFileStreamChunkBytes)
 	for {
