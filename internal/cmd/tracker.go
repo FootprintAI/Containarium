@@ -91,11 +91,12 @@ var (
 	// Connection policy (#2024). Zero values mean the daemon's
 	// documented defaults; `connect` replaces the whole connection, so
 	// re-running it without these flags resets the policy to defaults.
-	trackerLabelAllow  []string
-	trackerAutoChain   bool
-	trackerMaxDepth    int32
-	trackerMaxChildren int32
-	trackerRunTimeout  time.Duration
+	trackerLabelAllow      []string
+	trackerAutoChain       bool
+	trackerDispatchOnLabel bool
+	trackerMaxDepth        int32
+	trackerMaxChildren     int32
+	trackerRunTimeout      time.Duration
 )
 
 func init() {
@@ -120,6 +121,8 @@ func init() {
 		`Maximum follow-up chain depth (0 = daemon default, 3).`)
 	trackerConnectCmd.Flags().Int32Var(&trackerMaxChildren, "max-children", 0,
 		`Maximum follow-up issues one run may file (0 = daemon default, 5).`)
+	trackerConnectCmd.Flags().BoolVar(&trackerDispatchOnLabel, "dispatch-on-label", false,
+		`Start runs from forge labels (scope:<role>, released agent:* gates). New connections default to off (explicit dispatch only); an existing connection keeps its setting unless this flag is given.`)
 	trackerConnectCmd.Flags().DurationVar(&trackerRunTimeout, "run-timeout", 0,
 		`Run timeout the dispatcher applies (0 = daemon default, 1h).`)
 
@@ -191,6 +194,10 @@ func runTrackerConnect(cmd *cobra.Command, args []string) error {
 	policy, err := buildTrackerPolicy(trackerLabelAllow, trackerAutoChain, trackerMaxDepth, trackerMaxChildren, trackerRunTimeout)
 	if err != nil {
 		return err
+	}
+
+	if cmd.Flags().Changed("dispatch-on-label") {
+		policy.DispatchOnLabel = &trackerDispatchOnLabel
 	}
 
 	req := &pb.SetTrackerConnectionRequest{

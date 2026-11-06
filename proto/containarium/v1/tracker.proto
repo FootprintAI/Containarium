@@ -687,6 +687,16 @@ message TrackerPolicy {
 
   // Run timeout the dispatcher (#2026) applies. Default 3600.
   int64 run_timeout_seconds = 5;
+
+  // Whether the dispatcher tick starts runs from forge labels (#3569):
+  // a routed scope:<role> label, and removing agent:needs-approval /
+  // agent:done / agent:failed. When false, a tick starts nothing from
+  // labels (it still sweeps stuck rows and retries pending state-label
+  // projections); runs start only through an explicit dispatch request.
+  // Unset means true, so connections stored before this field existed
+  // keep their label-driven behavior. A connection created without it
+  // is stamped false by the daemon (opt-in for new connections).
+  optional bool dispatch_on_label = 6;
 }
 
 // CreateTrackerIssueRequest files a follow-up issue. title/body/labels

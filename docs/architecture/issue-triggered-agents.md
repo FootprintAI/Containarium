@@ -97,6 +97,15 @@ sequenceDiagram
   H->>F: remove agent:needs-approval on a follow-up → next tick dispatches it
 ```
 
+### Label-driven dispatch is a legacy mode (#3569)
+
+`policy.dispatch_on_label` gates the label path: when false, a tick starts no
+runs from `scope:<role>` labels or released `agent:*` gates (the timeout sweep
+and state-label retries still run). Unset means true, so connections stored
+before the field keep working; a connection created without it is stamped false
+by the daemon. The supported control is an explicit per-issue dispatch request
+(tracked in #3569, follow-up slice).
+
 ### Dispatch state machine
 
 ```

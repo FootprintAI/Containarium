@@ -247,3 +247,55 @@ func TestIsGateLabel(t *testing.T) {
 		}
 	}
 }
+
+// dispatch_on_label (#3569): unset keeps the legacy label-driven
+// behavior; an explicit false turns the label path off.
+func TestPolicyFromProto_DispatchOnLabel(t *testing.T) {
+	f, tr := false, true
+	tests := []struct {
+		name string
+		in   *pb.TrackerPolicy
+		want bool
+	}{
+		{"nil policy (stored before the field)", nil, true},
+		{"unset field", &pb.TrackerPolicy{MaxDepth: 2}, true},
+		{"explicit true", &pb.TrackerPolicy{DispatchOnLabel: &tr}, true},
+		{"explicit false", &pb.TrackerPolicy{DispatchOnLabel: &f}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := PolicyFromProto(tt.in).DispatchOnLabel; got != tt.want {
+				t.Errorf("DispatchOnLabel = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// StampDispatchOnLabel decides the stored value on SetTrackerConnection:
+// new connections are opt-in (false), existing ones keep what they had.
+func TestStampDispatchOnLabel(t *testing.T) {
+	f, tr := false, true
+	tests := []struct {
+		name     string
+		req      *pb.TrackerPolicy
+		existing *Connection
+		want     *bool
+	}{
+		{"new connection, no policy", nil, nil, &f},
+		{"new connection, policy without field", &pb.TrackerPolicy{MaxDepth: 2}, nil, &f},
+		{"new connection, explicit true is honored", &pb.TrackerPolicy{DispatchOnLabel: &tr}, nil, &tr},
+		{"existing legacy connection stays unset (on)", &pb.TrackerPolicy{MaxDepth: 2}, &Connection{}, nil},
+		{"existing opted-out connection stays off on re-set", nil, &Connection{Policy: &pb.TrackerPolicy{DispatchOnLabel: &f}}, &f},
+		{"existing connection, explicit request wins", &pb.TrackerPolicy{DispatchOnLabel: &f}, &Connection{}, &f},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StampDispatchOnLabel(tt.req, tt.existing).DispatchOnLabel
+			switch {
+			case got == nil && tt.want == nil:
+			case got == nil || tt.want == nil || *got != *tt.want:
+				t.Errorf("DispatchOnLabel = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
