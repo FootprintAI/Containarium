@@ -146,6 +146,82 @@ class ToolchainBuildTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((host / "current").readlink(), Path("releases/v0.1.0"))
 
+    def extra_lock(self, **overrides):
+        archive = self.root / "cobol.download"
+        with tarfile.open(archive, "w:gz") as tar:
+            content = b"#!/bin/sh\necho cobc fixture\n"
+            entry = tarfile.TarInfo("gnucobol-3/bin/cobc")
+            entry.size, entry.mode = len(content), 0o755
+            tar.addfile(entry, io.BytesIO(content))
+        tool = {"name": "cobol", "version": "3.2.0", "bin": ["bin/cobc"], "artifacts": {"amd64": {
+            "url": archive.as_uri(), "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(), "format": "tar"}}}
+        tool.update(overrides)
+        return {"tools": [tool]}
+
+    def test_extra_lock_tool_is_linked_inventoried_and_traceable(self):
+        extra = self.extra_lock()
+        digest = hashlib.sha256(json.dumps(extra).encode()).hexdigest()
+        destination = self.root / "extra"
+        self.builder.build(self.lock, "amd64", "v0.1.0", destination, self.root / "cache",
+                           extra=extra, extra_digest=digest)
+        self.assertTrue((destination / "bin/cobc").is_file())
+        self.assertEqual((destination / "bin/cobc").readlink(), Path("../extra/cobol/bin/cobc"))
+        manifest = json.loads((destination / "manifest.json").read_text())
+        tools = {t["name"]: t for t in manifest["tools"]}
+        self.assertEqual(tools["cobol"]["source"], "extra")
+        self.assertNotIn("source", tools["go"])
+        self.assertEqual(manifest["extra_lock_sha256"], digest)
+
+    def test_build_without_extra_lock_has_no_extra_fields(self):
+        destination = self.root / "plain"
+        self.builder.build(self.lock, "amd64", "v0.1.0", destination, self.root / "cache")
+        manifest = json.loads((destination / "manifest.json").read_text())
+        self.assertNotIn("extra_lock_sha256", manifest)
+        self.assertTrue(all("source" not in t for t in manifest["tools"]))
+        self.assertFalse((destination / "extra").exists())
+
+    def test_extra_lock_validation_rejects_bad_entries(self):
+        base = self.lock
+        cases = {
+            "collision": (self.extra_lock(name="go"), "collides"),
+            "latest": (self.extra_lock(version="latest"), "pinned"),
+            "empty version": (self.extra_lock(version=""), "pinned"),
+            "no digest": (self.extra_lock(artifacts={"amd64": {"url": "https://x/y.tar", "format": "tar"}}), "sha256"),
+            "short digest": (self.extra_lock(artifacts={"amd64": {"url": "https://x/y.tar", "sha256": "ab", "format": "tar"}}), "sha256"),
+            "missing arch": (self.extra_lock(artifacts={}), "amd64"),
+            "no bin": (self.extra_lock(bin=[]), "bin"),
+            "escaping bin": (self.extra_lock(bin=["../../etc/passwd"]), "bin"),
+            "bad name": (self.extra_lock(name="../evil"), "name"),
+            "not https": (self.extra_lock(artifacts={"amd64": {"url": "ftp://x/y.tar", "sha256": "0" * 64, "format": "tar"}}), "url"),
+        }
+        for label, (extra, pattern) in cases.items():
+            with self.subTest(label), self.assertRaisesRegex(ValueError, pattern):
+                self.builder.validate_extra_lock(extra, base, ("amd64", "arm64") if label != "not https" else ("amd64",))
+
+    def test_extra_lock_duplicate_names_rejected(self):
+        extra = self.extra_lock()
+        extra["tools"].append(dict(extra["tools"][0]))
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            self.builder.validate_extra_lock(extra, self.lock, ("amd64",))
+
+    def test_extra_binary_missing_from_archive_stops_build(self):
+        extra = self.extra_lock(bin=["bin/nothere"])
+        with self.assertRaisesRegex(ValueError, "not found"):
+            self.builder.build(self.lock, "amd64", "v0.1.0", self.root / "bad", self.root / "cache",
+                               extra=extra, extra_digest="0" * 64)
+
+    def test_install_is_unchanged_with_extra_tools(self):
+        arch = "arm64" if platform.machine() == "aarch64" else "amd64"
+        extra = self.extra_lock()
+        if arch == "arm64":
+            for tool in self.lock["tools"] + extra["tools"]:
+                tool["artifacts"]["arm64"] = tool["artifacts"]["amd64"]
+        tree, host = self.root / "tree", self.root / "host"
+        self.builder.build(self.lock, arch, "v0.1.0", tree, self.root / "cache", extra=extra, extra_digest="a" * 64)
+        subprocess.run(["bash", str(tree / "install.sh"), str(host)], check=True, capture_output=True)
+        out = subprocess.run(["sh", "-c", f'env -i PATH={host}/current/bin /bin/sh -c cobc'], capture_output=True, text=True)
+        self.assertEqual(out.stdout.strip(), "cobc fixture")
+
 
 if __name__ == "__main__":
     unittest.main()

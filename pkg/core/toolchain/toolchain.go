@@ -82,12 +82,16 @@ func LinkScript(root, bin string) string {
 	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 	var b strings.Builder
 	fmt.Fprintf(&b, "set -eu\nmkdir -p %s\n", q(bin))
-	for _, name := range Tools {
+	names := append([]string(nil), Tools...)
+	if inv, err := ReadInventory(root); err == nil { // deployer extras (#3570)
+		names = append(names, inv.ExtraExecutables()...)
+	}
+	for _, name := range names {
 		src, dst := filepath.Join(root, "current/bin", name), filepath.Join(bin, name)
 		fmt.Fprintf(&b, "[ -x %s ] || { echo 'managed tool %s is missing' >&2; exit 1; }\n", q(src), name)
 		fmt.Fprintf(&b, "if [ -e %s ] || [ -L %s ]; then [ \"$(readlink %s)\" = %s ] || { echo 'managed tool conflicts with %s' >&2; exit 1; }; fi\n", q(dst), q(dst), q(dst), q(src), name)
 	}
-	for _, name := range Tools {
+	for _, name := range names {
 		src, dst := filepath.Join(root, "current/bin", name), filepath.Join(bin, name)
 		fmt.Fprintf(&b, "[ \"$(readlink %s)\" = %s ] || ln -sfn %s %s\n", q(dst), q(src), q(src), q(dst))
 	}

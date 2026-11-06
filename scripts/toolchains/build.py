@@ -15,6 +15,9 @@ from urllib.request import urlopen
 import zipfile
 
 MOUNT = "/opt/containarium/toolchains"
+ARCHES = ("amd64", "arm64")
+EXTRA_ENV = "CONTAINARIUM_EXTRA_TOOLS_LOCK"
+EXTRA_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
 
 def download(asset, cache):
@@ -50,6 +53,62 @@ def unpack(source, kind, destination):
         raise ValueError(f"unsupported archive format: {kind}")
 
 
+def validate_extra_lock(extra, base, arches=ARCHES):
+    """Reject a deployer lock that is unpinned, unverifiable or shadows a built-in tool."""
+    if not isinstance(extra, dict) or not isinstance(extra.get("tools"), list) or not extra["tools"]:
+        raise ValueError("extra lock must be an object with a non-empty tools list")
+    taken = {t["name"] for t in base["tools"]} | {Path(b).name for t in base["tools"] for b in t.get("bin", [])}
+    names = [t.get("name") for t in extra["tools"]]
+    for name in names:
+        if not isinstance(name, str) or not EXTRA_NAME.fullmatch(name):
+            raise ValueError(f"invalid extra tool name: {name!r}")
+    if len(set(names)) != len(names):
+        raise ValueError("duplicate extra tool name in extra lock")
+    for tool in extra["tools"]:
+        name = tool["name"]
+        if name in taken:
+            raise ValueError(f"extra tool {name} collides with a built-in tool")
+        version = tool.get("version")
+        if not isinstance(version, str) or not version.strip() or version.strip().lower() in ("latest", "stable", "head"):
+            raise ValueError(f"extra tool {name} needs a pinned version, not {version!r}")
+        bins = tool.get("bin")
+        if not isinstance(bins, list) or not bins:
+            raise ValueError(f"extra tool {name} must list its executables in bin")
+        for rel in bins:
+            path = Path(rel) if isinstance(rel, str) else None
+            if path is None or path.is_absolute() or ".." in path.parts or not path.name:
+                raise ValueError(f"extra tool {name} has an unsafe bin path: {rel!r}")
+            if path.name in taken or path.name in {Path(b).name for t in extra["tools"] if t is not tool for b in t.get("bin", [])}:
+                raise ValueError(f"extra tool {name} bin {path.name} collides with another tool")
+        for arch in arches:
+            asset = tool.get("artifacts", {}).get(arch)
+            if not isinstance(asset, dict):
+                raise ValueError(f"extra tool {name} has no {arch} artifact")
+            if not re.fullmatch(r"[a-f0-9]{64}", str(asset.get("sha256", ""))):
+                raise ValueError(f"extra tool {name} {arch} artifact needs a 64-hex sha256")
+            if not re.match(r"https://|file://", str(asset.get("url", ""))):
+                raise ValueError(f"extra tool {name} {arch} url must be https")
+            if asset.get("format") not in ("tar", "zip"):
+                raise ValueError(f"extra tool {name} {arch} format must be tar or zip")
+
+
+def install_extra(tool, arch, destination, cache):
+    asset = tool["artifacts"][arch]
+    target = destination / "extra" / tool["name"]
+    with tempfile.TemporaryDirectory() as temp:
+        extracted = Path(temp)
+        unpack(download(asset, cache), asset["format"], extracted)
+        roots = list(extracted.iterdir())
+        root = roots[0] if len(roots) == 1 and roots[0].is_dir() else extracted
+        shutil.copytree(root, target, symlinks=True)
+    for rel in tool["bin"]:
+        executable = target / rel
+        if not executable.is_file() or not executable.resolve().is_relative_to(target.resolve()):
+            raise ValueError(f"extra tool {tool['name']}: bin {rel} not found in archive")
+        link = destination / "bin" / Path(rel).name
+        link.symlink_to(Path("..") / "extra" / tool["name"] / rel)
+
+
 def build_staticcheck(tool, lock, arch, destination, cache):
     # Rebuild the same stable source with the pinned Go security release;
     # upstream's prebuilt staticcheck may still embed an older Go stdlib.
@@ -75,9 +134,11 @@ def build_staticcheck(tool, lock, arch, destination, cache):
                        cwd=info["Dir"], env=env, check=True, timeout=600)
 
 
-def build(lock, arch, release, destination, cache):
+def build(lock, arch, release, destination, cache, extra=None, extra_digest=None):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,100}", release):
         raise ValueError("invalid release id")
+    if extra is not None:
+        validate_extra_lock(extra, lock, (arch,))
     destination, cache = destination.resolve(), cache.resolve()
     destination.mkdir(parents=True)
     bin_dir = destination / "bin"
@@ -109,6 +170,8 @@ def build(lock, arch, release, destination, cache):
                     shutil.copyfile(candidates[0], bin_dir / "pnpm")
                 else:
                     raise ValueError(f"unknown managed tool: {name}")
+    for tool in (extra or {}).get("tools", []):
+        install_extra(tool, arch, destination, cache)
     npm = next(t for t in lock["tools"] if t["name"] == "npm")
     for dependency in npm.get("security_dependencies", []):
         name = dependency["name"]
@@ -139,6 +202,9 @@ def build(lock, arch, release, destination, cache):
     manifest = {"schema_version": 1, "release": release, "arch": arch,
                 "tools": lock["tools"], "system_tools": lock["system_tools"],
                 "system_libraries": lock.get("system_libraries", [])}
+    if extra is not None:
+        manifest["tools"] = lock["tools"] + [dict(t, source="extra") for t in extra["tools"]]
+        manifest["extra_lock_sha256"] = extra_digest
     (destination / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     shutil.copyfile(Path(__file__).with_name("install.sh"), destination / "install.sh")
     checksums = []
@@ -157,5 +223,12 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--cache", type=Path, default=Path("dist/toolchain-downloads"))
     parser.add_argument("--lock", type=Path, default=Path(__file__).with_name("tools.lock.json"))
+    parser.add_argument("--extra-lock", type=Path, default=os.environ.get(EXTRA_ENV) or None,
+                        help=f"deployer lock of additional tools (default: ${EXTRA_ENV})")
     args = parser.parse_args()
-    build(json.loads(args.lock.read_text()), args.arch, args.release, args.output, args.cache)
+    extra_raw = args.extra_lock.read_bytes() if args.extra_lock else None
+    if extra_raw is not None:  # a release serves both CPUs: fail before building either
+        validate_extra_lock(json.loads(extra_raw), json.loads(args.lock.read_text()))
+    build(json.loads(args.lock.read_text()), args.arch, args.release, args.output, args.cache,
+          extra=json.loads(extra_raw) if extra_raw is not None else None,
+          extra_digest=hashlib.sha256(extra_raw).hexdigest() if extra_raw is not None else None)

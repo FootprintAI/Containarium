@@ -95,6 +95,63 @@ cannot start (`libatomic1`/`libstdc++6` on Debian, `libatomic`/`libstdc++` on
 RHEL). Provisioned boxes skip this step. The agent remains unprivileged;
 the toolchains themselves remain exclusively on the shared read-only mount.
 
+## Extra tools from a deployer lock
+
+The OSS release ships the fixed tool set above. To add language toolchains of
+your own (a COBOL compiler, a JDK with Maven, PHP CLI), build the release
+yourself with an **extra lock** that has the same shape as `tools.lock.json`:
+
+```bash
+CONTAINARIUM_EXTRA_TOOLS_LOCK=/path/to/extra.lock.json \
+  bash scripts/toolchains/package.sh "$tag" amd64
+# or: python3 scripts/toolchains/build.py --extra-lock extra.lock.json ...
+```
+
+```json
+{
+  "tools": [
+    {
+      "name": "cobol",
+      "version": "3.2.0",
+      "bin": ["bin/cobc", "bin/cobcrun"],
+      "artifacts": {
+        "amd64": {"url": "https://example.com/gnucobol-3.2.0-linux-x64.tar.gz", "sha256": "<64 hex>", "format": "tar"},
+        "arm64": {"url": "https://example.com/gnucobol-3.2.0-linux-arm64.tar.gz", "sha256": "<64 hex>", "format": "tar"}
+      }
+    }
+  ]
+}
+```
+
+Rules, all enforced before anything is downloaded or built:
+
+- `name` is lowercase `[a-z0-9._-]`; it must not equal a built-in tool or
+  another extra tool (a collision is an error, never an override).
+- `version` must be pinned. `latest`, `stable`, `head` and empty are refused.
+- Each architecture needs an HTTPS `url`, a 64-hex `sha256` and `format`
+  `tar` or `zip`. Archive-based tools only; repackage distro packages into
+  an archive and reference that by URL and digest.
+- `bin` lists the executables (paths inside the archive, after a single
+  top-level directory is stripped). Each is linked into `current/bin`, so it
+  resolves for `ctn-run` through the same `/usr/local/bin` links as the
+  built-in tools. Its file name must not collide with another tool.
+
+Extra tools are unpacked under `extra/<name>/`. `manifest.json` marks them
+`"source": "extra"` and records `extra_lock_sha256`, the digest of the lock
+file bytes, so a release traces to its inputs. `containarium toolchain list`
+prints each tool with version and source (`managed` or `extra`) from the
+active release. Without an extra lock the build is unchanged and the
+manifest carries neither field.
+
+The SPDX SBOM covers the whole tree, extra tools included. The Trivy
+`rootfs` scan covers them too, and the coverage check
+(`validate_scan.py <report> <manifest>`) fails when an extra tool's `bin`
+path is absent from the report. Trivy reports a binary only when it can
+identify its packages (Go binaries, language package manifests); an extra
+tool it reports nothing for fails the check rather than passing unscanned.
+High/Critical findings with fixes block publication as for built-in tools.
+The release stays signed by the same workflow.
+
 ## Update and rollback
 
 Install the next release using the same steps. To roll back, rerun the
