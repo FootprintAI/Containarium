@@ -22,3 +22,16 @@ class ScanCoverageTest(unittest.TestCase):
         report["Results"].pop()
         with self.assertRaisesRegex(ValueError, "staticcheck"):
             self.module.validate(report)
+
+    def test_extra_binaries_must_appear_in_the_report(self):
+        report = {"Results": [{"Target": path, "Type": "gobinary"} for path in
+                               ("go/bin/go", "bin/buf", "staticcheck/staticcheck")]}
+        with self.assertRaisesRegex(ValueError, "extra/cobol/bin/cobc"):
+            self.module.validate(report, extra=["extra/cobol/bin/cobc"])
+        report["Results"].append({"Target": "extra/cobol/bin/cobc", "Type": "gobinary"})
+        self.module.validate(report, extra=["extra/cobol/bin/cobc"])
+
+    def test_extra_paths_come_from_the_manifest(self):
+        manifest = {"tools": [{"name": "go"}, {"name": "cobol", "source": "extra", "bin": ["bin/cobc"]}]}
+        self.assertEqual(self.module.extra_binaries(manifest), ["extra/cobol/bin/cobc"])
+        self.assertEqual(self.module.extra_binaries({"tools": [{"name": "go"}]}), [])
