@@ -150,6 +150,14 @@ func (s *ContainerServer) SetTrackerConnection(ctx context.Context, req *pb.SetT
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
+	// Label-driven dispatch is opt-in for new connections (#3569); a
+	// re-set of an existing one keeps what it had.
+	existing, err := s.loadTrackerStore().Get(ctx, req.Username, req.Name)
+	if err != nil && !errors.Is(err, tracker.ErrNotFound) {
+		return nil, mapTrackerError(err)
+	}
+	req.Policy = tracker.StampDispatchOnLabel(req.Policy, existing)
+
 	conn, err := s.loadTrackerStore().Set(ctx, tracker.Connection{
 		Username:         req.Username,
 		Name:             req.Name,

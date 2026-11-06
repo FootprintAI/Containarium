@@ -3212,8 +3212,17 @@ type TrackerPolicy struct {
 	MaxChildrenPerRun int32 `protobuf:"varint,4,opt,name=max_children_per_run,json=maxChildrenPerRun,proto3" json:"max_children_per_run,omitempty"`
 	// Run timeout the dispatcher (#2026) applies. Default 3600.
 	RunTimeoutSeconds int64 `protobuf:"varint,5,opt,name=run_timeout_seconds,json=runTimeoutSeconds,proto3" json:"run_timeout_seconds,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Whether the dispatcher tick starts runs from forge labels (#3569):
+	// a routed scope:<role> label, and removing agent:needs-approval /
+	// agent:done / agent:failed. When false, a tick starts nothing from
+	// labels (it still sweeps stuck rows and retries pending state-label
+	// projections); runs start only through an explicit dispatch request.
+	// Unset means true, so connections stored before this field existed
+	// keep their label-driven behavior. A connection created without it
+	// is stamped false by the daemon (opt-in for new connections).
+	DispatchOnLabel *bool `protobuf:"varint,6,opt,name=dispatch_on_label,json=dispatchOnLabel,proto3,oneof" json:"dispatch_on_label,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *TrackerPolicy) Reset() {
@@ -3279,6 +3288,13 @@ func (x *TrackerPolicy) GetRunTimeoutSeconds() int64 {
 		return x.RunTimeoutSeconds
 	}
 	return 0
+}
+
+func (x *TrackerPolicy) GetDispatchOnLabel() bool {
+	if x != nil && x.DispatchOnLabel != nil {
+		return *x.DispatchOnLabel
+	}
+	return false
 }
 
 // CreateTrackerIssueRequest files a follow-up issue. title/body/labels
@@ -4023,14 +4039,16 @@ const file_containarium_v1_tracker_proto_rawDesc = "" +
 	"add_labels\x18\x04 \x03(\tR\taddLabels\x12#\n" +
 	"\rremove_labels\x18\x05 \x03(\tR\fremoveLabels\"9\n" +
 	"\x1dSetTrackerIssueLabelsResponse\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage\"\xd6\x01\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\"\x9d\x02\n" +
 	"\rTrackerPolicy\x12(\n" +
 	"\x10label_allow_list\x18\x01 \x03(\tR\x0elabelAllowList\x12\x1d\n" +
 	"\n" +
 	"auto_chain\x18\x02 \x01(\bR\tautoChain\x12\x1b\n" +
 	"\tmax_depth\x18\x03 \x01(\x05R\bmaxDepth\x12/\n" +
 	"\x14max_children_per_run\x18\x04 \x01(\x05R\x11maxChildrenPerRun\x12.\n" +
-	"\x13run_timeout_seconds\x18\x05 \x01(\x03R\x11runTimeoutSeconds\"\xbe\x01\n" +
+	"\x13run_timeout_seconds\x18\x05 \x01(\x03R\x11runTimeoutSeconds\x12/\n" +
+	"\x11dispatch_on_label\x18\x06 \x01(\bH\x00R\x0fdispatchOnLabel\x88\x01\x01B\x14\n" +
+	"\x12_dispatch_on_label\"\xbe\x01\n" +
 	"\x19CreateTrackerIssueRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1e\n" +
 	"\n" +
@@ -4308,6 +4326,7 @@ func file_containarium_v1_tracker_proto_init() {
 	if File_containarium_v1_tracker_proto != nil {
 		return
 	}
+	file_containarium_v1_tracker_proto_msgTypes[39].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

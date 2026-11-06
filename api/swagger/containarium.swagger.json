@@ -23685,6 +23685,10 @@
           "type": "string",
           "format": "int64",
           "description": "Run timeout the dispatcher (#2026) applies. Default 3600."
+        },
+        "dispatchOnLabel": {
+          "type": "boolean",
+          "description": "Whether the dispatcher tick starts runs from forge labels (#3569):\na routed scope:\u003crole\u003e label, and removing agent:needs-approval /\nagent:done / agent:failed. When false, a tick starts nothing from\nlabels (it still sweeps stuck rows and retries pending state-label\nprojections); runs start only through an explicit dispatch request.\nUnset means true, so connections stored before this field existed\nkeep their label-driven behavior. A connection created without it\nis stamped false by the daemon (opt-in for new connections)."
         }
       },
       "description": "TrackerPolicy is a connection's guardrails for agent-filed follow-ups.\nZero values mean the documented defaults, so an unset policy and an\nempty one behave identically."

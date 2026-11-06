@@ -626,3 +626,43 @@ func TestScopeLabels(t *testing.T) {
 		t.Fatalf("scopeLabels = %v, want %v (sorted, deduped, empty suffix dropped)", got, want)
 	}
 }
+
+// #3569: with dispatch_on_label off the tick starts nothing from labels
+// (a routed scope label, a released gate), writes no state label, and
+// inserts no row.
+func TestDispatch_LabelPathOffStartsNothing(t *testing.T) {
+	const user = "tracker-dispatch-label-off"
+	provider := newFakeDispatchProvider(
+		Issue{Number: 1, Labels: []string{"scope:product"}},
+		Issue{Number: 2, Labels: []string{"scope:product", LabelAgentDone}},
+	)
+	runs := &fakeRunStarter{}
+	d, store, ctx := newDispatchFixture(t, user, provider, runs)
+	off := PolicyFromProto(&pb.TrackerPolicy{DispatchOnLabel: new(bool)})
+	d.Policy = &off
+
+	res, err := d.Tick(ctx, user, "default")
+	if err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if len(res.Started)+len(res.Failed) != 0 || len(runs.started()) != 0 {
+		t.Fatalf("started %d failed %d StartRun %d, want none", len(res.Started), len(res.Failed), len(runs.started()))
+	}
+	if rows := dispatchedIssues(t, store, ctx, user); len(rows) != 0 {
+		t.Errorf("dispatch rows %v, want none", rows)
+	}
+	if got := provider.labels(1); len(got) != 1 || got[0] != "scope:product" {
+		t.Errorf("#1 labels = %v, want only scope:product", got)
+	}
+
+	// Turning it back on restores the legacy behavior for the same issue.
+	on := PolicyFromProto(nil)
+	d.Policy = &on
+	res, err = d.Tick(ctx, user, "default")
+	if err != nil {
+		t.Fatalf("Tick on: %v", err)
+	}
+	if len(res.Started) != 1 || res.Started[0].IssueNumber != 1 {
+		t.Fatalf("started = %+v, want issue 1", res.Started)
+	}
+}
