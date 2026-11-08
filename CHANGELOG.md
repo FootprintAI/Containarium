@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.132.0] - 2026-11-08
+
+
+### Added
+
+- **Label-driven tracker dispatch is now opt-in per connection** (#3569, first
+  slice). New policy field `dispatch_on_label` (`containarium tracker connect
+  --dispatch-on-label`). Connections created from this release default to
+  **off**: a tick no longer starts runs from `scope:<role>` labels or from
+  removing `agent:needs-approval` / `agent:done` / `agent:failed` (the sweep and
+  state-label retries still run). Existing connections are unchanged (on) until
+  they opt out. The per-issue dispatch RPC that replaces the label path follows
+  in a later release, ahead of any removal of the label path.
+- **Managed toolchain release accepts a deployer-supplied extra lock** (#3570). Set
+  `CONTAINARIUM_EXTRA_TOOLS_LOCK` (or `build.py --extra-lock`) to add pinned,
+  digest-verified archive tools to the release; they resolve through
+  `current/bin`, are inventoried in `manifest.json` with their lock digest, and
+  are covered by the SBOM and scan check. New `containarium toolchain list`
+  shows each tool's version and source. See `docs/MANAGED-TOOLCHAINS.md`.
+
 ## [0.131.0] - 2026-11-05
 
 

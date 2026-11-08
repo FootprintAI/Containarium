@@ -20,5 +20,5 @@ set.security=security
 
 [sdlc]
 repo=FootprintAI/open-sdlc-skills
-ref=feb79ff7f27948d9d385d7732bc700e8fe32bae9
-sha256=2109f04508e6364d796d32ca254693ac0ee9eb8b8f70a53a18df731e8d281d72
+ref=b348a8258b4c075bc376d70313bb7787b2accc41
+sha256=cdfb63d2de1eb50a2e006863a2b2a6e7cf87f83af5671341476f73c0d526bbbc
