@@ -195,6 +195,8 @@ func setUpWriterConnection(t *testing.T, user string, provider *fakeWriterProvid
 		Username: user, Name: "default",
 		Provider: pb.TrackerProvider_TRACKER_PROVIDER_GITHUB,
 		Project:  "acme/widgets", CredentialSecret: "GH_TOKEN",
+		// A new connection is stamped dispatch-off (#3569); these tests dispatch.
+		Policy: withDispatchOn(nil),
 	}); err != nil {
 		t.Fatalf("SetTrackerConnection: %v", err)
 	}
