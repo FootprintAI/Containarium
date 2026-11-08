@@ -5,39 +5,70 @@ import (
 	"testing"
 )
 
-// A run with a token gets its own 0600 file, the environment variable that
-// points the engine and helper at it, and removal on exit. Nothing else.
-func TestBoxRunSpawn_RunTokenFileLifecycle(t *testing.T) {
+// The token never appears in any script the daemon runs: it travels only as
+// file content (boxRunTokenInstallFn), never in a command line.
+func TestBoxRunToken_NeverInAnyScript(t *testing.T) {
+	const token = "eyJhbGciOi.secret.payload"
+	scripts := map[string]string{
+		"spawn": boxRunSpawnScript(boxRunSpawn{dir: "/var/run/box", name: "r1", command: "echo hi", home: "/home/ctn-run", runToken: token}),
+		"prep":  boxRunTokenPrepScript(),
+		"move":  boxRunTokenMoveScript(boxRunTokenStaging+"/r1.x", "ctn-run", "r1"),
+		"stop":  boxRunStopScript("/var/run/box", "r1", "ctn-run", 1234, false),
+	}
+	for name, script := range scripts {
+		if strings.Contains(script, token) {
+			t.Errorf("the %s script contains the token", name)
+		}
+	}
+}
+
+// A run with a token reads it from the run-token path, and its exit path
+// removes it. The daemon writes nothing else.
+func TestBoxRunSpawn_RunTokenPathAndExitRemoval(t *testing.T) {
 	script := boxRunSpawnScript(boxRunSpawn{
 		dir: "/var/run/box", name: "r1", command: "echo hi", home: "/home/ctn-run",
 		runToken: "eyJhbGciOi.x.y",
 	})
-	// The write runs in the spawning shell under umask 077, so the file is
-	// never readable by anyone else.
-	if !strings.Contains(script, "(umask 077; printf '%s' 'eyJhbGciOi.x.y' > '/var/run/box/r1.token')") {
-		t.Errorf("spawn script does not write the token under umask 077\n%s", script)
-	}
-	// The run's shell is started through sh -c, so the path appears quoted
-	// inside it: the export points the engine and helper at the file.
 	if !strings.Contains(script, "export CONTAINARIUM_JWT_TOKEN_FILE=") || !strings.Contains(script, "r1.token") {
-		t.Errorf("run does not get CONTAINARIUM_JWT_TOKEN_FILE pointing at its token file")
+		t.Errorf("run does not get CONTAINARIUM_JWT_TOKEN_FILE pointing at its token")
 	}
-	// Removed on exit, from inside the run's own shell (quoted, as above).
-	if !strings.Contains(script, `rm -f '\''/var/run/box/r1.token'\''`) {
-		t.Errorf("the token file is not removed in the run's exit path")
+	if !strings.Contains(script, `rm -f '\''`+boxRunTokenPath("r1")+`'\''`) {
+		t.Errorf("the token is not removed in the run's exit path")
+	}
+	if strings.Contains(script, "umask 077; printf") {
+		t.Error("the spawn script still writes the token itself")
 	}
 }
 
 // A run without a token writes no token file and exports nothing.
 func TestBoxRunSpawn_NoTokenNoFile(t *testing.T) {
 	script := boxRunSpawnScript(boxRunSpawn{dir: "/var/run/box", name: "r2", command: "echo hi", home: "/home/ctn-run"})
-	// The script still removes a stale <name>.token at start, so a leftover
-	// file from an earlier run never survives into this one; it writes and
-	// exports nothing.
 	for _, banned := range []string{"CONTAINARIUM_JWT_TOKEN_FILE", "umask 077; printf"} {
 		if strings.Contains(script, banned) {
 			t.Errorf("a run with no token must not contain %q", banned)
 		}
+	}
+}
+
+// The token is placed as root, owned by the run user, and renamed into place,
+// so a symlink planted at the destination is replaced, not followed.
+func TestBoxRunToken_MoveIsOwnedAndAtomic(t *testing.T) {
+	move := boxRunTokenMoveScript(boxRunTokenStaging+"/r1.x", "ctn-run", "r1")
+	for _, want := range []string{"chown 'ctn-run':'ctn-run'", "chmod 0600", "mv -f"} {
+		if !strings.Contains(move, want) {
+			t.Errorf("move script missing %q\n%s", want, move)
+		}
+	}
+	if !strings.Contains(move, "'"+boxRunTokenPath("r1")+"'") {
+		t.Error("move script does not rename into the run's token path")
+	}
+}
+
+// Stopping a run removes its token, since a killed run never reaches its exit path.
+func TestBoxRunStop_RemovesTheToken(t *testing.T) {
+	stop := boxRunStopScript("/var/run/box", "r1", "ctn-run", 1234, false)
+	if !strings.Contains(stop, "rm -f '"+boxRunTokenPath("r1")+"'") {
+		t.Errorf("stop script does not remove the run's token:\n%s", stop)
 	}
 }
 
@@ -68,4 +99,22 @@ func TestBoxRunToken_CapabilityAdvertised(t *testing.T) {
 		}
 	}
 	t.Errorf("capabilities %v missing %q", daemonCapabilities(), DaemonCapBoxRunToken)
+}
+
+// The install hook is called with the token only when the run has one.
+func TestInstallRunToken_CalledOnlyWithAToken(t *testing.T) {
+	var calls []string
+	s := &ContainerServer{boxRunTokenInstall: func(box, runAs, name, token string) error {
+		calls = append(calls, box+"/"+runAs+"/"+name+"/"+token)
+		return nil
+	}}
+	if err := s.installRunToken("box1", "ctn-run", "r1", ""); err != nil || len(calls) != 0 {
+		t.Fatalf("a run with no token installed something: calls=%v err=%v", calls, err)
+	}
+	if err := s.installRunToken("box1", "ctn-run", "r1", "tok"); err != nil {
+		t.Fatalf("installRunToken: %v", err)
+	}
+	if len(calls) != 1 || calls[0] != "box1/ctn-run/r1/tok" {
+		t.Fatalf("install calls = %v, want one call with the run's token", calls)
+	}
 }

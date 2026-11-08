@@ -183,7 +183,7 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 	sessionPath := dir + "/" + name + ".session"
 	toolsPath := dir + "/" + name + ".tools"
 	toolsTmp := toolsPath + ".tmp"
-	tokenPath := dir + "/" + name + ".token"
+	tokenPath := boxRunTokenPath(name)
 
 	redirect := ">" + q(logPath) + " 2>&1"
 	if sp.structured {
@@ -214,13 +214,15 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 		script += ": > " + q(stderrPath) + "\n" +
 			"chmod 600 " + q(stderrPath) + " 2>/dev/null || true\n"
 	}
-	script += "rm -f " + q(exitPath) + " " + q(sessionPath) + " " + q(sessionPath+".snap") + " " + q(toolsPath) + " " + q(toolsTmp) + " " + q(toolsTmp+".e.") + "*\n" +
-		"rm -f " + q(tokenPath) + "\n" +
-		"cd " + q(sp.home) + " 2>/dev/null || true\n"
-	if sp.runToken != "" {
-		// umask first, so the file is never readable by anyone else.
-		script += "(umask 077; printf '%s' " + q(sp.runToken) + " > " + q(tokenPath) + ")\n"
+	// A run without a token clears any stale token of the same name. A run with
+	// one must not: its token was installed just before this script ran.
+	tokenStale := ""
+	if sp.runToken == "" {
+		tokenStale = "rm -f " + q(tokenPath) + "\n"
 	}
+	script += "rm -f " + q(exitPath) + " " + q(sessionPath) + " " + q(sessionPath+".snap") + " " + q(toolsPath) + " " + q(toolsTmp) + " " + q(toolsTmp+".e.") + "*\n" +
+		tokenStale +
+		"cd " + q(sp.home) + " 2>/dev/null || true\n"
 	if sp.prelaunch != "" {
 		script += sp.prelaunch + "\n"
 	}
@@ -578,6 +580,9 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		}
 	}
 
+	if err := s.installRunToken(box, runAs, name, req.GetRunToken()); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "install run token for %q on %q: %v", name, req.GetUsername(), err)
+	}
 	out, err := startExec(box, runAs, boxRunSpawnScript(sp))
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
@@ -674,7 +679,10 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 	}
 
 	command := coderun.BuildShellCommand(req.GetCommand(), int(req.GetTimeoutSeconds()))
-	out, err := startExec(box, runAs, boxRunSpawnScript(boxRunSpawn{dir: dir, name: name, command: command, home: home}))
+	if err := s.installRunToken(box, runAs, name, req.GetRunToken()); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "install run token for %q on %q: %v", name, req.GetUsername(), err)
+	}
+	out, err := startExec(box, runAs, boxRunSpawnScript(boxRunSpawn{dir: dir, name: name, command: command, home: home, runToken: req.GetRunToken()}))
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
 	}

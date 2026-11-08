@@ -50,11 +50,12 @@ kill -%s "-$pid" 2>/dev/null || true # no "--": dash's kill builtin does not tak
 i=0
 while [ $i -lt 40 ] && [ "$(grp)" != none ]; do sleep 0.05; i=$((i+1)); done
 if [ "$(grp)" != none ]; then echo alive; exit 0; fi
+rm -f %s # a killed run never reaches its own exit path, so the token goes here
 if [ ! -e %s ] && [ ! -L %s ]; then
   printf '%%s %%s' %d "$(date -u +%%s)" > %s && chown "$user" %s && mv -f %s %s
 fi
 echo dead
-`, pid, q(username), sig, q(exit), q(exit), code, q(exit+".tmp"), q(exit+".tmp"), q(exit+".tmp"), q(exit))
+`, pid, q(username), sig, q(boxRunTokenPath(name)), q(exit), q(exit), code, q(exit+".tmp"), q(exit+".tmp"), q(exit+".tmp"), q(exit))
 }
 
 // StopBoxRun stops a box's code run.
