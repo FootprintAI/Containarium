@@ -39,7 +39,7 @@ func boxRunTokenMoveScript(staged, runAs, name string) string {
 	return "set -e\n" +
 		"chown " + q(runAs) + ":" + q(runAs) + " " + q(staged) + "\n" +
 		"chmod 0600 " + q(staged) + "\n" +
-		"mv -f " + q(staged) + " " + q(boxRunTokenPath(name)) + "\n"
+		"mv -fT " + q(staged) + " " + q(boxRunTokenPath(name)) + "\n"
 }
 
 // boxRunTokenInstallFunc installs one run's token into the box. The token
@@ -66,6 +66,9 @@ func (s *ContainerServer) boxRunTokenInstallFn() boxRunTokenInstallFunc {
 			return fmt.Errorf("stage run token: %w", err)
 		}
 		if _, stderr, code, err := mgr.ExecWithExitCode(box, []string{"sh", "-c", boxRunTokenMoveScript(staged, runAs, name)}); err != nil || code != 0 {
+			// Do not leave the staged copy behind: staging is root-only, but
+			// nothing else would ever remove it.
+			_, _, _, _ = mgr.ExecWithExitCode(box, []string{"rm", "-f", staged})
 			return fmt.Errorf("place run token: exit %d: %s", code, strings.TrimSpace(stderr))
 		}
 		return nil

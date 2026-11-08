@@ -585,6 +585,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	}
 	out, err := startExec(box, runAs, boxRunSpawnScript(sp))
 	if err != nil {
+		discardRunToken(startExec, box, runAs, name, req.GetRunToken())
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
 	}
 	pidStr, boot, found := strings.Cut(strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]), " ")
@@ -684,6 +685,7 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 	}
 	out, err := startExec(box, runAs, boxRunSpawnScript(boxRunSpawn{dir: dir, name: name, command: command, home: home, runToken: req.GetRunToken()}))
 	if err != nil {
+		discardRunToken(startExec, box, runAs, name, req.GetRunToken())
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
 	}
 	pidStr, boot, found := strings.Cut(strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]), " ")
@@ -813,4 +815,14 @@ func tokenRemoval(token, tokenPath string) string {
 		return ""
 	}
 	return "rm -f " + shellSingleQuote(tokenPath) + "; "
+}
+
+// discardRunToken removes a run's token after its spawn failed, so an
+// installed token never outlives a run that never started. Best effort: the
+// spawn's own error is what the caller reports.
+func discardRunToken(startExec boxRunStartFunc, box, runAs, name, token string) {
+	if token == "" {
+		return
+	}
+	_, _ = startExec(box, runAs, "rm -f "+shellSingleQuote(boxRunTokenPath(name))+"\n")
 }
