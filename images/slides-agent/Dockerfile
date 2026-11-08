@@ -47,7 +47,7 @@ WORKDIR /src
 COPY scripts/install-xcaddy.sh scripts/xcaddy-version.env scripts/
 RUN scripts/install-xcaddy.sh /usr/local/bin/xcaddy \
     && CGO_ENABLED=0 xcaddy build "${CADDY_VERSION}" \
-         --replace golang.org/x/net=golang.org/x/net@v0.60.0 \
+         --replace golang.org/x/net=golang.org/x/net@v0.62.0 \
          --replace github.com/go-jose/go-jose/v4=github.com/go-jose/go-jose/v4@v4.1.6 \
          --output /out/caddy \
     && /out/caddy version \
