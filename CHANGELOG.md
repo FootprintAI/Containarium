@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.132.1] - 2026-11-09
+
+
+### Fixed
+
+- **The sidecar images pin `golang.org/x/net` v0.62.0** (#3577). The `otel-sidecar`, `sshpiper` and `slides-agent` (Caddy) images were published in v0.132.0 and then failed their release vulnerability scan on CVE-2026-78661, a denial of service in `golang.org/x/net/html` fixed in v0.62.0. v0.132.0's sidecar images did not pass that scan; use v0.132.1.
+
 ## [0.132.0] - 2026-11-08
 
 
