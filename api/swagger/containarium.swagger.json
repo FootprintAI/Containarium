@@ -22420,7 +22420,7 @@
         },
         "runToken": {
           "type": "string",
-          "description": "run_token is the per-run cloud credential for this run (the agent-run\ntoken, prd/cloud/agent-run-token.md). The daemon writes it to a 0600 file\nowned by the run user, points CONTAINARIUM_JWT_TOKEN_FILE at that file for\nthe run, and deletes it when the run exits. Send it only to a daemon that\nadvertises box_run_token."
+          "description": "run_token is reserved for a per-run credential. This daemon does not\nhonour it: the field is accepted and ignored (it is never written to the\nbox), and the daemon does not advertise the box_run_token capability. A\nclient must send it only to a daemon that advertises box_run_token, and\nmust not rely on it for a credential."
         },
         "command": {
           "type": "string",

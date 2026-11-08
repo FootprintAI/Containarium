@@ -35,6 +35,14 @@ backported into a released Go toolchain. A coverage check requires the
 actual Go, buf and staticcheck binaries in every report. High/Critical
 findings with fixes block publication; scan reports are signed release assets.
 
+The only way past that gate is an entry in
+`scripts/toolchains/trivy-exceptions.yaml`, read by every scan step through
+`TRIVY_IGNOREFILE`. An entry names one tool path (never a bare CVE id), carries
+a statement of what was checked and what the fix is, and expires
+(`expired_at`): when it lapses the scan fails again, so an exception cannot
+outlive its review. Remove the entry as soon as the pinned tool in
+`tools.lock.json` carries the fix.
+
 ## Install on each host
 
 Install the tools alongside the matching daemon release. A binary-only

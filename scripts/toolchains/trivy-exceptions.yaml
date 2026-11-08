@@ -1,0 +1,28 @@
+# Reviewed, time-boxed exceptions to the managed-toolchain vulnerability gate.
+#
+# The gate (HIGH/CRITICAL findings with a fix block publication) is read by
+# `.github/workflows/release.yml` and `.github/workflows/toolchains.yml` through
+# TRIVY_IGNOREFILE. An entry here is the ONLY sanctioned way past it, and every
+# entry must be:
+#   - scoped to the one tool path it was reviewed for (never a bare id),
+#   - explained by a statement that says what was checked and what the fix is,
+#   - expiring (`expired_at`): when it lapses the scan fails again, so the
+#     exception cannot become permanent by being forgotten.
+# Remove an entry as soon as the pinned tool in tools.lock.json carries the fix.
+# See docs/MANAGED-TOOLCHAINS.md.
+vulnerabilities:
+  - id: CVE-2026-78661
+    paths:
+      - "bin/buf"
+    statement: >-
+      Accepted 2026-11-09 for v0.132.0. buf 1.75.0 (pinned in tools.lock.json,
+      the latest upstream release) embeds golang.org/x/net v0.61.0; the denial
+      of service is in golang.org/x/net/html, fixed in v0.62.0. Checked against
+      the pinned binary (sha256 verified against tools.lock.json): it has no
+      golang.org/x/net/html symbols, so the vulnerable package is not compiled
+      in; the x/net packages it does link are ipv4, bpf, http2/hpack, idna and
+      dnsmessage. buf's own source has no golang.org/x/net import. buf's main
+      branch already depends on v0.62.0 but no release carries it yet, and
+      v0.131.0 shipped the same buf. Drop this entry when tools.lock.json moves
+      to a buf release built with x/net >= v0.62.0.
+    expired_at: 2026-12-09
