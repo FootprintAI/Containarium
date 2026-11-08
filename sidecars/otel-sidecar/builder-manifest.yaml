@@ -32,6 +32,7 @@ extensions:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension v0.162.0
 
 # v0.162.0 resolves x/net v0.59.0, inside CVE-2026-78669's range (fixed in
-# v0.60.0). Drop this once a collector release requires >= v0.60.0.
+# v0.60.0) and CVE-2026-78661's (golang.org/x/net/html, fixed in v0.62.0).
+# Drop this once a collector release requires >= v0.62.0.
 replaces:
-  - golang.org/x/net => golang.org/x/net v0.60.0
+  - golang.org/x/net => golang.org/x/net v0.62.0
