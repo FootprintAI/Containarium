@@ -931,6 +931,12 @@ type StartBoxRunRequest struct {
 	// reason is in the run's log. BoxRun.model reports the id the run was
 	// started with. Capability "box_run_model" in SystemInfo.capabilities.
 	Model string `protobuf:"bytes,7,opt,name=model,proto3" json:"model,omitempty"`
+	// run_token is the per-run cloud credential for this run (the agent-run
+	// token, prd/cloud/agent-run-token.md). The daemon writes it to a 0600 file
+	// owned by the run user, points CONTAINARIUM_JWT_TOKEN_FILE at that file for
+	// the run, and deletes it when the run exits. Send it only to a daemon that
+	// advertises box_run_token.
+	RunToken string `protobuf:"bytes,10,opt,name=run_token,json=runToken,proto3" json:"run_token,omitempty"`
 	// Command mode (#3322): run this shell command (through `sh -c`) instead of
 	// an engine prompt. No engine starts and no agent credential is loaded, so
 	// the run user's agent sign-in is not required. Mutually exclusive with
@@ -1030,6 +1036,13 @@ func (x *StartBoxRunRequest) GetStructuredOutput() bool {
 func (x *StartBoxRunRequest) GetModel() string {
 	if x != nil {
 		return x.Model
+	}
+	return ""
+}
+
+func (x *StartBoxRunRequest) GetRunToken() string {
+	if x != nil {
+		return x.RunToken
 	}
 	return ""
 }
@@ -2954,7 +2967,7 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\n" +
 	"provenance\x18\x03 \x01(\x0e2%.containarium.v1.BoxRunToolProvenanceR\n" +
 	"provenance\x12?\n" +
-	"\blocation\x18\x04 \x01(\x0e2#.containarium.v1.BoxRunToolLocationR\blocation\"\xb3\x02\n" +
+	"\blocation\x18\x04 \x01(\x0e2#.containarium.v1.BoxRunToolLocationR\blocation\"\xd0\x02\n" +
 	"\x12StartBoxRunRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x16\n" +
 	"\x06prompt\x18\x02 \x01(\tR\x06prompt\x12\x1d\n" +
@@ -2963,7 +2976,9 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\x10continue_session\x18\x04 \x01(\bR\x0fcontinueSession\x12\x19\n" +
 	"\brun_name\x18\x05 \x01(\tR\arunName\x12+\n" +
 	"\x11structured_output\x18\x06 \x01(\bR\x10structuredOutput\x12\x14\n" +
-	"\x05model\x18\a \x01(\tR\x05model\x12\x18\n" +
+	"\x05model\x18\a \x01(\tR\x05model\x12\x1b\n" +
+	"\trun_token\x18\n" +
+	" \x01(\tR\brunToken\x12\x18\n" +
 	"\acommand\x18\b \x01(\tR\acommand\x12'\n" +
 	"\x0ftimeout_seconds\x18\t \x01(\x05R\x0etimeoutSeconds\"@\n" +
 	"\x13StartBoxRunResponse\x12)\n" +

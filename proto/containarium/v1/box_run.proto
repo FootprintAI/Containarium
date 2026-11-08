@@ -170,6 +170,13 @@ message StartBoxRunRequest {
   // reason is in the run's log. BoxRun.model reports the id the run was
   // started with. Capability "box_run_model" in SystemInfo.capabilities.
   string model = 7;
+
+  // run_token is the per-run cloud credential for this run (the agent-run
+  // token, prd/cloud/agent-run-token.md). The daemon writes it to a 0600 file
+  // owned by the run user, points CONTAINARIUM_JWT_TOKEN_FILE at that file for
+  // the run, and deletes it when the run exits. Send it only to a daemon that
+  // advertises box_run_token.
+  string run_token = 10;
   // Command mode (#3322): run this shell command (through `sh -c`) instead of
   // an engine prompt. No engine starts and no agent credential is loaded, so
   // the run user's agent sign-in is not required. Mutually exclusive with
