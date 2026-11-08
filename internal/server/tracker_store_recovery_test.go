@@ -324,6 +324,7 @@ func TestTrackerRecovery_LateInstallConnectionAndRun(t *testing.T) {
 		Username: user, Name: "default",
 		Provider: pb.TrackerProvider_TRACKER_PROVIDER_GITHUB,
 		Project:  "acme/widgets", CredentialSecret: "GH_TOKEN",
+		Policy: withDispatchOn(nil),
 	}); err != nil {
 		t.Fatalf("SetTrackerConnection after the late install: %v", err)
 	}

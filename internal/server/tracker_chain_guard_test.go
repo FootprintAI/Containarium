@@ -13,6 +13,7 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // Chain guards, pinned end to end through the daemon's RPCs (#2025;
@@ -40,11 +41,30 @@ func dispatchedRunCtx(t *testing.T, user string) context.Context {
 		kmsKeyTestCtx(user, "member", strings.Join(skill.AllowedScopes, ",")), createTestRunID), "default")
 }
 
+// withDispatchOn returns policy with label dispatch explicitly on. It never
+// mutates its argument.
+func withDispatchOn(p *pb.TrackerPolicy) *pb.TrackerPolicy {
+	if p != nil && p.DispatchOnLabel != nil {
+		return p
+	}
+	on := true
+	out := &pb.TrackerPolicy{}
+	if p != nil {
+		out = proto.Clone(p).(*pb.TrackerPolicy)
+	}
+	out.DispatchOnLabel = &on
+	return out
+}
+
 // setUpDispatchableConnection is setUpCreateConnection with no dispatch
 // rows left over from an earlier run, a scope:product route, and a
 // recording run starter.
 func setUpDispatchableConnection(t *testing.T, user string, provider *fakeWriterProvider, policy *pb.TrackerPolicy) (*ContainerServer, *recordingRunStarter, context.Context) {
 	t.Helper()
+	// A new connection is stamped dispatch-off (#3569: label-driven dispatch is
+	// opt-in). These tests exercise label dispatch, so they opt in explicitly;
+	// without it a tick returns before it reads a single issue.
+	policy = withDispatchOn(policy)
 	// Dispatch rows cascade from the connection; setUpCreateConnection
 	// only upserts it.
 	_ = mustTestTrackerStore(t).Delete(context.Background(), user, "default")
