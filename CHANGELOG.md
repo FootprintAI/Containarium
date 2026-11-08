@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are covered by the SBOM and scan check. New `containarium toolchain list`
   shows each tool's version and source. See `docs/MANAGED-TOOLCHAINS.md`.
 
+### Changed
+
+- **The managed-toolchain vulnerability gate accepts reviewed, expiring exceptions** (#3576). A finding with a fix still blocks publication unless `scripts/toolchains/trivy-exceptions.yaml` carries a path-scoped entry with a statement and an expiry date; when the date passes the scan fails again. One entry is in force for this release: CVE-2026-78661 (a `golang.org/x/net/html` denial of service) in the pinned `buf` 1.75.0, whose fix is not in a buf release yet, until 2026-12-09.
+
 ## [0.131.0] - 2026-11-05
 
 

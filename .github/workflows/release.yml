@@ -311,6 +311,9 @@ jobs:
 
       - name: Scan managed tools (amd64)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          # Reviewed, expiring exceptions only; see scripts/toolchains/trivy-exceptions.yaml.
+          TRIVY_IGNOREFILE: scripts/toolchains/trivy-exceptions.yaml
         with:
           version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
           scan-type: rootfs
@@ -324,6 +327,9 @@ jobs:
 
       - name: Scan managed tools (arm64)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          # Reviewed, expiring exceptions only; see scripts/toolchains/trivy-exceptions.yaml.
+          TRIVY_IGNOREFILE: scripts/toolchains/trivy-exceptions.yaml
         with:
           version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
           scan-type: rootfs
