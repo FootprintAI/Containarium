@@ -321,6 +321,10 @@ func (s *ContainerServer) boxRunLockFor(key string) *sync.Mutex {
 // StartBoxRun starts (or resumes) a coding-agent run on a box with no SSH
 // client needed (#2193).
 func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRequest) (*pb.StartBoxRunResponse, error) {
+	// Refused before any side effect: a bad token never reaches the box.
+	if err := validateRunToken(req.GetRunToken()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	if err := validateBoxRunOwner(req.GetUsername()); err != nil {
 		return nil, err
 	}
@@ -580,7 +584,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		}
 	}
 
-	if err := s.installRunToken(box, runAs, name, req.GetRunToken()); err != nil {
+	if err := s.installRunToken(ctx, box, runAs, name, req.GetRunToken()); err != nil {
 		return nil, status.Errorf(codes.Unavailable, "install run token for %q on %q: %v", name, req.GetUsername(), err)
 	}
 	out, err := startExec(box, runAs, boxRunSpawnScript(sp))
@@ -680,7 +684,7 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 	}
 
 	command := coderun.BuildShellCommand(req.GetCommand(), int(req.GetTimeoutSeconds()))
-	if err := s.installRunToken(box, runAs, name, req.GetRunToken()); err != nil {
+	if err := s.installRunToken(ctx, box, runAs, name, req.GetRunToken()); err != nil {
 		return nil, status.Errorf(codes.Unavailable, "install run token for %q on %q: %v", name, req.GetUsername(), err)
 	}
 	out, err := startExec(box, runAs, boxRunSpawnScript(boxRunSpawn{dir: dir, name: name, command: command, home: home, runToken: req.GetRunToken()}))

@@ -1,8 +1,11 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The token never appears in any script the daemon runs: it travels only as
@@ -108,13 +111,65 @@ func TestInstallRunToken_CalledOnlyWithAToken(t *testing.T) {
 		calls = append(calls, box+"/"+runAs+"/"+name+"/"+token)
 		return nil
 	}}
-	if err := s.installRunToken("box1", "ctn-run", "r1", ""); err != nil || len(calls) != 0 {
+	if err := s.installRunToken(context.Background(), "box1", "ctn-run", "r1", ""); err != nil || len(calls) != 0 {
 		t.Fatalf("a run with no token installed something: calls=%v err=%v", calls, err)
 	}
-	if err := s.installRunToken("box1", "ctn-run", "r1", "tok"); err != nil {
+	if err := s.installRunToken(context.Background(), "box1", "ctn-run", "r1", "tok"); err != nil {
 		t.Fatalf("installRunToken: %v", err)
 	}
 	if len(calls) != 1 || calls[0] != "box1/ctn-run/r1/tok" {
 		t.Fatalf("install calls = %v, want one call with the run's token", calls)
+	}
+}
+
+// Oversized or control-character tokens are refused before anything is written.
+func TestValidateRunToken(t *testing.T) {
+	if err := validateRunToken(""); err != nil {
+		t.Fatalf("no token must be valid: %v", err)
+	}
+	if err := validateRunToken(strings.Repeat("a", runTokenMaxBytes+1)); err == nil {
+		t.Error("an oversized token was accepted")
+	}
+	for _, bad := range []string{"tok\nen", "tok\rx", "to\x00k"} {
+		if err := validateRunToken(bad); err == nil {
+			t.Errorf("token %q with a control byte was accepted", bad)
+		}
+	}
+	if err := validateRunToken("eyJhbGciOi.payload.sig"); err != nil {
+		t.Errorf("a normal token was refused: %v", err)
+	}
+}
+
+// The install is bounded: a hung install stops StartBoxRun waiting, so the run's
+// lock is released.
+func TestInstallRunToken_TimesOut(t *testing.T) {
+	old := runTokenInstallTimeout
+	runTokenInstallTimeout = 20 * time.Millisecond
+	defer func() { runTokenInstallTimeout = old }()
+	block := make(chan struct{})
+	defer close(block)
+	s := &ContainerServer{boxRunTokenInstall: func(string, string, string, string) error {
+		<-block
+		return nil
+	}}
+	err := s.installRunToken(context.Background(), "box1", "ctn-run", "r1", "tok")
+	if err == nil || !strings.Contains(err.Error(), "did not finish") {
+		t.Fatalf("a hung install returned %v; want a timeout", err)
+	}
+}
+
+// A cancelled request stops the wait at once.
+func TestInstallRunToken_CancelledRequestStopsWaiting(t *testing.T) {
+	block := make(chan struct{})
+	defer close(block)
+	s := &ContainerServer{boxRunTokenInstall: func(string, string, string, string) error {
+		<-block
+		return nil
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := s.installRunToken(ctx, "box1", "ctn-run", "r1", "tok")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled install returned %v, want context.Canceled", err)
 	}
 }

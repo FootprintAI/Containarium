@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -75,8 +77,33 @@ func (s *ContainerServer) boxRunTokenInstallFn() boxRunTokenInstallFunc {
 	}
 }
 
+// runTokenMaxBytes caps a token the daemon will write into a box. A run token is
+// a few hundred bytes; anything much larger is not one.
+const runTokenMaxBytes = 8 << 10
+
+// runTokenInstallTimeout bounds how long StartBoxRun waits for the install while
+// it holds the run's lock. The install itself may finish later; a token it
+// places after this is removed by the run's exit or stop path.
+var runTokenInstallTimeout = 30 * time.Second
+
+// validateRunToken refuses a token that is too large, or that contains a byte
+// a single-line consumer would split on. An empty token is valid (no token).
+func validateRunToken(token string) error {
+	if token == "" {
+		return nil
+	}
+	if len(token) > runTokenMaxBytes {
+		return fmt.Errorf("run_token is larger than %d bytes", runTokenMaxBytes)
+	}
+	if strings.ContainsAny(token, "\x00\r\n") {
+		return fmt.Errorf("run_token contains a NUL or line break")
+	}
+	return nil
+}
+
 // installRunToken is the StartBoxRun hook: a run with no token installs nothing.
-func (s *ContainerServer) installRunToken(box, runAs, name, token string) error {
+// The install is bounded by runTokenInstallTimeout and by the request context.
+func (s *ContainerServer) installRunToken(ctx context.Context, box, runAs, name, token string) error {
 	if token == "" {
 		return nil
 	}
@@ -84,5 +111,16 @@ func (s *ContainerServer) installRunToken(box, runAs, name, token string) error 
 	if install == nil {
 		return fmt.Errorf("no container backend to install a run token")
 	}
-	return install(box, runAs, name, token)
+	done := make(chan error, 1)
+	go func() { done <- install(box, runAs, name, token) }()
+	timer := time.NewTimer(runTokenInstallTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return fmt.Errorf("the token install did not finish within %s", runTokenInstallTimeout)
+	}
 }
