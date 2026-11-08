@@ -157,8 +157,6 @@ type ContainerServer struct {
 	// into, so it sets this directly to a plain `sh -c` runner, exactly like
 	// boxRunExec's existing tests do for List/Tail.
 	boxRunStartExec boxRunStartFunc
-	// boxRunTokenInstall is the run-token install seam (box_run_token_install.go).
-	boxRunTokenInstall boxRunTokenInstallFunc
 
 	// WriteBoxFile (#3548, box_file_write.go). boxFileWrite is the file API
 	// seam (nil: the container manager's WriteFile) and boxFileStageDir where

@@ -45,7 +45,7 @@ user=%s
 [ "$pid" -gt 1 ] || { echo refused; exit 0; }
 uid=$(id -u "$user" 2>/dev/null) || { echo refused; exit 0; }
 grp() { ps -eo pgid=,uid= 2>/dev/null | awk -v g="$pid" -v u="$uid" '$1==g{n++; if($2!=u)b=1} END{if(!n)print "none"; else if(b)print "foreign"; else print "ok"}'; }
-case "$(grp)" in ok) ;; none) rm -f %s; echo gone; exit 0;; *) echo refused; exit 0;; esac # no ps/awk, or a foreign member: fail closed
+case "$(grp)" in ok) ;; none) echo gone; exit 0;; *) echo refused; exit 0;; esac # no ps/awk, or a foreign member: fail closed
 kill -%s "-$pid" 2>/dev/null || true # no "--": dash's kill builtin does not take it
 i=0
 while [ $i -lt 40 ] && [ "$(grp)" != none ]; do sleep 0.05; i=$((i+1)); done
@@ -53,9 +53,8 @@ if [ "$(grp)" != none ]; then echo alive; exit 0; fi
 if [ ! -e %s ] && [ ! -L %s ]; then
   printf '%%s %%s' %d "$(date -u +%%s)" > %s && chown "$user" %s && mv -f %s %s
 fi
-rm -f %s
 echo dead
-`, pid, q(username), q(boxRunTokenPath(name)), sig, q(exit), q(exit), code, q(exit+".tmp"), q(exit+".tmp"), q(exit+".tmp"), q(exit), q(boxRunTokenPath(name)))
+`, pid, q(username), sig, q(exit), q(exit), code, q(exit+".tmp"), q(exit+".tmp"), q(exit+".tmp"), q(exit))
 }
 
 // StopBoxRun stops a box's code run.
