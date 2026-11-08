@@ -150,6 +150,10 @@ func readBoxRunHomeAndConfig(exec boxRunStartFunc, box, username string) (home, 
 // launch script.
 type boxRunSpawn struct {
 	dir, name, command, home string
+	// runToken, when set, is written to <name>.token (0600, owned by the run
+	// user), exported as CONTAINARIUM_JWT_TOKEN_FILE for the run, and removed
+	// when the run exits. Empty for a run with no token.
+	runToken string
 	// prelaunch runs before the engine is launched (the session-directory
 	// snapshot a fresh run's discovery compares against). Empty for none.
 	prelaunch string
@@ -179,6 +183,7 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 	sessionPath := dir + "/" + name + ".session"
 	toolsPath := dir + "/" + name + ".tools"
 	toolsTmp := toolsPath + ".tmp"
+	tokenPath := dir + "/" + name + ".token"
 
 	redirect := ">" + q(logPath) + " 2>&1"
 	if sp.structured {
@@ -192,8 +197,13 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 	// finished also sees its tools.
 	inner := boxRunToolsPreProbe(toolsTmp) + "( " + sp.command + " ) " + redirect + "; __cx=$?; " +
 		boxRunToolsPostProbe(toolsTmp, toolsPath) +
+		tokenRemoval(sp.runToken, tokenPath) +
 		"printf '%s %s' \"$__cx\" \"$(date -u +%s)\" > " + q(exitPath+".tmp") + " 2>/dev/null && " +
 		"mv -f " + q(exitPath+".tmp") + " " + q(exitPath) + "; exit $__cx"
+	if sp.runToken != "" {
+		// The engine and the credential helper read the run's own token file.
+		inner = "export CONTAINARIUM_JWT_TOKEN_FILE=" + q(tokenPath) + "; " + inner
+	}
 
 	script := "set -e\n" +
 		"d=" + q(dir) + "\n" +
@@ -205,7 +215,12 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 			"chmod 600 " + q(stderrPath) + " 2>/dev/null || true\n"
 	}
 	script += "rm -f " + q(exitPath) + " " + q(sessionPath) + " " + q(sessionPath+".snap") + " " + q(toolsPath) + " " + q(toolsTmp) + " " + q(toolsTmp+".e.") + "*\n" +
+		"rm -f " + q(tokenPath) + "\n" +
 		"cd " + q(sp.home) + " 2>/dev/null || true\n"
+	if sp.runToken != "" {
+		// umask first, so the file is never readable by anyone else.
+		script += "(umask 077; printf '%s' " + q(sp.runToken) + " > " + q(tokenPath) + ")\n"
+	}
 	if sp.prelaunch != "" {
 		script += sp.prelaunch + "\n"
 	}
@@ -541,7 +556,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		command += policy.commandFlags()
 	}
 
-	sp := boxRunSpawn{dir: dir, name: name, command: command, home: home, structured: req.GetStructuredOutput()}
+	sp := boxRunSpawn{dir: dir, name: name, command: command, home: home, structured: req.GetStructuredOutput(), runToken: req.GetRunToken()}
 	sidecar := dir + "/" + name + ".session"
 	switch {
 	case req.GetSessionId() != "":
@@ -703,6 +718,10 @@ const (
 	DaemonCapBoxRunStructuredOutput = "box_run_structured_output"
 	// DaemonCapBoxRunModel: StartBoxRunRequest.model and BoxRun.model (#3259).
 	DaemonCapBoxRunModel = "box_run_model"
+
+	// DaemonCapBoxRunToken: StartBoxRunRequest.run_token is honoured: the run
+	// gets a per-run token file and no longer relies on a staged box principal.
+	DaemonCapBoxRunToken = "box_run_token"
 	// DaemonCapBoxRunCommand: StartBoxRunRequest.command and timeout_seconds (#3322).
 	DaemonCapBoxRunCommand = "box_run_command"
 	// DaemonCapRunUsage: BoxRun.usage, RunAgentSkillResponse.usage and CrewRun.usage (#3467).
@@ -713,7 +732,7 @@ const (
 
 // daemonCapabilities is the list GetSystemInfo reports.
 func daemonCapabilities() []string {
-	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream}
+	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunToken, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream}
 }
 
 // boxRunNameCollidesWithDerivedFile reports whether name would alias a file or
@@ -777,4 +796,13 @@ func validBoxRunModel(id string) bool { return boxRunModelPattern.MatchString(id
 // whose usage the engine then reports cumulatively (#3467).
 func boxRunResumed(req *pb.StartBoxRunRequest) bool {
 	return req.GetSessionId() != "" || req.GetContinueSession()
+}
+
+// tokenRemoval is the exit-path cleanup for a run's token file, placed in the
+// run's own shell after the engine exits. Empty when the run has no token.
+func tokenRemoval(token, tokenPath string) string {
+	if token == "" {
+		return ""
+	}
+	return "rm -f " + shellSingleQuote(tokenPath) + "; "
 }
