@@ -325,7 +325,7 @@ func boxRunRotateScript(dir, name string, startedAtUnix int64) string {
 	for _, ext := range []string{"json", "log", "stderr.log", "exit", "session", "session.snap", "tools"} {
 		from := q(dir + "/" + name + "." + ext)
 		to := q(dir + "/" + name + suffix + "." + ext)
-		fmt.Fprintf(&b, "[ -e %s ] && mv -f %s %s 2>/dev/null; ", from, from, to)
+		fmt.Fprintf(&b, "[ -e %s ] && mv -fT %s %s 2>/dev/null; ", from, from, to)
 	}
 	b.WriteString("true\n")
 	return b.String()
@@ -339,14 +339,19 @@ func boxRunRotateScript(dir, name string, startedAtUnix int64) string {
 // does not guard on the original name: a guard there would let a run user block
 // the restore by pre-creating it. mv -fT renames over a planted file or symlink
 // (it never follows a link, and never moves into a directory of that name).
+// A planted directory cannot be renamed over, so that restore fails: the script
+// prints "restore failed: ..." for it (the caller returns that text in its
+// error), leaves the planted directory alone (run-user content is never deleted
+// as root) and leaves the rotated file under its aside name, so nothing is lost.
 func boxRunUnrotateScript(dir, name string, startedAtUnix int64) string {
 	q := shellSingleQuote
 	suffix := "." + strconv.FormatInt(startedAtUnix, 10)
 	var b strings.Builder
 	for _, ext := range []string{"json", "log", "stderr.log", "exit", "session", "session.snap", "tools"} {
-		orig := q(dir + "/" + name + "." + ext)
-		aside := q(dir + "/" + name + suffix + "." + ext)
-		fmt.Fprintf(&b, "[ -e %s ] && mv -fT %s %s 2>/dev/null; ", aside, aside, orig)
+		rawOrig := dir + "/" + name + "." + ext
+		rawAside := dir + "/" + name + suffix + "." + ext
+		orig, aside := q(rawOrig), q(rawAside)
+		fmt.Fprintf(&b, "if [ -e %s ]; then mv -fT %s %s 2>/dev/null || echo %s; fi; ", aside, aside, orig, q("restore failed: "+rawAside+" stays at "+rawOrig))
 	}
 	b.WriteString("true\n")
 	return b.String()
@@ -364,10 +369,14 @@ func setUpBoxRunAuditOrRestore(listExec boxScriptFunc, startExec boxRunStartFunc
 		return err
 	}
 	undo := boxRunUnrotateScript(dir, name, startedAtUnix)
+	var out string
 	if asRoot {
-		_, _ = listExec(box, undo)
+		out, _ = listExec(box, undo)
 	} else {
-		_, _ = startExec(box, username, undo)
+		out, _ = startExec(box, username, undo)
+	}
+	if out = strings.TrimSpace(out); out != "" {
+		return fmt.Errorf("%w; %s", err, strings.ReplaceAll(out, "\n", "; "))
 	}
 	return err
 }

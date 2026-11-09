@@ -38,6 +38,9 @@ type Command struct {
 	// a command substitution are a segment of their own). Hard denies scan all
 	// of them. Redirection targets are left out.
 	Segments [][]string
+	// SegmentAssigns[i] are the leading NAME=value words dropped from
+	// Segments[i]. The level judges a segment with them in front, as written.
+	SegmentAssigns [][]string
 	// AssignWords are the NAME=value words dropped from the front of every
 	// segment (not only the first). Hard denies scan them: an assignment can
 	// carry a command (GIT_SSH_COMMAND) that a later git runs.
@@ -212,6 +215,7 @@ func ParseCommand(s string) (Command, error) {
 	for i, sg := range c.Segments {
 		n := leadingAssignments(sg)
 		c.AssignWords = append(c.AssignWords, sg[:n]...)
+		c.SegmentAssigns = append(c.SegmentAssigns, append([]string(nil), sg[:n]...))
 		if i == 0 {
 			c.Assignments = n
 			c.Argv = append([]string(nil), sg[n:]...)

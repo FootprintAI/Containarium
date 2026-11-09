@@ -147,3 +147,27 @@ func TestDecide_CompoundShapesAreJudgedSegmentBySegment(t *testing.T) {
 		}
 	}
 }
+
+// A leading NAME=value changes how the program runs (PATH, LD_PRELOAD), so a
+// line with one is judged the same way whether it is a simple line or a
+// segment of a compound line: the level's rule must match the words as written.
+func TestDecide_LeadingAssignmentsAreJudgedTheSameSimpleOrCompound(t *testing.T) {
+	cfg := testConfig()
+	for _, cmd := range []string{
+		"PATH=/tmp ls",
+		"ls; LD_PRELOAD=/tmp/x.so ls",
+		"LD_PRELOAD=/tmp/x.so ls; ls",
+		"ls && PATH=/tmp ls",
+	} {
+		d := Decide(cfg, cmd)
+		if d.Verdict != VerdictDeny {
+			t.Errorf("Decide(%q) = %+v, want deny", cmd, d)
+		}
+	}
+	// No assignment: still allowed, simple and compound.
+	for _, cmd := range []string{"ls", "ls; ls"} {
+		if d := Decide(cfg, cmd); d.Verdict != VerdictDefer {
+			t.Errorf("Decide(%q) = %+v, want defer", cmd, d)
+		}
+	}
+}

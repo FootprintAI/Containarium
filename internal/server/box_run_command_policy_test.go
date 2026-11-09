@@ -630,7 +630,7 @@ func TestStartBoxRun_CommandPolicy_SetupFailureRestoresTheRotatedRun(t *testing.
 	defer mu.Unlock()
 	rotate, undo := -1, -1
 	for i, c := range rootCalls {
-		if strings.Contains(c, "fix-1.1790000000.json") && strings.Contains(c, "mv -fT") {
+		if strings.Contains(c, "fix-1.1790000000.json") && strings.Contains(c, "restore failed") {
 			undo = i
 		} else if strings.Contains(c, "fix-1.1790000000.json") {
 			rotate = i
@@ -713,5 +713,58 @@ func TestBoxRunUnrotateScript_PlantedOriginalDoesNotBlockRestore(t *testing.T) {
 				t.Errorf("the restore followed the planted link and wrote outside the run directory: %v", ents)
 			}
 		})
+	}
+}
+
+// Rotation must not follow a symlink-to-directory planted at the aside name: the
+// owner's finished-run file would be moved into the run user's directory.
+func TestBoxRunRotateScript_PlantedAsideSymlinkIsNotFollowed(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "r.json"), []byte("real"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "r.77.json")); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = exec.Command("sh", "-c", boxRunRotateScript(dir, "r", 77)).CombinedOutput()
+	if ents, _ := os.ReadDir(outside); len(ents) != 0 {
+		t.Errorf("rotation followed the planted link and moved a file into it: %v", ents)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "r.77.json")); err != nil || string(b) != "real" {
+		t.Errorf("the finished run's file did not land at the aside name: %v %q", err, b)
+	}
+}
+
+// A directory planted at the original name makes the restore fail. The failure
+// is reported (not silent), the planted directory is left alone, and the
+// rotated file stays under its aside name.
+func TestBoxRunUnrotateScript_PlantedDirectoryIsReportedNotDeleted(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "r.json"), []byte("real"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("sh", "-c", boxRunRotateScript(dir, "r", 77)).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	planted := filepath.Join(dir, "r.json")
+	if err := os.Mkdir(planted, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(planted, "keep"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("sh", "-c", boxRunUnrotateScript(dir, "r", 77)).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "restore failed") || !strings.Contains(string(out), "r.77.json") {
+		t.Errorf("the failed restore was not reported: %q", out)
+	}
+	if _, err := os.Stat(filepath.Join(planted, "keep")); err != nil {
+		t.Errorf("the planted directory's content was deleted: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "r.77.json")); err != nil || string(b) != "real" {
+		t.Errorf("the original file was lost: %v %q", err, b)
 	}
 }

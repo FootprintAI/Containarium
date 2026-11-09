@@ -188,8 +188,11 @@ The decision, in order:
    name, not left to the fact that no rule allows them. Compound lines
    (`&&`, `||`, `;`), pipes, redirections, substitutions and globs in arguments
    are not refused for their shape: the hard-deny scan reads every segment, and
-   every segment must also be covered by the level or the allowlist, otherwise
-   the line is refused (`NOT_ALLOWED`, or `HARD_DENY`).
+   every segment must also be covered by the level's own rules, otherwise the
+   line is refused (`NOT_ALLOWED`, or `HARD_DENY`). The allowlist cannot cover
+   a compound line or a segment of one: it matches only a simple command. A
+   leading `NAME=value` is judged as written, on a simple line and in a
+   segment alike, so `PATH=/tmp ls` is not covered by a rule for `ls`.
 3. **The org allowlist** (`command_policy.allow`) runs a command outside the
    level when an entry matches: an argv glob with an exact executable, `*`
    within one argument, and no shell operators.

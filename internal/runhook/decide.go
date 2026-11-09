@@ -152,8 +152,11 @@ func levelCovers(cfg Config, command string, c Command) bool {
 	if len(c.Segments) == 0 {
 		return false
 	}
-	for _, s := range c.Segments {
-		if !levelAllows(cfg.LevelAllowed, cfg.LevelDenied, strings.Join(s, " ")) {
+	for i, s := range c.Segments {
+		// A leading assignment is part of the command as written, exactly as
+		// for a simple line: the level's rule must match it with the assignment.
+		words := append(append([]string(nil), c.SegmentAssigns[i]...), s...)
+		if !levelAllows(cfg.LevelAllowed, cfg.LevelDenied, strings.Join(words, " ")) {
 			return false
 		}
 	}
