@@ -19,6 +19,7 @@ import (
 	"github.com/footprintai/containarium/internal/agentbox"
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/coderun/engine"
+	"github.com/footprintai/containarium/internal/runhook"
 	corecontainer "github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/toolchain"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -172,6 +173,23 @@ type boxRunSpawn struct {
 // <boot_id>" as its one line of stdout.
 func boxRunSpawnScript(sp boxRunSpawn) string {
 	q := shellSingleQuote
+	script := boxRunSpawnPrepareScript(sp) +
+		"setsid sh -c " + q(boxRunSpawnInner(sp)) + " </dev/null >/dev/null 2>&1 &\n" +
+		"pid=$!\n" +
+		"disown 2>/dev/null || true\n" +
+		"boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\n" +
+		"printf '%s %s\\n' \"$pid\" \"$boot\"\n"
+	if sp.sessionTrailer != "" {
+		script += sp.sessionTrailer + "\n"
+	}
+	return script
+}
+
+// boxRunSpawnPrepareScript is the part of the spawn that runs, as the run's
+// user, before the launch: the run's fresh log, the previous sidecars removed,
+// the working directory and the prelaunch.
+func boxRunSpawnPrepareScript(sp boxRunSpawn) string {
+	q := shellSingleQuote
 	dir, name := sp.dir, sp.name
 	logPath := dir + "/" + name + ".log"
 	stderrPath := dir + "/" + name + ".stderr.log"
@@ -179,22 +197,6 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 	sessionPath := dir + "/" + name + ".session"
 	toolsPath := dir + "/" + name + ".tools"
 	toolsTmp := toolsPath + ".tmp"
-
-	redirect := ">" + q(logPath) + " 2>&1"
-	if sp.structured {
-		redirect = ">" + q(logPath) + " 2>" + q(stderrPath)
-		// The result object carries the conversation's own session_id; the
-		// daemon decodes it (top-level key only) when listing the run.
-	}
-	// The toolchain report (#2954): a probe before the engine and one after it, in the
-	// run's own shell, so it is written whatever the engine's exit status and costs no
-	// model tokens. It lands BEFORE the exit sidecar, so a reader that sees the run
-	// finished also sees its tools.
-	inner := boxRunToolsPreProbe(toolsTmp) + "( " + sp.command + " ) " + redirect + "; __cx=$?; " +
-		boxRunToolsPostProbe(toolsTmp, toolsPath) +
-		"printf '%s %s' \"$__cx\" \"$(date -u +%s)\" > " + q(exitPath+".tmp") + " 2>/dev/null && " +
-		"mv -f " + q(exitPath+".tmp") + " " + q(exitPath) + "; exit $__cx"
-
 	script := "set -e\n" +
 		"d=" + q(dir) + "\n" +
 		"mkdir -p \"$d\"\n" +
@@ -209,15 +211,83 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 	if sp.prelaunch != "" {
 		script += sp.prelaunch + "\n"
 	}
-	script += "setsid sh -c " + q(inner) + " </dev/null >/dev/null 2>&1 &\n" +
-		"pid=$!\n" +
-		"disown 2>/dev/null || true\n" +
-		"boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\n" +
-		"printf '%s %s\\n' \"$pid\" \"$boot\"\n"
-	if sp.sessionTrailer != "" {
-		script += sp.sessionTrailer + "\n"
-	}
 	return script
+}
+
+// boxRunSpawnInner is the run's own shell: the toolchain probes around the
+// command, its output to the run's log, and its exit status to <name>.exit.
+func boxRunSpawnInner(sp boxRunSpawn) string {
+	q := shellSingleQuote
+	dir, name := sp.dir, sp.name
+	logPath := dir + "/" + name + ".log"
+	stderrPath := dir + "/" + name + ".stderr.log"
+	exitPath := dir + "/" + name + ".exit"
+	toolsPath := dir + "/" + name + ".tools"
+	toolsTmp := toolsPath + ".tmp"
+
+	redirect := ">" + q(logPath) + " 2>&1"
+	if sp.structured {
+		redirect = ">" + q(logPath) + " 2>" + q(stderrPath)
+		// The result object carries the conversation's own session_id; the
+		// daemon decodes it (top-level key only) when listing the run.
+	}
+	// The toolchain report (#2954): a probe before the engine and one after it, in the
+	// run's own shell, so it is written whatever the engine's exit status and costs no
+	// model tokens. It lands BEFORE the exit sidecar, so a reader that sees the run
+	// finished also sees its tools.
+	return boxRunToolsPreProbe(toolsTmp) + "( " + sp.command + " ) " + redirect + "; __cx=$?; " +
+		boxRunToolsPostProbe(toolsTmp, toolsPath) +
+		"printf '%s %s' \"$__cx\" \"$(date -u +%s)\" > " + q(exitPath+".tmp") + " 2>/dev/null && " +
+		"mv -f " + q(exitPath+".tmp") + " " + q(exitPath) + "; exit $__cx"
+}
+
+// boxRunSupervisedLaunchScript runs as root: it starts the root-owned
+// `agent-box run-supervise` detached, which runs the run's own shell as
+// runUser in its own session and is the run's parent, waits for the run's
+// "<pid> <boot_id>" and prints it. The supervisor alone writes the run's exit
+// status to runhook.ExitPath, which the audit sink reads (#3582); the run
+// directory's <name>.exit is still written by the run's shell, for the
+// listing.
+func boxRunSupervisedLaunchScript(sp boxRunSpawn, runUser string) string {
+	q := shellSingleQuote
+	launch := runhook.LaunchPath(sp.name)
+	return "set -e\n" +
+		"p=" + q(launch) + "\n" +
+		"rm -f \"$p\"\n" +
+		"setsid " + q(runhook.AgentBoxPath) + " run-supervise --config " + q(runhook.ConfigPath(sp.name)) +
+		" --user " + q(runUser) + " --dir " + q(sp.home) + " --command " + q(boxRunSpawnInner(sp)) +
+		" </dev/null >\"$p\" 2>/dev/null &\n" +
+		"i=0\n" +
+		"while [ ! -s \"$p\" ]; do\n" +
+		"  i=$((i+1))\n" +
+		"  [ \"$i\" -le 100 ] || { echo \"the run supervisor did not start\" >&2; exit 1; }\n" +
+		"  sleep 0.1\n" +
+		"done\n" +
+		"head -n 1 \"$p\"\n"
+}
+
+// spawnBoxRun launches the run and returns the spawn's output ("<pid>
+// <boot_id>" first). A run under a command policy is launched by the root
+// supervisor (the prepare and the session trailer still run as runAs), so its
+// exit status is recorded where the run user cannot write it; any other run
+// is spawned by runAs itself, as before.
+func spawnBoxRun(startExec boxRunStartFunc, rootExec boxScriptFunc, box, runAs string, sp boxRunSpawn, supervised bool) (string, error) {
+	if !supervised {
+		return startExec(box, runAs, boxRunSpawnScript(sp))
+	}
+	if _, err := startExec(box, runAs, boxRunSpawnPrepareScript(sp)); err != nil {
+		return "", err
+	}
+	out, err := rootExec(box, boxRunSupervisedLaunchScript(sp, runAs))
+	if err != nil {
+		return "", err
+	}
+	if sp.sessionTrailer != "" {
+		if _, err := startExec(box, runAs, sp.sessionTrailer+"\n"); err != nil {
+			return "", err
+		}
+	}
+	return out, nil
 }
 
 // sessionSidecarWriteCommand atomically writes id as name's session sidecar —
@@ -582,7 +652,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		}
 	}
 
-	out, err := startExec(box, runAs, boxRunSpawnScript(sp))
+	out, err := spawnBoxRun(startExec, listExec, box, runAs, sp, req.GetCommandPolicy() != nil)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
 	}
@@ -695,7 +765,7 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 		}
 		command = boxRunPolicyCommandLine(name, int(req.GetTimeoutSeconds()))
 	}
-	out, err := startExec(box, runAs, boxRunSpawnScript(boxRunSpawn{dir: dir, name: name, command: command, home: home}))
+	out, err := spawnBoxRun(startExec, listExec, box, runAs, boxRunSpawn{dir: dir, name: name, command: command, home: home}, req.GetCommandPolicy() != nil)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
 	}

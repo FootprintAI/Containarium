@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// The sink lives as long as its run: it stops once the run's exit sidecar is
-// written, once the recorded process is gone, or when no run record shows up.
+// The sink lives as long as its run: it stops once the root-owned exit status
+// is written, once the recorded process is gone, or when no run record shows up.
 func TestRunEnded(t *testing.T) {
 	since := time.Now().Add(-time.Minute)
 	alive := func(int) bool { return true }
@@ -25,35 +25,37 @@ func TestRunEnded(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	if e, _ := runEnded(dir, "r1", since, time.Now(), alive); e {
+	exitPath := filepath.Join(t.TempDir(), "r1.exit")
+	if e, _ := runEnded(exitPath, dir, "r1", since, time.Now(), alive); e {
 		t.Error("no record yet, inside the grace period: still running")
 	}
-	if e, _ := runEnded(dir, "r1", since, since.Add(recordGrace+time.Second), alive); !e {
+	if e, _ := runEnded(exitPath, dir, "r1", since, since.Add(recordGrace+time.Second), alive); !e {
 		t.Error("no record after the grace period: the run never started")
 	}
 	writeRecord(t, dir, time.Now())
-	if e, _ := runEnded(dir, "r1", since, time.Now(), alive); e {
+	if e, _ := runEnded(exitPath, dir, "r1", since, time.Now(), alive); e {
 		t.Error("live process: still running")
 	}
-	if e, _ := runEnded(dir, "r1", since, time.Now(), dead); !e {
+	if e, _ := runEnded(exitPath, dir, "r1", since, time.Now(), dead); !e {
 		t.Error("process gone: ended")
 	}
-	// A previous run's record and exit sidecar do not count.
+	// A previous run's record and exit status do not count.
 	old := t.TempDir()
+	oldExit := filepath.Join(t.TempDir(), "r1.exit")
 	writeRecord(t, old, since.Add(-time.Hour))
-	if err := os.WriteFile(filepath.Join(old, "r1.exit"), []byte("0 1"), 0o600); err != nil {
+	if err := os.WriteFile(oldExit, []byte("0 1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	past := since.Add(-time.Hour)
-	_ = os.Chtimes(filepath.Join(old, "r1.exit"), past, past)
-	if e, _ := runEnded(old, "r1", since, time.Now(), dead); e {
+	_ = os.Chtimes(oldExit, past, past)
+	if e, _ := runEnded(oldExit, old, "r1", since, time.Now(), dead); e {
 		t.Error("an earlier run's files must not stop this run's sink")
 	}
-	if err := os.WriteFile(filepath.Join(dir, "r1.exit"), []byte("0 1"), 0o600); err != nil {
+	if err := os.WriteFile(exitPath, []byte("0 1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if e, _ := runEnded(dir, "r1", since, time.Now(), alive); !e {
-		t.Error("exit sidecar written: ended")
+	if e, _ := runEnded(exitPath, dir, "r1", since, time.Now(), alive); !e {
+		t.Error("exit status written: ended")
 	}
 }
 

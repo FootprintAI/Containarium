@@ -27,6 +27,16 @@ func SocketPath(runID string) string { return AuditDir + "/s/" + runID + ".sock"
 // 0700 directory). Every start of the run appends to it under its own run id.
 func EventsPath(runName string) string { return AuditDir + "/events/" + runName + ".jsonl" }
 
+// ExitPath is where the root supervisor (`agent-box run-supervise`) records a
+// run's exit status ("<status> <epoch>", root-owned 0600 in a 0700 directory).
+// The sink reads the run's end from it, never from the run directory's
+// <name>.exit, which the run user can write.
+func ExitPath(runName string) string { return AuditDir + "/exit/" + runName + ".exit" }
+
+// LaunchPath is where the supervisor reports the run's "<pid> <boot_id>" to
+// the root launch script (root-owned, in the same directory as ExitPath).
+func LaunchPath(runName string) string { return AuditDir + "/exit/" + runName + ".launch" }
+
 // Approval is the approval a re-run carries.
 type Approval struct {
 	ID       string `json:"id"`
@@ -40,6 +50,9 @@ type Config struct {
 	RunID      string `json:"run_id"`
 	Socket     string `json:"socket"`
 	EventsPath string `json:"events_path"`
+	// ExitPath is the run's root-owned exit status (see ExitPath). Empty
+	// means the sink has no trusted status and every end is an interruption.
+	ExitPath string `json:"exit_path,omitempty"`
 	// Allow is the org allowlist (AgentCommandPolicy.allow).
 	Allow []string `json:"allow"`
 	// LevelAllowed and LevelDenied are the run's tool-access level as the

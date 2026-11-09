@@ -163,8 +163,10 @@ const (
 	// engine fires a post hook for every command it runs, success or failure, so
 	// this is a command the engine itself refused after the hook, for example by
 	// --restricted path confinement: it did not run. outcome is NOT_RUN. The
-	// run's exit status is in a file the run user can write, so this rests on
-	// the engine's report, not on a guarantee.
+	// run's exit status is recorded by a root process that is the run's parent
+	// (`agent-box run-supervise`), in a root-only directory, so the run user
+	// cannot write it; that the engine fires a post hook for every command it
+	// runs is the engine's behaviour, not a guarantee.
 	AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_ENGINE_REFUSED AgentCommandCloseReason = 4
 	// END written by the sink: the run ended with this command started and no
 	// end reported, and not cleanly (killed, timed out, crashed, a non-zero exit

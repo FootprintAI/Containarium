@@ -95,17 +95,22 @@ type runRecordHead struct {
 }
 
 // runEnded reports whether the run named name, started no earlier than since,
-// has ended: its exit sidecar is newer than since, or its record's process is
-// gone, or no record of it appeared within recordGrace. It also reports how:
-// RunExitClean only when the sidecar records exit status 0, RunExitInterrupted
-// otherwise. The run user can write these files; the worst it can do is stop
-// the sink early, after which every command is refused (the hook fails
-// closed), keep it alive longer, or have a still-open START closed as
-// ENGINE_REFUSED rather than INTERRUPTED.
-func runEnded(runDir, name string, since, now time.Time, alive func(pid int) bool) (bool, RunExit) {
-	exitPath := filepath.Join(runDir, name+".exit")
-	if fi, err := os.Stat(exitPath); err == nil && !fi.ModTime().Before(since) {
-		return true, sidecarExit(exitPath)
+// has ended: its root-owned exit status at exitPath is newer than since, or
+// its record's process is gone, or no record of it appeared within
+// recordGrace. It also reports how: RunExitClean only when that exit status
+// is 0, RunExitInterrupted otherwise.
+//
+// The exit status comes only from exitPath, which the root supervisor writes
+// after waiting for the run; the run directory's <name>.exit is the run
+// user's and is never read here. The run user can still write the record in
+// the run directory: the worst it can do with it is stop the sink early,
+// after which every command is refused (the hook fails closed) and open
+// STARTs close as INTERRUPTED, or keep the sink alive longer.
+func runEnded(exitPath, runDir, name string, since, now time.Time, alive func(pid int) bool) (bool, RunExit) {
+	if exitPath != "" {
+		if fi, err := os.Stat(exitPath); err == nil && !fi.ModTime().Before(since) {
+			return true, exitStatusFile(exitPath)
+		}
 	}
 	var rec runRecordHead
 	if b, err := os.ReadFile(filepath.Join(runDir, name+".json")); err == nil && json.Unmarshal(b, &rec) == nil &&
@@ -115,9 +120,9 @@ func runEnded(runDir, name string, since, now time.Time, alive func(pid int) boo
 	return now.Sub(since) > recordGrace, RunExitInterrupted
 }
 
-// sidecarExit reads a run's exit sidecar ("<status> <epoch>", written by the
-// run's own shell) as RunExitClean when the status is exactly 0.
-func sidecarExit(path string) RunExit {
+// exitStatusFile reads an exit status file ("<status> <epoch>") as
+// RunExitClean when the status is exactly 0.
+func exitStatusFile(path string) RunExit {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return RunExitInterrupted
@@ -140,7 +145,7 @@ func RunSinkCLI(args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run-audit-sink", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	path := fs.String("config", "", "the run's configuration")
-	runDir := fs.String("run-dir", "", "the directory of the run's record and exit sidecar")
+	runDir := fs.String("run-dir", "", "the directory of the run's record")
 	if err := fs.Parse(args); err != nil || *path == "" || *runDir == "" {
 		fmt.Fprintln(stderr, "usage: agent-box run-audit-sink --config <path> --run-dir <dir>")
 		return 2
@@ -185,7 +190,7 @@ func RunSinkCLI(args []string, stderr io.Writer) int {
 			case <-ctx.Done():
 				return
 			case now := <-t.C:
-				if ended, h := runEnded(*runDir, cfg.RunName, since, now, pidAlive); ended {
+				if ended, h := runEnded(cfg.ExitPath, *runDir, cfg.RunName, since, now, pidAlive); ended {
 					how.Store(int32(h))
 					cancel()
 					return

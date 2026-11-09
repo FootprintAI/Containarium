@@ -176,14 +176,14 @@ func TestSink_NoExtraEndsWhenEveryStartIsClosed(t *testing.T) {
 }
 
 // How the sink reads the run's end: clean only for an exit status of 0 in a
-// fresh sidecar; anything else is an interruption.
-func TestRunExitFromSidecar(t *testing.T) {
+// fresh root-owned exit file; anything else is an interruption.
+func TestRunExitFromRootExitStatus(t *testing.T) {
 	since := time.Now().Add(-time.Minute)
 	for _, tc := range []struct {
-		name, sidecar string
-		alive         bool
-		want          RunExit
-		ended         bool
+		name, status string
+		alive        bool
+		want         RunExit
+		ended        bool
 	}{
 		{"exit 0", "0 1762650000", true, RunExitClean, true},
 		{"non-zero", "2 1762650000", true, RunExitInterrupted, true},
@@ -191,21 +191,22 @@ func TestRunExitFromSidecar(t *testing.T) {
 		{"killed", "137 1762650000", true, RunExitInterrupted, true},
 		{"garbage", "zero", true, RunExitInterrupted, true},
 		{"empty", "", true, RunExitInterrupted, true},
-		{"process gone, no sidecar", "-", false, RunExitInterrupted, true},
+		{"process gone, no status", "-", false, RunExitInterrupted, true},
 		{"still running", "-", true, RunExitInterrupted, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
+			exitPath := filepath.Join(t.TempDir(), "r1.exit")
 			b := []byte(`{"pid":42,"started_at":"` + time.Now().Format(time.RFC3339Nano) + `"}`)
 			if err := os.WriteFile(filepath.Join(dir, "r1.json"), b, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if tc.sidecar != "-" {
-				if err := os.WriteFile(filepath.Join(dir, "r1.exit"), []byte(tc.sidecar), 0o600); err != nil {
+			if tc.status != "-" {
+				if err := os.WriteFile(exitPath, []byte(tc.status), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
-			ended, how := runEnded(dir, "r1", since, time.Now(), func(int) bool { return tc.alive })
+			ended, how := runEnded(exitPath, dir, "r1", since, time.Now(), func(int) bool { return tc.alive })
 			if ended != tc.ended || (ended && how != tc.want) {
 				t.Errorf("runEnded = %v, %v; want %v, %v", ended, how, tc.ended, tc.want)
 			}

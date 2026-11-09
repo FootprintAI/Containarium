@@ -29,9 +29,11 @@ type policyReqRun struct {
 	err   error
 }
 
+// spawn is the call that launches the run: the root supervisor's launch under
+// a command policy, else the run user's own setsid spawn.
 func (r policyReqRun) spawn() (int, string) {
 	for i, c := range r.calls {
-		if !c.root && strings.Contains(c.script, "setsid") {
+		if (c.root && strings.Contains(c.script, "run-supervise --config '")) || (!c.root && strings.Contains(c.script, "setsid sh -c")) {
 			return i, c.script
 		}
 	}
@@ -61,8 +63,11 @@ func runPolicyReq(t *testing.T, level string, req *pb.StartBoxRunRequest) policy
 			mu.Lock()
 			defer mu.Unlock()
 			r.calls = append(r.calls, policyCall{root: true, script: script})
-			if strings.Contains(script, "useradd") {
+			switch {
+			case strings.Contains(script, "useradd"):
 				return "/srv/" + boxRunUnprivilegedUser + "\n", nil
+			case strings.Contains(script, "run-supervise --config '"):
+				return "4242 boot-1\n", nil
 			}
 			return "", nil
 		},
@@ -268,10 +273,14 @@ type testHookSettings struct {
 // `setsid sh -c`, and the value one single-quoted word inside that.
 func settingsFromSpawn(t *testing.T, spawn string) testHookSettings {
 	t.Helper()
-	const lead = "setsid sh -c "
+	lead := "setsid sh -c "
 	i := strings.Index(spawn, lead)
 	if i < 0 {
-		t.Fatalf("no setsid line in spawn:\n%s", spawn)
+		lead = " --command "
+		i = strings.Index(spawn, lead)
+	}
+	if i < 0 {
+		t.Fatalf("no setsid or supervisor line in spawn:\n%s", spawn)
 	}
 	inner := shPrint(t, firstShellWord(spawn[i+len(lead):]))
 	j := strings.Index(inner, "--settings ")
@@ -435,5 +444,78 @@ func TestStartBoxRun_CommandPolicy_AppliesAtFullSudo(t *testing.T) {
 				t.Errorf("allowlisted command refused at full_sudo: %+v", d)
 			}
 		})
+	}
+}
+
+// The sink reads the run's end from its exit status, and decides between
+// ENGINE_REFUSED and INTERRUPTED on it. The run user owns the run directory,
+// so that status must not come from there: under a command policy the run is
+// launched by the root-owned supervisor, which is the run's parent and writes
+// the status to a root-only directory the setup creates, as it does the events
+// directory. The run user never spawns the run itself.
+func TestStartBoxRun_CommandPolicy_ExitStatusIsRecordedByRootNotTheRunUser(t *testing.T) {
+	for name, req := range map[string]*pb.StartBoxRunRequest{
+		"engine run":  {RunName: "ex-1", CommandPolicy: withPolicy("make lint")},
+		"command run": {RunName: "ex-2", Command: "make lint", CommandPolicy: withPolicy("make lint")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := runPolicyReq(t, "none", req)
+			if r.err != nil {
+				t.Fatal(r.err)
+			}
+			ai, setup := r.auditSetup()
+			cfg := configFromSetup(t, setup)
+			if cfg.ExitPath != runhook.ExitPath(req.RunName) || !strings.HasPrefix(cfg.ExitPath, runhook.AuditDir+"/exit/") {
+				t.Errorf("config exit_path = %q, want %q", cfg.ExitPath, runhook.ExitPath(req.RunName))
+			}
+			for _, want := range []string{
+				`chown root:root "$a" "$a/bin" "$a/s" "$a/events" "$a/exit"`,
+				`chmod 0700 "$a/events" "$a/exit"`,
+				"rm -f '" + runhook.ExitPath(req.RunName) + "'",
+				runhook.SuperviseUsage,
+			} {
+				if !strings.Contains(setup, want) {
+					t.Errorf("audit setup lacks %q:\n%s", want, setup)
+				}
+			}
+
+			li, launch := -1, ""
+			prep := -1
+			for i, c := range r.calls {
+				switch {
+				case c.root && strings.Contains(c.script, "run-supervise --config '"):
+					li, launch = i, c.script
+				case !c.root && strings.Contains(c.script, "__cx=$?"):
+					t.Errorf("the run user spawned the run itself, so it would write the status the sink reads:\n%s", c.script)
+				case !c.root && strings.Contains(c.script, ".log") && strings.Contains(c.script, "rm -f") && prep < 0:
+					prep = i
+				}
+			}
+			if li < 0 {
+				t.Fatal("no root supervisor launch")
+			}
+			if ai > li || prep < 0 || prep > li {
+				t.Errorf("setup at %d, prepare at %d, launch at %d: setup and prepare come first", ai, prep, li)
+			}
+			for _, want := range []string{
+				runhook.AgentBoxPath + "' run-supervise --config '" + runhook.ConfigPath(req.RunName) + "'",
+				"--user '" + boxRunUnprivilegedUser + "'",
+				runhook.LaunchPath(req.RunName),
+			} {
+				if !strings.Contains(launch, want) {
+					t.Errorf("launch lacks %q:\n%s", want, launch)
+				}
+			}
+			if out, err := exec.Command("sh", "-n", "-c", launch).CombinedOutput(); err != nil {
+				t.Errorf("launch does not parse: %v\n%s", err, out)
+			}
+		})
+	}
+	// Without a policy nothing changes: the run user spawns its run.
+	r := runPolicyReq(t, "none", &pb.StartBoxRunRequest{})
+	for _, c := range r.calls {
+		if strings.Contains(c.script, "run-supervise") {
+			t.Errorf("no policy, but the supervisor was used:\n%s", c.script)
+		}
 	}
 }

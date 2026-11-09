@@ -74,6 +74,7 @@ func boxRunAuditConfig(name, runID string, level boxRunPolicy, req *pb.StartBoxR
 		RunID:          runID,
 		Socket:         runhook.SocketPath(runID),
 		EventsPath:     runhook.EventsPath(name),
+		ExitPath:       runhook.ExitPath(name),
 		Allow:          append([]string(nil), req.GetCommandPolicy().GetAllow()...),
 		LevelAllowed:   append([]string(nil), level.Allowed...),
 		LevelDenied:    append([]string(nil), level.Denied...),
@@ -90,8 +91,12 @@ func boxRunAuditConfig(name, runID string, level boxRunPolicy, req *pb.StartBoxR
 
 // boxRunAuditSetupScript runs as root before the run is spawned: it installs a
 // root-owned agent-box (from the box's system install, else the owner's), checks
-// it has the hook modes, writes the run's configuration root-owned 0644, starts
+// it has the hook modes and the run supervisor, clears the run's previous
+// root-owned exit status, writes the run's configuration root-owned 0644, starts
 // the sink detached, and waits for its socket. Any failure refuses the run.
+// The exit directory is root's 0700, like the events directory: only the
+// supervisor (root) writes a run's exit status there, and only the sink (root)
+// reads it.
 func boxRunAuditSetupScript(cfg runhook.Config, runDir, ownerHome string) (string, error) {
 	if !validHomePath(ownerHome) {
 		return "", fmt.Errorf("refusing owner home %q: not a plain absolute home path", ownerHome)
@@ -104,10 +109,10 @@ func boxRunAuditSetupScript(cfg runhook.Config, runDir, ownerHome string) (strin
 	conf := runhook.ConfigPath(cfg.RunName)
 	return `set -e
 a=` + q(runhook.AuditDir) + `
-mkdir -p "$a" "$a/bin" "$a/s" "$a/events"
-chown root:root "$a" "$a/bin" "$a/s" "$a/events"
+mkdir -p "$a" "$a/bin" "$a/s" "$a/events" "$a/exit"
+chown root:root "$a" "$a/bin" "$a/s" "$a/events" "$a/exit"
 chmod 0755 "$a" "$a/bin" "$a/s"
-chmod 0700 "$a/events"
+chmod 0700 "$a/events" "$a/exit"
 src=
 for c in /usr/local/bin/agent-box ` + q(ownerHome+"/.local/bin/agent-box") + `; do
   if [ -x "$c" ]; then src=$c; break; fi
@@ -118,6 +123,8 @@ chown root:root "$a/bin/agent-box.new"
 chmod 0755 "$a/bin/agent-box.new"
 mv -f "$a/bin/agent-box.new" ` + q(runhook.AgentBoxPath) + `
 ` + q(runhook.AgentBoxPath) + ` permission-hook </dev/null 2>&1 | grep -qF ` + q(runhook.HookUsage) + ` || { echo "agent-box on this box predates the permission hook: update it" >&2; exit 1; }
+` + q(runhook.AgentBoxPath) + ` run-supervise </dev/null 2>&1 | grep -qF ` + q(runhook.SuperviseUsage) + ` || { echo "agent-box on this box predates the run supervisor: update it" >&2; exit 1; }
+rm -f ` + q(cfg.ExitPath) + ` ` + q(cfg.ExitPath+".tmp") + ` ` + q(runhook.LaunchPath(cfg.RunName)) + `
 printf '%s' ` + q(string(cfgJSON)) + ` > ` + q(conf+".new") + `
 chown root:root ` + q(conf+".new") + `
 chmod 0644 ` + q(conf+".new") + `

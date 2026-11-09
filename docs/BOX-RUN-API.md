@@ -202,7 +202,13 @@ with its exit code. Every `START` gets exactly one `END`, and each `END` has an
   sink writes this `END` when the run ends cleanly (exit status `0`) with the
   `START` still open. The engine fires a post hook for every command it runs,
   so such a command did not run. This rests on the engine's report and on the
-  run's exit status, which sits in a file the run user can write.
+  run's exit status. That status is recorded by `agent-box run-supervise`, a
+  root process the daemon starts in place of spawning the run as the run user:
+  it runs the run as the run user, in its own session, and as its parent writes
+  the exit status to `/var/lib/containarium-run-audit/exit/<run>.exit` (root,
+  `0600`, in a root `0700` directory the setup creates with the events
+  directory). The sink reads only that file, never the run directory's
+  `<run>.exit`, which the run user can write.
 - **`UNKNOWN`**, close reason `INTERRUPTED`: the run ended any other way with
   the `START` still open (killed, timed out, crashed, a non-zero or missing
   exit status, or the sink stopped by a signal). The command may have run in
