@@ -1,8 +1,6 @@
 package runhook
 
 import (
-	"strings"
-
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -106,10 +104,22 @@ func Decide(cfg Config, command string) Decision {
 			Reason:      "the command does not parse: " + err.Error(), Argv: []string{Redacted}}
 	}
 	argv := red.Argv(c.Log)
-	if r, ok := HardDeny(c); ok {
+	hard, ok, tooDeep := scanHardDeny(c)
+	if r := hard; ok {
 		return Decision{Class: pb.AgentCommandClass_AGENT_COMMAND_CLASS_HARD_DENIED, Verdict: VerdictDeny,
 			CloseReason: pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_HARD_DENY,
 			Reason:      "hard deny: " + r, Argv: argv}
+	}
+	// What cannot be resolved to the program it runs cannot be checked against
+	// the hard denies, so it is refused here rather than left to the fact that
+	// nothing allows it: any line the parser flags as not simple (operator,
+	// redirection, subshell, expansion, glob), any carrier it cannot evaluate
+	// (brace expansion, a glob in the executable, ANSI-C quoting, arithmetic)
+	// and a quoted shell command nested past the rescan depth.
+	if why := unresolvableReason(c, tooDeep); why != "" {
+		return Decision{Class: pb.AgentCommandClass_AGENT_COMMAND_CLASS_NOT_ALLOWED, Verdict: VerdictDeny,
+			CloseReason: pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_UNRESOLVABLE,
+			Reason:      "unresolvable command: " + why, Argv: argv}
 	}
 	if allow, err := ParseAllowlist(cfg.Allow); err == nil && allow.Match(c) {
 		return Decision{Class: pb.AgentCommandClass_AGENT_COMMAND_CLASS_ALLOWLISTED, Verdict: VerdictAllow, Argv: argv}
@@ -122,21 +132,24 @@ func Decide(cfg Config, command string) Decision {
 		Reason:      "not within the run's tool-access level and no allowlist entry matches", Argv: argv}
 }
 
-// levelCovers reports whether the level's rules allow the line. A simple
-// command is matched whole; a compound line only when every one of its
-// commands is allowed on its own. The engine still applies its own rules to a
-// line this lets through (the hook defers), so this can only be stricter.
+// levelCovers reports whether the level's rules allow the line. Only a simple
+// command reaches it (Decide refuses every other shape first). The engine still
+// applies its own rules to a line this lets through (the hook defers), so this
+// can only be stricter.
 func levelCovers(cfg Config, command string, c Command) bool {
-	if c.Simple {
-		return levelAllows(cfg.LevelAllowed, cfg.LevelDenied, command)
+	return c.Simple && levelAllows(cfg.LevelAllowed, cfg.LevelDenied, command)
+}
+
+// unresolvableReason says why c cannot be resolved to the program it runs, or
+// "" when it can.
+func unresolvableReason(c Command, tooDeep bool) string {
+	switch {
+	case c.Unresolvable != "":
+		return c.Unresolvable
+	case tooDeep:
+		return "a quoted shell command is nested deeper than the supported depth"
+	case !c.Simple:
+		return "the line is not a single simple command (operator, redirection, subshell, expansion or glob)"
 	}
-	if len(c.Segments) == 0 {
-		return false
-	}
-	for _, s := range c.Segments {
-		if !levelAllows(cfg.LevelAllowed, cfg.LevelDenied, strings.Join(s, " ")) {
-			return false
-		}
-	}
-	return true
+	return ""
 }

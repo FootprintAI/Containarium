@@ -173,6 +173,13 @@ const (
 	// status, no exit status at all, or the sink itself was stopped). The command
 	// may have run in part. outcome is UNKNOWN.
 	AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_INTERRUPTED AgentCommandCloseReason = 5
+	// The command could not be resolved to the program it runs, so no rule can
+	// be applied to it: it is a compound line (operator, redirection, subshell),
+	// or holds an expansion the parser cannot evaluate (brace expansion, a glob
+	// in the executable word, ANSI-C quoting, arithmetic expansion), or nests a
+	// quoted shell command deeper than the supported depth. Refused as the
+	// hard denies cannot be proven to hold for it; no hard deny matched.
+	AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_UNRESOLVABLE AgentCommandCloseReason = 6
 )
 
 // Enum value maps for AgentCommandCloseReason.
@@ -184,6 +191,7 @@ var (
 		3: "AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE",
 		4: "AGENT_COMMAND_CLOSE_REASON_ENGINE_REFUSED",
 		5: "AGENT_COMMAND_CLOSE_REASON_INTERRUPTED",
+		6: "AGENT_COMMAND_CLOSE_REASON_UNRESOLVABLE",
 	}
 	AgentCommandCloseReason_value = map[string]int32{
 		"AGENT_COMMAND_CLOSE_REASON_UNSPECIFIED":       0,
@@ -192,6 +200,7 @@ var (
 		"AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE": 3,
 		"AGENT_COMMAND_CLOSE_REASON_ENGINE_REFUSED":    4,
 		"AGENT_COMMAND_CLOSE_REASON_INTERRUPTED":       5,
+		"AGENT_COMMAND_CLOSE_REASON_UNRESOLVABLE":      6,
 	}
 )
 
@@ -579,14 +588,15 @@ const file_containarium_v1_agent_command_audit_proto_rawDesc = "" +
 	"$AGENT_COMMAND_EVENT_KIND_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eAGENT_COMMAND_EVENT_KIND_START\x10\x01\x12 \n" +
 	"\x1cAGENT_COMMAND_EVENT_KIND_END\x10\x02\x12$\n" +
-	" AGENT_COMMAND_EVENT_KIND_BLOCKED\x10\x03*\xa8\x02\n" +
+	" AGENT_COMMAND_EVENT_KIND_BLOCKED\x10\x03*\xd5\x02\n" +
 	"\x17AgentCommandCloseReason\x12*\n" +
 	"&AGENT_COMMAND_CLOSE_REASON_UNSPECIFIED\x10\x00\x12(\n" +
 	"$AGENT_COMMAND_CLOSE_REASON_HARD_DENY\x10\x01\x12*\n" +
 	"&AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED\x10\x02\x120\n" +
 	",AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE\x10\x03\x12-\n" +
 	")AGENT_COMMAND_CLOSE_REASON_ENGINE_REFUSED\x10\x04\x12*\n" +
-	"&AGENT_COMMAND_CLOSE_REASON_INTERRUPTED\x10\x05*\xa1\x01\n" +
+	"&AGENT_COMMAND_CLOSE_REASON_INTERRUPTED\x10\x05\x12+\n" +
+	"'AGENT_COMMAND_CLOSE_REASON_UNRESOLVABLE\x10\x06*\xa1\x01\n" +
 	"\x13AgentCommandOutcome\x12%\n" +
 	"!AGENT_COMMAND_OUTCOME_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19AGENT_COMMAND_OUTCOME_RAN\x10\x01\x12!\n" +

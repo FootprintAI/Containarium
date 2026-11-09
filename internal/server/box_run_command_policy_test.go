@@ -630,7 +630,7 @@ func TestStartBoxRun_CommandPolicy_SetupFailureRestoresTheRotatedRun(t *testing.
 	defer mu.Unlock()
 	rotate, undo := -1, -1
 	for i, c := range rootCalls {
-		if strings.Contains(c, "fix-1.1790000000.json") && strings.Contains(c, "! -e") {
+		if strings.Contains(c, "fix-1.1790000000.json") && strings.Contains(c, "mv -fT") {
 			undo = i
 		} else if strings.Contains(c, "fix-1.1790000000.json") {
 			rotate = i
@@ -665,5 +665,53 @@ func TestBoxRunUnrotateScript_UndoesTheRotation(t *testing.T) {
 		if b, err := os.ReadFile(filepath.Join(dir, "r."+ext)); err != nil || string(b) != ext {
 			t.Errorf("r.%s not restored: %v %q", ext, err, b)
 		}
+	}
+}
+
+// The restore reads a run directory the run user can write (sticky, 1777). A
+// run user that pre-creates the name the rotated file goes back to, as a file
+// or as a dangling symlink, must not block the restore, and the planted entry
+// is replaced, never followed.
+func TestBoxRunUnrotateScript_PlantedOriginalDoesNotBlockRestore(t *testing.T) {
+	for _, plant := range []string{"file", "dangling-symlink", "symlink-to-dir"} {
+		t.Run(plant, func(t *testing.T) {
+			dir := t.TempDir()
+			outside := t.TempDir()
+			for _, ext := range []string{"json", "log"} {
+				if err := os.WriteFile(filepath.Join(dir, "r."+ext), []byte("real-"+ext), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if out, err := exec.Command("sh", "-c", boxRunRotateScript(dir, "r", 77)).CombinedOutput(); err != nil {
+				t.Fatalf("%v\n%s", err, out)
+			}
+			for _, ext := range []string{"json", "log"} {
+				p := filepath.Join(dir, "r."+ext)
+				var err error
+				switch plant {
+				case "file":
+					err = os.WriteFile(p, []byte("planted"), 0o600)
+				case "dangling-symlink":
+					err = os.Symlink(filepath.Join(outside, "nowhere"), p)
+				case "symlink-to-dir":
+					err = os.Symlink(outside, p)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if out, err := exec.Command("sh", "-c", boxRunUnrotateScript(dir, "r", 77)).CombinedOutput(); err != nil {
+				t.Fatalf("%v\n%s", err, out)
+			}
+			for _, ext := range []string{"json", "log"} {
+				b, err := os.ReadFile(filepath.Join(dir, "r."+ext))
+				if err != nil || string(b) != "real-"+ext {
+					t.Errorf("r.%s not restored over the planted %s: %v %q", ext, plant, err, b)
+				}
+			}
+			if ents, _ := os.ReadDir(outside); len(ents) != 0 {
+				t.Errorf("the restore followed the planted link and wrote outside the run directory: %v", ents)
+			}
+		})
 	}
 }

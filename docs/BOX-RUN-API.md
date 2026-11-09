@@ -180,15 +180,24 @@ The decision, in order:
    `GIT_*` environment assignment. The check also reads command substitutions,
    subshells and quoted redirection targets, and the values of `NAME=value`
    assignments, which are otherwise left out of the audit event.
-2. **The org allowlist** (`command_policy.allow`) runs a command outside the
+2. **Unresolvable commands** are refused (`UNRESOLVABLE`) after the hard denies:
+   a line that is not a single simple command (an operator, redirection,
+   subshell, substitution, variable or glob), brace expansion, a glob character
+   in the executable word, ANSI-C quoting (`$'...'`), arithmetic expansion
+   (`$((...))`), and a quoted shell command (`sh -c '...'`) nested more than
+   three deep. The hard denies cannot be shown to hold for these, so they are
+   refused by name, not left to the fact that no rule allows them. Compound
+   lines such as `a && b` are therefore refused under a command policy; run
+   the parts as separate commands.
+3. **The org allowlist** (`command_policy.allow`) runs a command outside the
    level when an entry matches: an argv glob with an exact executable, `*`
    within one argument, and no shell operators.
-3. **The level's own rules** run the command as before.
-4. **Anything else** is refused.
+4. **The level's own rules** run the command as before.
+5. **Anything else** is refused.
 
 A refused command ends the run. Nothing waits for an answer: an approved re-run
 is a new run that carries `approval`. A refusal records a `BLOCKED` event with
-an `AgentCommandCloseReason` (`HARD_DENY`, `NOT_ALLOWED`, or
+an `AgentCommandCloseReason` (`HARD_DENY`, `NOT_ALLOWED`, `UNRESOLVABLE`, or
 `AUDIT_UNAVAILABLE` when the start event cannot be recorded). An engine run is
 stopped by the hook (`continue: false`). A command run never starts the
 command: it prints the reason to its log and exits `120`.

@@ -28,6 +28,10 @@ type Command struct {
 	// a redirection, a subshell, an expansion ($, backticks) or an unquoted
 	// glob character: then what runs is not exactly Argv.
 	Simple bool
+	// Unresolvable names the first carrier the parser cannot resolve to the
+	// program that runs (brace expansion, a glob in the executable word,
+	// ANSI-C quoting, arithmetic expansion); "" when there is none.
+	Unresolvable string
 	// Assignments is the number of leading NAME=value words dropped from Argv.
 	Assignments int
 	// Segments are the words of every simple command on the line (the words of
@@ -53,7 +57,13 @@ func ParseCommand(s string) (Command, error) {
 		word     strings.Builder
 		inWord   bool
 		redirect bool // the next word is a redirection target
+		wordGlob bool // the current word holds an unquoted glob character
 	)
+	flag := func(why string) {
+		if c.Unresolvable == "" {
+			c.Unresolvable = why
+		}
+	}
 	endWord := func() {
 		if !inWord {
 			return
@@ -61,6 +71,8 @@ func ParseCommand(s string) (Command, error) {
 		w := word.String()
 		word.Reset()
 		inWord = false
+		glob := wordGlob
+		wordGlob = false
 		if redirect {
 			redirect = false
 			raw = append(raw, logTok{text: w, target: true})
@@ -72,6 +84,11 @@ func ParseCommand(s string) (Command, error) {
 			return
 		}
 		raw = append(raw, logTok{text: w})
+		// A glob in the executable word picks the program from the file system
+		// (/usr/bin/cur* runs curl): what runs is not what the words say.
+		if glob && !isAssignment(w) && leadingAssignments(seg) == len(seg) {
+			flag("glob character in the executable word")
+		}
 		seg = append(seg, w)
 	}
 	endSeg := func(op string) {
@@ -124,6 +141,9 @@ func ParseCommand(s string) (Command, error) {
 					continue
 				case rs[j] == '$' || rs[j] == '`':
 					c.Simple = false
+					if rs[j] == '$' && j+1 < len(rs) && (rs[j+1] == '[' || rs[j+1] == '(' && j+2 < len(rs) && rs[j+2] == '(') {
+						flag("arithmetic expansion")
+					}
 				}
 				word.WriteRune(rs[j])
 			}
@@ -152,6 +172,14 @@ func ParseCommand(s string) (Command, error) {
 			raw = append(raw, logTok{text: op, op: true})
 		case r == '$':
 			c.Simple = false
+			if i+1 < len(rs) {
+				switch {
+				case rs[i+1] == '\'' || rs[i+1] == '"':
+					flag("ANSI-C or locale quoting")
+				case rs[i+1] == '[' || rs[i+1] == '(' && i+2 < len(rs) && rs[i+2] == '(':
+					flag("arithmetic expansion")
+				}
+			}
 			if i+1 < len(rs) && rs[i+1] == '(' {
 				i++
 				endSeg("$(")
@@ -162,6 +190,12 @@ func ParseCommand(s string) (Command, error) {
 			inWord = true
 		case r == '*' || r == '?' || r == '[' || r == '{' || (r == '~' && !inWord):
 			c.Simple = false
+			switch r {
+			case '{':
+				flag("brace expansion")
+			case '*', '?', '[':
+				wordGlob = true
+			}
 			word.WriteRune(r)
 			inWord = true
 		default:

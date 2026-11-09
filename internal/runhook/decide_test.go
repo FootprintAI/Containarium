@@ -35,7 +35,8 @@ func TestDecide_AllowlistedCommandRunsOutsideTheLevel(t *testing.T) {
 // The allowlist widens a level only for matching entries.
 func TestDecide_AllowlistWidensOnlyMatchingEntries(t *testing.T) {
 	cfg := testConfig("make lint", "go test *")
-	for _, cmd := range []string{"make deploy", "make lint && make deploy", "go test ./a ./b", "go build ./..."} {
+	// A compound line is refused as unresolvable (see unresolvable_test.go).
+	for _, cmd := range []string{"make deploy", "go test ./a ./b", "go build ./..."} {
 		d := Decide(cfg, cmd)
 		if d.Verdict != VerdictDeny || d.Class != pb.AgentCommandClass_AGENT_COMMAND_CLASS_NOT_ALLOWED ||
 			d.CloseReason != pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED {

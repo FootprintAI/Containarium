@@ -332,8 +332,13 @@ func boxRunRotateScript(dir, name string, startedAtUnix int64) string {
 }
 
 // boxRunUnrotateScript undoes boxRunRotateScript for the run that was rotated
-// aside under startedAtUnix: each file goes back to its own name, unless
-// something already occupies that name.
+// aside under startedAtUnix: each file goes back to its own name. It runs as
+// root over a run directory the run user can write (sticky, 1777), and only
+// after a start that failed before anything was spawned, with the (box, name)
+// lock held, so nothing legitimate occupies the original name. It therefore
+// does not guard on the original name: a guard there would let a run user block
+// the restore by pre-creating it. mv -fT renames over a planted file or symlink
+// (it never follows a link, and never moves into a directory of that name).
 func boxRunUnrotateScript(dir, name string, startedAtUnix int64) string {
 	q := shellSingleQuote
 	suffix := "." + strconv.FormatInt(startedAtUnix, 10)
@@ -341,7 +346,7 @@ func boxRunUnrotateScript(dir, name string, startedAtUnix int64) string {
 	for _, ext := range []string{"json", "log", "stderr.log", "exit", "session", "session.snap", "tools"} {
 		orig := q(dir + "/" + name + "." + ext)
 		aside := q(dir + "/" + name + suffix + "." + ext)
-		fmt.Fprintf(&b, "[ -e %s ] && [ ! -e %s ] && mv %s %s 2>/dev/null; ", aside, orig, aside, orig)
+		fmt.Fprintf(&b, "[ -e %s ] && mv -fT %s %s 2>/dev/null; ", aside, aside, orig)
 	}
 	b.WriteString("true\n")
 	return b.String()

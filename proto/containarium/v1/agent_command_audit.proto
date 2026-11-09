@@ -101,6 +101,13 @@ enum AgentCommandCloseReason {
   // status, no exit status at all, or the sink itself was stopped). The command
   // may have run in part. outcome is UNKNOWN.
   AGENT_COMMAND_CLOSE_REASON_INTERRUPTED = 5;
+  // The command could not be resolved to the program it runs, so no rule can
+  // be applied to it: it is a compound line (operator, redirection, subshell),
+  // or holds an expansion the parser cannot evaluate (brace expansion, a glob
+  // in the executable word, ANSI-C quoting, arithmetic expansion), or nests a
+  // quoted shell command deeper than the supported depth. Refused as the
+  // hard denies cannot be proven to hold for it; no hard deny matched.
+  AGENT_COMMAND_CLOSE_REASON_UNRESOLVABLE = 6;
 }
 
 // AgentCommandOutcome says whether the command of an END ran.
