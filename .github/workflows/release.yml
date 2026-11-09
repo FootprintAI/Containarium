@@ -565,7 +565,7 @@ jobs:
         # Tag pushes only. A rehearsal builds every artifact above and stops
         # here — that is the whole point of the workflow_dispatch trigger.
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           tag_name: ${{ github.ref_name }}
           name: Containarium ${{ github.ref_name }}
@@ -770,7 +770,7 @@ jobs:
         # Without it a rehearsal would still attempt a real upload, which is
         # exactly the accidental publish this trigger is designed to prevent.
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           tag_name: ${{ github.ref_name }}
           # append_files preserves the binary release uploaded above;
