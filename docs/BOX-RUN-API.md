@@ -134,7 +134,8 @@ verification of a pushed commit.
   run user can, including on a box recorded at a restrictive level, which an
   engine run at that level could not be told to do by a prompt. The level
   bounds what the run user may do as a Unix account (its sudo grant), not what
-  a command may invoke.
+  a command may invoke. With `command_policy` set, the command is decided like
+  an engine run's shell command instead; see the next section.
 - The working directory is the run user's home. A command that needs a checkout
   makes it: for example `git clone <url> work && cd work && git checkout <sha>
   && make test`, through the box's own credential helper.
@@ -154,6 +155,146 @@ verification of a pushed commit.
 
 The CLI counterpart is `containarium code run <box> --command '<text>'
 [--timeout 15m] [--name <run>]` (the SSH path, as the box's own user).
+
+## Command allowlist and audit events: `command_policy`
+
+`command_policy` (capability `box_run_command_policy`) puts every shell
+command of a run through one decision before it runs, and records an audit
+event for it. It needs a box with a recorded tool-access level
+(`FAILED_PRECONDITION` otherwise) and, for an engine run, the Claude Code
+engine. It applies to both kinds of run:
+
+- **Engine run.** The daemon installs a PreToolUse and a PostToolUse hook pair
+  (`agent-box permission-hook pre|post`) through `--settings`. Each shell
+  command the agent requests is decided by the pre hook.
+- **Command run** (`command`). The run executes `agent-box permission-hook
+  command` in place of `sh -c`. It applies the same decision to the command,
+  which the daemon wrote into the run's root-owned configuration, and runs it
+  only if it is allowed. The timeout and exit code work as for a plain command
+  run.
+
+The decision, in order:
+
+1. **Hard denies** refuse the command whatever the allowlist says: network
+   client executables, `git push`, `git remote`, git transport options, and any
+   `GIT_*` environment assignment. The check also reads command substitutions,
+   subshells and quoted redirection targets, and the values of `NAME=value`
+   assignments, which are otherwise left out of the audit event.
+2. **Unresolvable commands** are refused (`UNRESOLVABLE`) after the hard
+   denies, only when the parser cannot tell what will execute: brace expansion,
+   a glob character in the executable word, ANSI-C quoting (`$'...'`) and
+   arithmetic expansion (`$((...))`) in a command word, and a quoted shell
+   command (`sh -c '...'`) nested more than three deep. They are refused by
+   name, not left to the fact that no rule allows them. Compound lines
+   (`&&`, `||`, `;`), pipes, redirections, substitutions and globs in arguments
+   are not refused for their shape: the hard-deny scan reads every segment, and
+   every segment must also be covered by the level's own rules, otherwise the
+   line is refused (`NOT_ALLOWED`, or `HARD_DENY`). The allowlist cannot cover
+   a compound line or a segment of one: it matches only a simple command. A
+   leading `NAME=value` is judged as written, on a simple line and in a
+   segment alike, so `PATH=/tmp ls` is not covered by a rule for `ls`.
+3. **The org allowlist** (`command_policy.allow`) runs a command outside the
+   level when an entry matches: an argv glob with an exact executable, `*`
+   within one argument, and no shell operators.
+4. **The level's own rules** run the command as before.
+5. **Anything else** is refused.
+
+**The engine is root-staged.** For an engine run, the daemon installs the
+owner's engine as a root-owned `0755` copy in the root-owned audit directory
+(`/var/lib/containarium-run-audit/bin/claude`) and the run executes that copy,
+not the run user's own `~/.local/bin/claude` (which the run user can replace). The
+owner's file is trusted only if it is owned by the box owner and writable by
+neither group nor others, and is re-checked after copying. The copy is replaced
+whenever the owner's file changes. If the engine cannot be staged that way, the
+run is refused with `FAILED_PRECONDITION` and the violation type
+`ENGINE_NOT_ROOT_STAGED`; it never falls back to the run user's copy. The
+root-owned copy cannot update itself: a new engine version reaches a run when
+the owner's copy is updated (the next run re-stages it).
+
+A refused command ends the run. Nothing waits for an answer: an approved re-run
+is a new run that carries `approval`. A refusal records a `BLOCKED` event with
+an `AgentCommandCloseReason` (`HARD_DENY`, `NOT_ALLOWED`, `UNRESOLVABLE`, or
+`AUDIT_UNAVAILABLE` when the start event cannot be recorded). An engine run is
+stopped by the hook (`continue: false`). A command run never starts the
+command: it prints the reason to its log and exits `120`.
+
+Every command that runs gets a `START` event before it runs and an `END` event
+with its exit code. Every `START` gets exactly one `END`, and each `END` has an
+`outcome` (`AgentCommandOutcome`):
+
+- **`RAN`**: the post hook (engine run) or the command hook (command run)
+  reported that the command finished.
+- **`NOT_RUN`**, close reason `ENGINE_REFUSED`: the pre hook allowed or deferred
+  the command, but the engine then refused it itself (for example
+  `--restricted` working-directory confinement), so no post hook fired. The
+  sink writes this `END` when the run ends cleanly (exit status `0`) with the
+  `START` still open. The engine fires a post hook for every command it runs,
+  so such a command did not run. This rests on the engine's report and on the
+  run's exit status. That status is recorded by `agent-box run-supervise`, a
+  root process the daemon starts in place of spawning the run as the run user:
+  it runs the run as the run user, in its own session, and as its parent writes
+  the exit status to `/var/lib/containarium-run-audit/exit/<run>.exit` (root,
+  `0600`, in a root `0700` directory the setup creates with the events
+  directory). The sink reads only that file, never the run directory's
+  `<run>.exit`, which the run user can write.
+- **`UNKNOWN`**, close reason `INTERRUPTED`: the run ended any other way with
+  the `START` still open (killed, timed out, crashed, a non-zero or missing
+  exit status, or the sink stopped by a signal). The command may have run in
+  part. The sink writes this `END` too.
+
+A sink-written `END` has no exit code. The pre hook's own process cannot write
+it, because it exits before the engine decides; the sink is the one process
+that lives until the run ends.
+
+**Exit code.** `exit_code` is absent when it is not known, never `0` by
+default. For an engine run it comes from the engine's hook input:
+
+- an exit-code field in `tool_response`, when the engine sends one;
+- `PostToolUse` without such a field: `0`, since the engine fires
+  `PostToolUse` only for exit status `0`;
+- `PostToolUseFailure`: `N` when the error text begins with the line
+  `Exit code N` (`0`-`255`, then a newline or the end of the text). Any
+  other text (missing, non-numeric, out of range, the phrase on a later line)
+  records no exit code.
+
+That error text is the engine's display format (observed with Claude Code
+2.1.319), not a documented field. If an engine release changes it, failed
+commands are recorded with no exit code until the parser follows. A command
+run records the shell's own status.
+
+Output and environment are never recorded, and arguments
+are redacted from a default list plus `command_policy.redact_patterns`. Events
+are protojson `AgentCommandEvent` lines in
+`/var/lib/containarium-run-audit/events/<run_name>.jsonl` inside the box. A
+root-run sink (`agent-box run-audit-sink`) that the daemon starts before the run
+is the only writer, and the run user cannot write that file.
+
+Limits:
+
+- **At `FULL_SUDO` these controls are advisory.** The allowlist, the hard
+  denies and the hooks are installed and decide exactly as at the other levels.
+  But the run user has passwordless sudo, so it can become root. As root it can
+  change the configuration, stop the sink or run commands the hooks never see.
+  At `FULL_SUDO` they do not bind the run user and are not a security
+  boundary. Use `NONE` or `BUILD_TOOLS` where the allowlist must hold.
+- **An allowlist entry cannot name an interpreter on caller-chosen code.** An
+  entry whose executable is a shell, `python*`, `perl`, `ruby`, `node` and the
+  like is refused when it has a `-c`/`-e`/`-m`-style flag or a `*` argument, so
+  the allowlist cannot be widened into "run anything". A fixed interpreter
+  entry (`python3 scripts/check.py`) is accepted, and so is whatever that
+  script does. Wrappers (`env`, `xargs`, `timeout`) are not recognised, so an
+  entry that wraps an interpreter is the operator's to avoid.
+- **The `agent-box` that root runs must be trusted.** The daemon copies a
+  root-owned `agent-box` (from `/usr/local/bin`, else the owner's
+  `~/.local/bin`) and runs it as root. A copy that is not owned by root, or is
+  group- or world-writable, is skipped, and with none left the run is refused.
+  If the setup is refused after a finished run of the same name was rotated
+  aside, that run is restored under its name.
+- **Network denial is command-level only.** It refuses network client
+  executables. `git clone`/`git fetch` and package managers still reach their
+  remotes and registries, and nothing filters network traffic itself.
+- A command is decided as one line. Programs that the command or a script it
+  runs start in turn are not decided again.
 
 ## Putting a file on the box: `WriteBoxFile`
 
@@ -230,7 +371,8 @@ The REST gateway rejects request fields it does not know, so a caller must not
 send `run_name`, `structured_output`, `model` or `command` to a daemon that
 predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the optional
 features a daemon supports: `box_run_name`, `box_run_structured_output`,
-`box_run_model`, `box_run_command`, `box_files` and `box_files_stream`. An older daemon does
+`box_run_model`, `box_run_command`, `box_run_command_policy`, `box_files` and
+`box_files_stream`. An older daemon does
 not send the field at all; treat a missing name as unsupported. Names are only
 added. `GetSystemInfo` requires an admin principal. A caller that cannot read it
 can gate on the daemon version instead: the first release that contains these

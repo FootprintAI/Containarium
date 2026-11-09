@@ -943,11 +943,13 @@ type StartBoxRunRequest struct {
 	// prompt, session_id, continue_session, structured_output and model
 	// (INVALID_ARGUMENT, before anything on the box is touched). The command
 	// runs as the box's run user with the sudo grant of its recorded
-	// tool-access level, in that user's home directory: the level selects the
-	// run user and its sudo grant, nothing more. The engine's allow/deny tool
-	// policy applies to engine runs only, so a caller holding the command-mode
-	// scope can run any program the run user can. A caller that needs a
-	// checkout makes it part of the command. The run is
+	// tool-access level, in that user's home directory. Without command_policy
+	// the level selects the run user and its sudo grant, nothing more: the
+	// engine's allow/deny tool policy does not apply, so a caller holding the
+	// command-mode scope can run any program the run user can. With
+	// command_policy the command goes through the same decision, sink and events
+	// as an engine run's shell commands (see command_policy). A caller that needs
+	// a checkout makes it part of the command. The run is
 	// listed, tailed and stopped like any other (ListBoxRuns, TailBoxRunLog,
 	// StopBoxRun); BoxRun.session_id stays empty. Capability "box_run_command"
 	// in SystemInfo.capabilities.
@@ -957,8 +959,32 @@ type StartBoxRunRequest struct {
 	// default of 900; more than 3600 is INVALID_ARGUMENT, as is a value without
 	// command.
 	TimeoutSeconds int32 `protobuf:"varint,9,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Command allowlist and audit events for this run (#3582). Requires a
+	// recorded tool-access level (FAILED_PRECONDITION otherwise) and, for an
+	// engine run, the Claude Code engine. Every shell command is then classified
+	// before it runs: within the level it runs as before; outside it, it runs
+	// only if an allow entry matches; a hard deny (network clients, git push, git
+	// remote, git transport options) or no match refuses it and ENDS the run. An
+	// engine run gets this through PreToolUse / PostToolUse hooks; a command-mode
+	// run (command) through the same decision applied to its one command, which
+	// on a refusal never runs: the run exits 120 and records a BLOCKED event with
+	// its close reason. Each command gets a start event before it runs and
+	// exactly one end event (exit code when known, and whether it ran; the sink
+	// writes it when the run ends first, see AgentCommandEvent), in an
+	// append-only file inside the box that the
+	// run user cannot write (/var/lib/containarium-run-audit/events/<run_name>.jsonl,
+	// protojson AgentCommandEvent lines). At FULL_SUDO all of this applies but is
+	// advisory: the run user can become root and step around it, so it is not a
+	// security boundary at that level. Capability "box_run_command_policy".
+	CommandPolicy *AgentCommandPolicy `protobuf:"bytes,11,opt,name=command_policy,json=commandPolicy,proto3" json:"command_policy,omitempty"`
+	// Set when this run is a re-run a human approved after a refusal: every
+	// event of the run records it. Needs command_policy, and is refused with
+	// session_id or continue_session (INVALID_ARGUMENT): an approval starts a new
+	// run, it never resumes the refused one. Each id must match
+	// [A-Za-z0-9._:@-]{1,128}.
+	Approval      *AgentRunApproval `protobuf:"bytes,12,opt,name=approval,proto3" json:"approval,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StartBoxRunRequest) Reset() {
@@ -1059,6 +1085,20 @@ func (x *StartBoxRunRequest) GetTimeoutSeconds() int32 {
 		return x.TimeoutSeconds
 	}
 	return 0
+}
+
+func (x *StartBoxRunRequest) GetCommandPolicy() *AgentCommandPolicy {
+	if x != nil {
+		return x.CommandPolicy
+	}
+	return nil
+}
+
+func (x *StartBoxRunRequest) GetApproval() *AgentRunApproval {
+	if x != nil {
+		return x.Approval
+	}
+	return nil
 }
 
 type StartBoxRunResponse struct {
@@ -2942,7 +2982,7 @@ var File_containarium_v1_box_run_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\n" +
-	"\x1dcontainarium/v1/box_run.proto\x12\x0fcontainarium.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dcontainarium/v1/sandbox.proto\x1a\x1bcontainarium/v1/agent.proto\x1a\x1fcontainarium/v1/run_usage.proto\"\xf4\x03\n" +
+	"\x1dcontainarium/v1/box_run.proto\x12\x0fcontainarium.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dcontainarium/v1/sandbox.proto\x1a\x1bcontainarium/v1/agent.proto\x1a\x1fcontainarium/v1/run_usage.proto\x1a)containarium/v1/agent_command_audit.proto\"\xf4\x03\n" +
 	"\x06BoxRun\x12\x19\n" +
 	"\brun_name\x18\x01 \x01(\tR\arunName\x129\n" +
 	"\n" +
@@ -2967,7 +3007,7 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\n" +
 	"provenance\x18\x03 \x01(\x0e2%.containarium.v1.BoxRunToolProvenanceR\n" +
 	"provenance\x12?\n" +
-	"\blocation\x18\x04 \x01(\x0e2#.containarium.v1.BoxRunToolLocationR\blocation\"\xd0\x02\n" +
+	"\blocation\x18\x04 \x01(\x0e2#.containarium.v1.BoxRunToolLocationR\blocation\"\xdb\x03\n" +
 	"\x12StartBoxRunRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x16\n" +
 	"\x06prompt\x18\x02 \x01(\tR\x06prompt\x12\x1d\n" +
@@ -2980,7 +3020,9 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\trun_token\x18\n" +
 	" \x01(\tR\brunToken\x12\x18\n" +
 	"\acommand\x18\b \x01(\tR\acommand\x12'\n" +
-	"\x0ftimeout_seconds\x18\t \x01(\x05R\x0etimeoutSeconds\"@\n" +
+	"\x0ftimeout_seconds\x18\t \x01(\x05R\x0etimeoutSeconds\x12J\n" +
+	"\x0ecommand_policy\x18\v \x01(\v2#.containarium.v1.AgentCommandPolicyR\rcommandPolicy\x12=\n" +
+	"\bapproval\x18\f \x01(\v2!.containarium.v1.AgentRunApprovalR\bapproval\"@\n" +
 	"\x13StartBoxRunResponse\x12)\n" +
 	"\x03run\x18\x01 \x01(\v2\x17.containarium.v1.BoxRunR\x03run\"8\n" +
 	"\x1aGetBoxRunUserStatusRequest\x12\x1a\n" +
@@ -3222,8 +3264,10 @@ var file_containarium_v1_box_run_proto_goTypes = []any{
 	(*timestamppb.Timestamp)(nil),        // 40: google.protobuf.Timestamp
 	(CaptureMode)(0),                     // 41: containarium.v1.CaptureMode
 	(*RunUsage)(nil),                     // 42: containarium.v1.RunUsage
-	(CodeCredentialSource)(0),            // 43: containarium.v1.CodeCredentialSource
-	(*durationpb.Duration)(nil),          // 44: google.protobuf.Duration
+	(*AgentCommandPolicy)(nil),           // 43: containarium.v1.AgentCommandPolicy
+	(*AgentRunApproval)(nil),             // 44: containarium.v1.AgentRunApproval
+	(CodeCredentialSource)(0),            // 45: containarium.v1.CodeCredentialSource
+	(*durationpb.Duration)(nil),          // 46: google.protobuf.Duration
 }
 var file_containarium_v1_box_run_proto_depIdxs = []int32{
 	40, // 0: containarium.v1.BoxRun.started_at:type_name -> google.protobuf.Timestamp
@@ -3234,32 +3278,34 @@ var file_containarium_v1_box_run_proto_depIdxs = []int32{
 	42, // 5: containarium.v1.BoxRun.usage:type_name -> containarium.v1.RunUsage
 	1,  // 6: containarium.v1.BoxRunTool.provenance:type_name -> containarium.v1.BoxRunToolProvenance
 	2,  // 7: containarium.v1.BoxRunTool.location:type_name -> containarium.v1.BoxRunToolLocation
-	10, // 8: containarium.v1.StartBoxRunResponse.run:type_name -> containarium.v1.BoxRun
-	43, // 9: containarium.v1.GetBoxRunUserStatusResponse.state:type_name -> containarium.v1.CodeCredentialSource
-	10, // 10: containarium.v1.ListBoxRunsResponse.runs:type_name -> containarium.v1.BoxRun
-	23, // 11: containarium.v1.WriteBoxFileStreamRequest.header:type_name -> containarium.v1.WriteBoxFileStreamHeader
-	10, // 12: containarium.v1.StopBoxRunResponse.run:type_name -> containarium.v1.BoxRun
-	3,  // 13: containarium.v1.StopBoxRunResponse.signal:type_name -> containarium.v1.BoxRunStopSignal
-	40, // 14: containarium.v1.BoxRunCheckout.newest_modification:type_name -> google.protobuf.Timestamp
-	4,  // 15: containarium.v1.BoxRunCheckout.disposition:type_name -> containarium.v1.BoxRunCheckoutDisposition
-	44, // 16: containarium.v1.SweepBoxRunCheckoutsResponse.max_age:type_name -> google.protobuf.Duration
-	27, // 17: containarium.v1.SweepBoxRunCheckoutsResponse.checkouts:type_name -> containarium.v1.BoxRunCheckout
-	30, // 18: containarium.v1.ApplyBoxSkillSetsResponse.installed:type_name -> containarium.v1.BoxSkillSetChange
-	30, // 19: containarium.v1.ApplyBoxSkillSetsResponse.removed:type_name -> containarium.v1.BoxSkillSetChange
-	6,  // 20: containarium.v1.RunInput.kind:type_name -> containarium.v1.RunInputKind
-	40, // 21: containarium.v1.RunInput.created_at:type_name -> google.protobuf.Timestamp
-	40, // 22: containarium.v1.RunInput.expires_at:type_name -> google.protobuf.Timestamp
-	33, // 23: containarium.v1.ListRunInputsResponse.open:type_name -> containarium.v1.RunInput
-	7,  // 24: containarium.v1.AnswerRunInputRequest.answer:type_name -> containarium.v1.RunInputAnswer
-	9,  // 25: containarium.v1.AnswerRunInputResponse.outcome:type_name -> containarium.v1.RunInputAnswerOutcome
-	7,  // 26: containarium.v1.AnswerRunInputResponse.closed_answer:type_name -> containarium.v1.RunInputAnswer
-	8,  // 27: containarium.v1.AnswerRunInputResponse.close_reason:type_name -> containarium.v1.RunInputCloseReason
-	40, // 28: containarium.v1.AnswerRunInputResponse.closed_at:type_name -> google.protobuf.Timestamp
-	29, // [29:29] is the sub-list for method output_type
-	29, // [29:29] is the sub-list for method input_type
-	29, // [29:29] is the sub-list for extension type_name
-	29, // [29:29] is the sub-list for extension extendee
-	0,  // [0:29] is the sub-list for field type_name
+	43, // 8: containarium.v1.StartBoxRunRequest.command_policy:type_name -> containarium.v1.AgentCommandPolicy
+	44, // 9: containarium.v1.StartBoxRunRequest.approval:type_name -> containarium.v1.AgentRunApproval
+	10, // 10: containarium.v1.StartBoxRunResponse.run:type_name -> containarium.v1.BoxRun
+	45, // 11: containarium.v1.GetBoxRunUserStatusResponse.state:type_name -> containarium.v1.CodeCredentialSource
+	10, // 12: containarium.v1.ListBoxRunsResponse.runs:type_name -> containarium.v1.BoxRun
+	23, // 13: containarium.v1.WriteBoxFileStreamRequest.header:type_name -> containarium.v1.WriteBoxFileStreamHeader
+	10, // 14: containarium.v1.StopBoxRunResponse.run:type_name -> containarium.v1.BoxRun
+	3,  // 15: containarium.v1.StopBoxRunResponse.signal:type_name -> containarium.v1.BoxRunStopSignal
+	40, // 16: containarium.v1.BoxRunCheckout.newest_modification:type_name -> google.protobuf.Timestamp
+	4,  // 17: containarium.v1.BoxRunCheckout.disposition:type_name -> containarium.v1.BoxRunCheckoutDisposition
+	46, // 18: containarium.v1.SweepBoxRunCheckoutsResponse.max_age:type_name -> google.protobuf.Duration
+	27, // 19: containarium.v1.SweepBoxRunCheckoutsResponse.checkouts:type_name -> containarium.v1.BoxRunCheckout
+	30, // 20: containarium.v1.ApplyBoxSkillSetsResponse.installed:type_name -> containarium.v1.BoxSkillSetChange
+	30, // 21: containarium.v1.ApplyBoxSkillSetsResponse.removed:type_name -> containarium.v1.BoxSkillSetChange
+	6,  // 22: containarium.v1.RunInput.kind:type_name -> containarium.v1.RunInputKind
+	40, // 23: containarium.v1.RunInput.created_at:type_name -> google.protobuf.Timestamp
+	40, // 24: containarium.v1.RunInput.expires_at:type_name -> google.protobuf.Timestamp
+	33, // 25: containarium.v1.ListRunInputsResponse.open:type_name -> containarium.v1.RunInput
+	7,  // 26: containarium.v1.AnswerRunInputRequest.answer:type_name -> containarium.v1.RunInputAnswer
+	9,  // 27: containarium.v1.AnswerRunInputResponse.outcome:type_name -> containarium.v1.RunInputAnswerOutcome
+	7,  // 28: containarium.v1.AnswerRunInputResponse.closed_answer:type_name -> containarium.v1.RunInputAnswer
+	8,  // 29: containarium.v1.AnswerRunInputResponse.close_reason:type_name -> containarium.v1.RunInputCloseReason
+	40, // 30: containarium.v1.AnswerRunInputResponse.closed_at:type_name -> google.protobuf.Timestamp
+	31, // [31:31] is the sub-list for method output_type
+	31, // [31:31] is the sub-list for method input_type
+	31, // [31:31] is the sub-list for extension type_name
+	31, // [31:31] is the sub-list for extension extendee
+	0,  // [0:31] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_box_run_proto_init() }
@@ -3270,6 +3316,7 @@ func file_containarium_v1_box_run_proto_init() {
 	file_containarium_v1_sandbox_proto_init()
 	file_containarium_v1_agent_proto_init()
 	file_containarium_v1_run_usage_proto_init()
+	file_containarium_v1_agent_command_audit_proto_init()
 	file_containarium_v1_box_run_proto_msgTypes[0].OneofWrappers = []any{}
 	file_containarium_v1_box_run_proto_msgTypes[12].OneofWrappers = []any{
 		(*WriteBoxFileStreamRequest_Header)(nil),

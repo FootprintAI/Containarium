@@ -52,6 +52,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/footprintai/containarium/internal/agentbox"
+	"github.com/footprintai/containarium/internal/runhook"
 	"github.com/footprintai/containarium/pkg/version"
 )
 
@@ -84,6 +85,21 @@ func main() {
 	// server (#2183). Not a user-facing verb either.
 	if len(os.Args) >= 2 && os.Args[1] == "approval-mcp" {
 		os.Exit(agentbox.RunApprovalCLI(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
+
+	// `agent-box permission-hook pre|post --config <path>` — the engine's
+	// PreToolUse / PostToolUse hooks of a run started with a command policy,
+	// and `agent-box run-audit-sink` — the root-run writer of that run's
+	// audit events, and `agent-box run-supervise` — the root parent of that
+	// run, the only writer of its exit status (#3582). Not user-facing verbs.
+	if len(os.Args) >= 2 && os.Args[1] == "permission-hook" {
+		os.Exit(runhook.RunHookCLI(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "run-audit-sink" {
+		os.Exit(runhook.RunSinkCLI(os.Args[2:], os.Stderr))
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "run-supervise" {
+		os.Exit(runhook.RunSuperviseCLI(os.Args[2:], os.Stdout, os.Stderr))
 	}
 
 	mcpServer := server.NewMCPServer(
