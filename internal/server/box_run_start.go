@@ -665,6 +665,11 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 			return nil, err
 		}
 		policy.Settings = boxRunHookSettingsJSON(name)
+		// The engine the run executes is the root-staged copy (setUpBoxRunAudit
+		// staged it), never the run user's own.
+		if command, err = boxRunPolicyEngineCommand(command); err != nil {
+			return nil, status.Errorf(codes.Internal, "%q: %v", req.GetUsername(), err)
+		}
 	}
 
 	if level != "" {

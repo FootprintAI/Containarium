@@ -12,6 +12,11 @@ const (
 	// AgentBoxPath is the root-owned copy of agent-box the hooks and the sink
 	// run, so the run user cannot swap the hook binary.
 	AgentBoxPath = AuditDir + "/bin/agent-box"
+	// EnginePath is the root-owned copy of the engine (Claude Code) a run under
+	// a command policy executes, in the same root-owned directory. The run
+	// user's own staged copy is writable by it, so an agent could replace that
+	// one and start the next run without the hooks.
+	EnginePath = AuditDir + "/bin/claude"
 )
 
 // ConfigPath is a run's hook and sink configuration (root-owned, 0644).

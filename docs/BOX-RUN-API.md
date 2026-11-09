@@ -195,6 +195,18 @@ The decision, in order:
 4. **The level's own rules** run the command as before.
 5. **Anything else** is refused.
 
+**The engine is root-staged.** For an engine run, the daemon installs the
+owner's engine as a root-owned `0755` copy in the root-owned audit directory
+(`/var/lib/containarium-run-audit/bin/claude`) and the run executes that copy,
+not the run user's own `~/.local/bin/claude` (which the run user can replace). The
+owner's file is trusted only if it is owned by the box owner and writable by
+neither group nor others, and is re-checked after copying. The copy is replaced
+whenever the owner's file changes. If the engine cannot be staged that way, the
+run is refused with `FAILED_PRECONDITION` and the violation type
+`ENGINE_NOT_ROOT_STAGED`; it never falls back to the run user's copy. The
+root-owned copy cannot update itself: a new engine version reaches a run when
+the owner's copy is updated (the next run re-stages it).
+
 A refused command ends the run. Nothing waits for an answer: an approved re-run
 is a new run that carries `approval`. A refusal records a `BLOCKED` event with
 an `AgentCommandCloseReason` (`HARD_DENY`, `NOT_ALLOWED`, `UNRESOLVABLE`, or

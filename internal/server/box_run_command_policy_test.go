@@ -49,7 +49,7 @@ func (r policyReqRun) spawn() (int, string) {
 
 func (r policyReqRun) auditSetup() (int, string) {
 	for i, c := range r.calls {
-		if c.root && strings.Contains(c.script, runhook.AuditDir) {
+		if c.root && strings.Contains(c.script, runhook.AuditDir) && strings.Contains(c.script, "run-audit-sink") {
 			return i, c.script
 		}
 	}
