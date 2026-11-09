@@ -638,6 +638,37 @@ message ListRunInputsRequest {
   string run_name = 2;
 }
 
+// ListRunCommandEventsRequest reads a run's command events (#3582).
+message ListRunCommandEventsRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // The run's name, as ListBoxRuns reports it.
+  string run_name = 2;
+  // Return only events with a seq greater than this. 0 reads from the start.
+  uint64 after_seq = 3;
+  // At most this many events. 0 means the default, 500; the maximum is 500.
+  int32 limit = 4;
+}
+
+// RunCommandEventEntry is one event with its position in the run's feed.
+message RunCommandEventEntry {
+  // The event's seq, the same value as event.seq.
+  uint64 seq = 1;
+  // The START, END or BLOCKED event the run's audit sink recorded.
+  AgentCommandEvent event = 2;
+}
+
+message ListRunCommandEventsResponse {
+  // Events with seq > after_seq in seq order, at most limit of them. A jump in
+  // seq between consecutive entries means events were missed.
+  repeated RunCommandEventEntry events = 1;
+  // True when the run's audit sink has finished (every START has its END) and
+  // this page reaches the last event: nothing more will ever be added. False
+  // while the run can still add events, or when more events are waiting past
+  // this page.
+  bool ended = 2;
+}
+
 message ListRunInputsResponse {
   // Open requests, oldest first. Empty once the run has exited: nothing is
   // waiting on an answer then. A request past expires_at is not listed.

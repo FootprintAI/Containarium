@@ -438,7 +438,13 @@ type AgentCommandEvent struct {
 	// approval, and the event's time). Stamped by the sink.
 	Approval *AgentRunApproval `protobuf:"bytes,10,opt,name=approval,proto3" json:"approval,omitempty"`
 	// END only: whether the command ran.
-	Outcome       AgentCommandOutcome `protobuf:"varint,11,opt,name=outcome,proto3,enum=containarium.v1.AgentCommandOutcome" json:"outcome,omitempty"`
+	Outcome AgentCommandOutcome `protobuf:"varint,11,opt,name=outcome,proto3,enum=containarium.v1.AgentCommandOutcome" json:"outcome,omitempty"`
+	// The event's position in its run's feed: 1 for the first event the sink
+	// writes, then +1 for each. Assigned by the sink under its write lock,
+	// never by a client (a value a client sends is overwritten), and never
+	// reused: a sink restarted for the same run continues after the last event
+	// in the file. A reader that sees a jump knows it missed events.
+	Seq           uint64 `protobuf:"varint,12,opt,name=seq,proto3" json:"seq,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -550,6 +556,13 @@ func (x *AgentCommandEvent) GetOutcome() AgentCommandOutcome {
 	return AgentCommandOutcome_AGENT_COMMAND_OUTCOME_UNSPECIFIED
 }
 
+func (x *AgentCommandEvent) GetSeq() uint64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
 var File_containarium_v1_agent_command_audit_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_agent_command_audit_proto_rawDesc = "" +
@@ -562,7 +575,7 @@ const file_containarium_v1_agent_command_audit_proto_rawDesc = "" +
 	"\vapproval_id\x18\x01 \x01(\tR\n" +
 	"approvalId\x12\x1f\n" +
 	"\vapprover_id\x18\x02 \x01(\tR\n" +
-	"approverId\"\x9b\x04\n" +
+	"approverId\"\xad\x04\n" +
 	"\x11AgentCommandEvent\x12:\n" +
 	"\x04kind\x18\x01 \x01(\x0e2&.containarium.v1.AgentCommandEventKindR\x04kind\x12.\n" +
 	"\x04time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x04time\x12\x19\n" +
@@ -575,7 +588,8 @@ const file_containarium_v1_agent_command_audit_proto_rawDesc = "" +
 	"\fclose_reason\x18\t \x01(\x0e2(.containarium.v1.AgentCommandCloseReasonR\vcloseReason\x12=\n" +
 	"\bapproval\x18\n" +
 	" \x01(\v2!.containarium.v1.AgentRunApprovalR\bapproval\x12>\n" +
-	"\aoutcome\x18\v \x01(\x0e2$.containarium.v1.AgentCommandOutcomeR\aoutcomeB\f\n" +
+	"\aoutcome\x18\v \x01(\x0e2$.containarium.v1.AgentCommandOutcomeR\aoutcome\x12\x10\n" +
+	"\x03seq\x18\f \x01(\x04R\x03seqB\f\n" +
 	"\n" +
 	"_exit_code*\xc6\x01\n" +
 	"\x11AgentCommandClass\x12#\n" +

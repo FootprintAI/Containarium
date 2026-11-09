@@ -30,7 +30,17 @@ func SocketPath(runID string) string { return AuditDir + "/s/" + runID + ".sock"
 
 // EventsPath is a run name's append-only audit file (root-owned, 0600, in a
 // 0700 directory). Every start of the run appends to it under its own run id.
-func EventsPath(runName string) string { return AuditDir + "/events/" + runName + ".jsonl" }
+func EventsPath(runName string) string { return EventsPathUnder(AuditDir, runName) }
+
+// EventsPathUnder is EventsPath for an audit directory other than AuditDir.
+func EventsPathUnder(auditDir, runName string) string {
+	return auditDir + "/events/" + runName + ".jsonl"
+}
+
+// DonePath is the marker the sink creates next to eventsPath after its last
+// event: once it exists nothing more is appended. Same owner and mode as the
+// events file.
+func DonePath(eventsPath string) string { return eventsPath + ".done" }
 
 // ExitPath is where the root supervisor (`agent-box run-supervise`) records a
 // run's exit status ("<status> <epoch>", root-owned 0600 in a 0700 directory).

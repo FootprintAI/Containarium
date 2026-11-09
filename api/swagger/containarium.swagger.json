@@ -3706,6 +3706,62 @@
         ]
       }
     },
+    "/v1/containers/{username}/code-runs/{runName}/command-events": {
+      "get": {
+        "summary": "List a box code run's command events",
+        "description": "Returns the run's command events (START, END, BLOCKED) with after_seq \u003c seq, in seq order, at most limit (default and maximum 500), read from the run's audit file, which only root on the box can write. seq starts at 1 and is assigned by the audit sink. ended is true once the sink has finished and the page reaches the last event. A run that does not exist is NOT_FOUND; a run started without a command policy has no events. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_ListRunCommandEvents",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListRunCommandEventsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "runName",
+            "description": "The run's name, as ListBoxRuns reports it.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "afterSeq",
+            "description": "Return only events with a seq greater than this. 0 reads from the start.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "uint64"
+          },
+          {
+            "name": "limit",
+            "description": "At most this many events. 0 means the default, 500; the maximum is 500.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
     "/v1/containers/{username}/code-runs/{runName}/inputs": {
       "get": {
         "summary": "List a box code run's open permission requests",
@@ -11204,6 +11260,111 @@
       },
       "description": "AgentCard is the discovery document a skill serves so peer agents can find\nit and learn how to delegate to it (A2A, Phase 1). It is carried in-proto so\nthe wire format stays insulated from upstream A2A churn."
     },
+    "AgentCommandClass": {
+      "type": "string",
+      "enum": [
+        "AGENT_COMMAND_CLASS_UNSPECIFIED",
+        "AGENT_COMMAND_CLASS_LEVEL",
+        "AGENT_COMMAND_CLASS_ALLOWLISTED",
+        "AGENT_COMMAND_CLASS_HARD_DENIED",
+        "AGENT_COMMAND_CLASS_NOT_ALLOWED"
+      ],
+      "default": "AGENT_COMMAND_CLASS_UNSPECIFIED",
+      "description": "AgentCommandClass is how the pre hook classified a command.\n\n - AGENT_COMMAND_CLASS_LEVEL: Within the run's tool-access level; the engine's own rules decide it.\n - AGENT_COMMAND_CLASS_ALLOWLISTED: Outside the level, but matched an allowlist entry, so it was allowed.\n - AGENT_COMMAND_CLASS_HARD_DENIED: A hard deny matched (network client, git push, git remote, a git\ntransport option); refused whatever the level or allowlist says.\n - AGENT_COMMAND_CLASS_NOT_ALLOWED: Neither the level nor the allowlist matched; refused."
+    },
+    "AgentCommandCloseReason": {
+      "type": "string",
+      "enum": [
+        "AGENT_COMMAND_CLOSE_REASON_UNSPECIFIED",
+        "AGENT_COMMAND_CLOSE_REASON_HARD_DENY",
+        "AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED",
+        "AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE",
+        "AGENT_COMMAND_CLOSE_REASON_ENGINE_REFUSED",
+        "AGENT_COMMAND_CLOSE_REASON_INTERRUPTED",
+        "AGENT_COMMAND_CLOSE_REASON_UNRESOLVABLE"
+      ],
+      "default": "AGENT_COMMAND_CLOSE_REASON_UNSPECIFIED",
+      "description": "AgentCommandCloseReason says why a command was refused and its run ended\n(BLOCKED), or why the sink closed a START that got no END (END).\n\n - AGENT_COMMAND_CLOSE_REASON_HARD_DENY: A hard deny matched.\n - AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED: Neither the level nor the allowlist matched (or the command could not be\nparsed).\n - AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE: The start event could not be recorded, so the command was refused rather\nthan run unaudited.\n - AGENT_COMMAND_CLOSE_REASON_ENGINE_REFUSED: END written by the sink: the pre hook allowed or deferred the command, the\nengine then reported no result for it (no PostToolUse or\nPostToolUseFailure), and the run ended cleanly (its exit status is 0). The\nengine fires a post hook for every command it runs, success or failure, so\nthis is a command the engine itself refused after the hook, for example by\n--restricted path confinement: it did not run. outcome is NOT_RUN. The\nrun's exit status is recorded by a root process that is the run's parent\n(`agent-box run-supervise`), in a root-only directory, so the run user\ncannot write it; that the engine fires a post hook for every command it\nruns is the engine's behaviour, not a guarantee.\n - AGENT_COMMAND_CLOSE_REASON_INTERRUPTED: END written by the sink: the run ended with this command started and no\nend reported, and not cleanly (killed, timed out, crashed, a non-zero exit\nstatus, no exit status at all, or the sink itself was stopped). The command\nmay have run in part. outcome is UNKNOWN.\n - AGENT_COMMAND_CLOSE_REASON_UNRESOLVABLE: The command could not be resolved to the program it runs, so no rule can\nbe applied to it: it is a compound line (operator, redirection, subshell),\nor holds an expansion the parser cannot evaluate (brace expansion, a glob\nin the executable word, ANSI-C quoting, arithmetic expansion), or nests a\nquoted shell command deeper than the supported depth. Refused as the\nhard denies cannot be proven to hold for it; no hard deny matched."
+    },
+    "AgentCommandEvent": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/AgentCommandEventKind"
+        },
+        "time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Stamped by the sink, not by the hook."
+        },
+        "runName": {
+          "type": "string",
+          "description": "The run's name and the daemon-chosen id of this start of it. Stamped by the\nsink from its own configuration."
+        },
+        "runId": {
+          "type": "string"
+        },
+        "toolUseId": {
+          "type": "string",
+          "description": "The engine's id for the tool call: pairs a START with its END."
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The command's arguments after redaction. Leading environment assignments\n(NAME=value) are dropped, never logged."
+        },
+        "class": {
+          "$ref": "#/definitions/AgentCommandClass"
+        },
+        "exitCode": {
+          "type": "integer",
+          "format": "int32",
+          "description": "END only, and only when known; absent means unknown, never 0. For an engine\nrun it comes from the engine's hook input: an exit-code field in\ntool_response when present; for PostToolUse without one, 0 (the engine\nfires PostToolUse only for exit status 0); for PostToolUseFailure, the\nnumber N when the error text begins with the line \"Exit code N\" (0-255),\nand absent otherwise. That text is the engine's display format, not a\ncontract: if an engine release changes it, the code is recorded as absent,\nnot guessed. Command mode records the shell's status."
+        },
+        "closeReason": {
+          "$ref": "#/definitions/AgentCommandCloseReason",
+          "description": "BLOCKED, and an END the sink wrote for a START without one."
+        },
+        "approval": {
+          "$ref": "#/definitions/AgentRunApproval",
+          "description": "Set when the run is an approved re-run (attribution: who approved, which\napproval, and the event's time). Stamped by the sink."
+        },
+        "outcome": {
+          "$ref": "#/definitions/AgentCommandOutcome",
+          "description": "END only: whether the command ran."
+        },
+        "seq": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The event's position in its run's feed: 1 for the first event the sink\nwrites, then +1 for each. Assigned by the sink under its write lock,\nnever by a client (a value a client sends is overwritten), and never\nreused: a sink restarted for the same run continues after the last event\nin the file. A reader that sees a jump knows it missed events."
+        }
+      },
+      "description": "AgentCommandEvent is one line of a run's audit file (protojson). Command\noutput and environment variables are never part of it."
+    },
+    "AgentCommandEventKind": {
+      "type": "string",
+      "enum": [
+        "AGENT_COMMAND_EVENT_KIND_UNSPECIFIED",
+        "AGENT_COMMAND_EVENT_KIND_START",
+        "AGENT_COMMAND_EVENT_KIND_END",
+        "AGENT_COMMAND_EVENT_KIND_BLOCKED"
+      ],
+      "default": "AGENT_COMMAND_EVENT_KIND_UNSPECIFIED",
+      "description": "AgentCommandEventKind is the kind of one audit event.\n\n - AGENT_COMMAND_EVENT_KIND_START: Written before the command runs.\n - AGENT_COMMAND_EVENT_KIND_END: Written when the command has finished, with its exit code, by the post\nhook (engine run) or the command hook (command mode). Also written by the\nsink when the run ends with a START that has no END, so every START has\nexactly one END: then outcome is NOT_RUN or UNKNOWN, close_reason says\nwhy, and there is no exit code.\n - AGENT_COMMAND_EVENT_KIND_BLOCKED: The command was refused and the run was told to stop."
+    },
+    "AgentCommandOutcome": {
+      "type": "string",
+      "enum": [
+        "AGENT_COMMAND_OUTCOME_UNSPECIFIED",
+        "AGENT_COMMAND_OUTCOME_RAN",
+        "AGENT_COMMAND_OUTCOME_NOT_RUN",
+        "AGENT_COMMAND_OUTCOME_UNKNOWN"
+      ],
+      "default": "AGENT_COMMAND_OUTCOME_UNSPECIFIED",
+      "description": "AgentCommandOutcome says whether the command of an END ran.\n\n - AGENT_COMMAND_OUTCOME_RAN: The engine (post hook) or the command hook reported that it finished.\n - AGENT_COMMAND_OUTCOME_NOT_RUN: It did not run (close_reason ENGINE_REFUSED).\n - AGENT_COMMAND_OUTCOME_UNKNOWN: Unknown: the run was interrupted first (close_reason INTERRUPTED)."
+    },
     "AgentCommandPolicy": {
       "type": "object",
       "properties": {
@@ -17807,6 +17968,23 @@
         }
       }
     },
+    "ListRunCommandEventsResponse": {
+      "type": "object",
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/RunCommandEventEntry"
+          },
+          "description": "Events with seq \u003e after_seq in seq order, at most limit of them. A jump in\nseq between consecutive entries means events were missed."
+        },
+        "ended": {
+          "type": "boolean",
+          "description": "True when the run's audit sink has finished (every START has its END) and\nthis page reaches the last event: nothing more will ever be added. False\nwhile the run can still add events, or when more events are waiting past\nthis page."
+        }
+      }
+    },
     "ListRunInputsResponse": {
       "type": "object",
       "properties": {
@@ -20817,6 +20995,21 @@
           "description": "Tokens the engine reported for this run (capability \"run_usage\"). Always\nset; UNAVAILABLE when the daemon has no usage for the run."
         }
       }
+    },
+    "RunCommandEventEntry": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The event's seq, the same value as event.seq."
+        },
+        "event": {
+          "$ref": "#/definitions/AgentCommandEvent",
+          "description": "The START, END or BLOCKED event the run's audit sink recorded."
+        }
+      },
+      "description": "RunCommandEventEntry is one event with its position in the run's feed."
     },
     "RunCrewBody": {
       "type": "object",

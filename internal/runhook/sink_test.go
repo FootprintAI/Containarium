@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -103,8 +104,11 @@ func TestSink_RejectsGarbage(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = Serve(ctx, ln, cfg, time.Now, nil) }()
+	served := make(chan struct{})
+	go func() { _ = Serve(ctx, ln, cfg, time.Now, nil); close(served) }()
+	// The sink writes its done marker as it stops: let it finish before the
+	// temp directory goes.
+	defer func() { cancel(); <-served }()
 
 	c, err := net.Dial("unix", sock)
 	if err != nil {
@@ -120,5 +124,113 @@ func TestSink_RejectsGarbage(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(cfg.EventsPath); len(data) != 0 {
 		t.Errorf("garbage reached the audit file: %q", data)
+	}
+}
+
+// Every event the sink writes carries a sequence number the sink assigns:
+// 1, 2, 3, ... contiguous across START, END and BLOCKED, whatever the client
+// put in the field.
+func TestSink_AssignsContiguousSeqAcrossKinds(t *testing.T) {
+	_, send, stop := startSink(t, nil)
+	evs := []*pb.AgentCommandEvent{
+		{Kind: pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_START, ToolUseId: "t1", Seq: 99},
+		{Kind: pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_END, ToolUseId: "t1", Seq: 7},
+		{Kind: pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_BLOCKED, ToolUseId: "t2", CloseReason: pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED},
+		{Kind: pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_START, ToolUseId: "t3"},
+	}
+	for _, e := range evs {
+		if err := send(e); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+	}
+	got := stop() // t3's START is closed by the sink: one more event
+	if len(got) != 5 {
+		t.Fatalf("got %d events, want 5", len(got))
+	}
+	for i, e := range got {
+		if e.GetSeq() != uint64(i+1) {
+			t.Errorf("event %d seq = %d, want %d", i, e.GetSeq(), i+1)
+		}
+	}
+	if got[4].GetKind() != pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_END {
+		t.Errorf("last event = %v, want the sink's closing END", got[4].GetKind())
+	}
+}
+
+// Concurrent senders still get a gap-free, duplicate-free sequence in file
+// order.
+func TestSink_SeqIsGaplessUnderConcurrency(t *testing.T) {
+	_, send, stop := startSink(t, nil)
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = send(&pb.AgentCommandEvent{Kind: pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_BLOCKED, ToolUseId: "t"})
+		}()
+	}
+	wg.Wait()
+	for i, e := range stop() {
+		if e.GetSeq() != uint64(i+1) {
+			t.Fatalf("line %d has seq %d, want %d", i+1, e.GetSeq(), i+1)
+		}
+	}
+}
+
+// A sink started again for the same run continues after the last event in the
+// file, so a seq is never reused.
+func TestSink_SeqContinuesAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig()
+	cfg.EventsPath = filepath.Join(dir, "events", "r1.jsonl")
+	run := func(n int) {
+		cfg.Socket = filepath.Join(dir, "r1.sock")
+		_ = os.Remove(cfg.Socket)
+		ln, err := net.Listen("unix", cfg.Socket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- Serve(ctx, ln, cfg, time.Now, nil) }()
+		for i := 0; i < n; i++ {
+			if err := DialSender(cfg.Socket)(&pb.AgentCommandEvent{Kind: pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_BLOCKED}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	run(2)
+	run(2)
+	for i, e := range readEvents(t, cfg.EventsPath) {
+		if e.GetSeq() != uint64(i+1) {
+			t.Errorf("line %d seq = %d, want %d", i+1, e.GetSeq(), i+1)
+		}
+	}
+}
+
+// The feed is root's: the sink creates it 0600 in a 0700 directory, so the
+// run user can neither write nor read it, and the sink marks the feed done
+// only after its last event.
+func TestSink_FeedIsRootOnlyAndMarkedDoneLast(t *testing.T) {
+	cfg, send, stop := startSink(t, nil)
+	if err := send(&pb.AgentCommandEvent{Kind: pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_START, ToolUseId: "t1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(DonePath(cfg.EventsPath)); err == nil {
+		t.Fatal("feed marked done while the sink is still serving")
+	}
+	stop()
+	for path, want := range map[string]os.FileMode{cfg.EventsPath: 0o600, filepath.Dir(cfg.EventsPath): 0o700, DonePath(cfg.EventsPath): 0o600} {
+		fi, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if fi.Mode().Perm() != want {
+			t.Errorf("%s mode = %v, want %v", path, fi.Mode().Perm(), want)
+		}
 	}
 }
