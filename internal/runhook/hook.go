@@ -102,11 +102,18 @@ func writeDeny(out io.Writer, reason pb.AgentCommandCloseReason, why string) err
 	})
 }
 
-var exitCodePrefix = regexp.MustCompile(`^Exit code (-?\d+)`)
+// failureExitCode is the first line of a PostToolUseFailure error text from
+// Claude Code's shell tool: "Exit code N", then a newline and the output (or
+// nothing). It is the engine's display text, not a documented field: the only
+// source of a failed command's exit code the hook input has (observed with
+// Claude Code 2.1.319). Nothing but that exact first line is accepted, so a
+// changed format, or output that happens to contain the phrase, yields an
+// unknown code rather than a wrong one.
+var failureExitCode = regexp.MustCompile(`\AExit code ([0-9]{1,3})(?:\r?\n|\z)`)
 
-// RunPost is the PostToolUse / PostToolUseFailure hook: it records an END with
-// the exit code when the engine reports one. Output is never read into the
-// event.
+// RunPost is the PostToolUse / PostToolUseFailure hook: it records an END,
+// outcome RAN, with the exit code when it is known. Output is never read into
+// the event.
 func RunPost(cfg Config, in io.Reader, send Sender) error {
 	var hi hookInput
 	if err := json.NewDecoder(io.LimitReader(in, 64<<20)).Decode(&hi); err != nil {
@@ -124,6 +131,7 @@ func RunPost(cfg Config, in io.Reader, send Sender) error {
 		ev.Argv = red.Argv(c.Log)
 	}
 	ev.ExitCode = exitCode(hi)
+	ev.Outcome = pb.AgentCommandOutcome_AGENT_COMMAND_OUTCOME_RAN
 	return send(ev)
 }
 
@@ -136,15 +144,28 @@ func exitCode(hi hookInput) *int32 {
 			}
 		}
 	}
-	if hi.HookEventName == "PostToolUseFailure" {
-		if m := exitCodePrefix.FindStringSubmatch(hi.Error); m != nil {
-			if n, err := strconv.ParseInt(m[1], 10, 32); err == nil {
-				v := int32(n)
-				return &v
-			}
-		}
-		return nil // interrupted or no code reported
+	switch hi.HookEventName {
+	case "PostToolUse":
+		zero := int32(0) // the engine fires PostToolUse only for exit status 0
+		return &zero
+	case "PostToolUseFailure":
+		return failureTextExitCode(hi.Error)
 	}
-	zero := int32(0) // the engine reports success only for exit status 0
-	return &zero
+	return nil // not a post event this hook knows: unknown, not 0
+}
+
+// failureTextExitCode reads N from a PostToolUseFailure error text that begins
+// with the line "Exit code N" (0-255). Anything else is unknown (nil): an
+// interrupt, a missing line, a non-numeric or out-of-range value.
+func failureTextExitCode(text string) *int32 {
+	m := failureExitCode.FindStringSubmatch(text)
+	if m == nil {
+		return nil
+	}
+	n, err := strconv.ParseUint(m[1], 10, 8) // 0-255; 256 and up fail
+	if err != nil {
+		return nil
+	}
+	v := int32(uint8(n))
+	return &v
 }

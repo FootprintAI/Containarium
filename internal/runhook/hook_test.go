@@ -165,3 +165,57 @@ func TestRunPost_EndEventWithExitCodeAndNoOutput(t *testing.T) {
 		})
 	}
 }
+
+// PostToolUseFailure carries no exit-code field; the code comes from the
+// engine's error text, which begins "Exit code N\n<output>". Only that exact
+// first line is read. Anything else is recorded as unknown (no exit_code),
+// never guessed as 0.
+func TestRunPost_ExitCodeFromFailureText(t *testing.T) {
+	fail := func(errText string) string {
+		b, _ := json.Marshal(map[string]any{
+			"hook_event_name": "PostToolUseFailure", "tool_name": "Bash", "tool_use_id": "toolu_1",
+			"tool_input": map[string]string{"command": "make"}, "error": errText,
+		})
+		return string(b)
+	}
+	for _, tc := range []struct {
+		name, in string
+		want     int32
+		known    bool
+	}{
+		{"exact format with output", fail("Exit code 2\nls: cannot access 'x'"), 2, true},
+		{"exact format, no output", fail("Exit code 1"), 1, true},
+		{"CRLF line end", fail("Exit code 127\r\nsh: foo: not found"), 127, true},
+		{"top of the range", fail("Exit code 255\n"), 255, true},
+		{"missing", fail("ls: cannot access 'x'"), 0, false},
+		{"empty", fail(""), 0, false},
+		{"non-numeric", fail("Exit code abc\n"), 0, false},
+		{"trailing junk on the line", fail("Exit code 2x\n"), 0, false},
+		{"decimal", fail("Exit code 2.5\n"), 0, false},
+		{"negative", fail("Exit code -1\n"), 0, false},
+		{"out of range", fail("Exit code 256\n"), 0, false},
+		{"overflows int32", fail("Exit code 99999999999\n"), 0, false},
+		{"leading space", fail(" Exit code 2\n"), 0, false},
+		{"lower case", fail("exit code 2\n"), 0, false},
+		{"code on a later line only", fail("warning: something\nExit code 3\n"), 0, false},
+		{"output that looks like a code", fail("Command failed\nExit code 0\n"), 0, false},
+		{"unknown hook event", `{"hook_event_name":"SomethingElse","tool_name":"Bash","tool_use_id":"toolu_1","tool_input":{"command":"make"}}`, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var rec recorder
+			if err := RunPost(testConfig(), strings.NewReader(tc.in), rec.send); err != nil {
+				t.Fatal(err)
+			}
+			if len(rec.events) != 1 {
+				t.Fatalf("events = %v, want one END", rec.events)
+			}
+			e := rec.events[0]
+			if (e.ExitCode != nil) != tc.known || (tc.known && e.GetExitCode() != tc.want) {
+				t.Errorf("exit code = %v, want %d (known=%v)", e.ExitCode, tc.want, tc.known)
+			}
+			if e.GetOutcome() != pb.AgentCommandOutcome_AGENT_COMMAND_OUTCOME_RAN {
+				t.Errorf("a post hook END means the engine ran the command: outcome = %v", e.GetOutcome())
+			}
+		})
+	}
+}

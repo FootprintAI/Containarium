@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -94,19 +96,36 @@ type runRecordHead struct {
 
 // runEnded reports whether the run named name, started no earlier than since,
 // has ended: its exit sidecar is newer than since, or its record's process is
-// gone, or no record of it appeared within recordGrace. The run user can write
-// these files; the worst it can do is stop the sink early, after which every
-// command is refused (the hook fails closed), or keep it alive longer.
-func runEnded(runDir, name string, since, now time.Time, alive func(pid int) bool) bool {
-	if fi, err := os.Stat(filepath.Join(runDir, name+".exit")); err == nil && !fi.ModTime().Before(since) {
-		return true
+// gone, or no record of it appeared within recordGrace. It also reports how:
+// RunExitClean only when the sidecar records exit status 0, RunExitInterrupted
+// otherwise. The run user can write these files; the worst it can do is stop
+// the sink early, after which every command is refused (the hook fails
+// closed), keep it alive longer, or have a still-open START closed as
+// ENGINE_REFUSED rather than INTERRUPTED.
+func runEnded(runDir, name string, since, now time.Time, alive func(pid int) bool) (bool, RunExit) {
+	exitPath := filepath.Join(runDir, name+".exit")
+	if fi, err := os.Stat(exitPath); err == nil && !fi.ModTime().Before(since) {
+		return true, sidecarExit(exitPath)
 	}
 	var rec runRecordHead
 	if b, err := os.ReadFile(filepath.Join(runDir, name+".json")); err == nil && json.Unmarshal(b, &rec) == nil &&
 		rec.PID > 0 && !rec.StartedAt.Before(since.Add(-time.Minute)) {
-		return !alive(rec.PID)
+		return !alive(rec.PID), RunExitInterrupted
 	}
-	return now.Sub(since) > recordGrace
+	return now.Sub(since) > recordGrace, RunExitInterrupted
+}
+
+// sidecarExit reads a run's exit sidecar ("<status> <epoch>", written by the
+// run's own shell) as RunExitClean when the status is exactly 0.
+func sidecarExit(path string) RunExit {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return RunExitInterrupted
+	}
+	if f := strings.Fields(string(b)); len(f) > 0 && f[0] == "0" {
+		return RunExitClean
+	}
+	return RunExitInterrupted
 }
 
 func pidAlive(pid int) bool {
@@ -155,6 +174,9 @@ func RunSinkCLI(args []string, stderr io.Writer) int {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 	since := time.Now()
+	// how is set once, by the watcher, before it cancels; a signal leaves it
+	// RunExitInterrupted.
+	var how atomic.Int32
 	go func() {
 		t := time.NewTicker(2 * time.Second)
 		defer t.Stop()
@@ -163,14 +185,15 @@ func RunSinkCLI(args []string, stderr io.Writer) int {
 			case <-ctx.Done():
 				return
 			case now := <-t.C:
-				if runEnded(*runDir, cfg.RunName, since, now, pidAlive) {
+				if ended, h := runEnded(*runDir, cfg.RunName, since, now, pidAlive); ended {
+					how.Store(int32(h))
 					cancel()
 					return
 				}
 			}
 		}
 	}()
-	if err := Serve(ctx, ln, cfg, time.Now); err != nil {
+	if err := Serve(ctx, ln, cfg, time.Now, func() RunExit { return RunExit(how.Load()) }); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}

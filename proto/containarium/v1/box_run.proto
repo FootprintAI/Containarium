@@ -209,8 +209,10 @@ message StartBoxRunRequest {
   // engine run gets this through PreToolUse / PostToolUse hooks; a command-mode
   // run (command) through the same decision applied to its one command, which
   // on a refusal never runs: the run exits 120 and records a BLOCKED event with
-  // its close reason. Each command gets a start event before it runs and an end
-  // event with its exit code, in an append-only file inside the box that the
+  // its close reason. Each command gets a start event before it runs and
+  // exactly one end event (exit code when known, and whether it ran; the sink
+  // writes it when the run ends first, see AgentCommandEvent), in an
+  // append-only file inside the box that the
   // run user cannot write (/var/lib/containarium-run-audit/events/<run_name>.jsonl,
   // protojson AgentCommandEvent lines). At FULL_SUDO all of this applies but is
   // advisory: the run user can become root and step around it, so it is not a

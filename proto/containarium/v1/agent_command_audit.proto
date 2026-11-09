@@ -13,7 +13,9 @@ option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;
 // (PostToolUse, PostToolUseFailure). The pre hook classifies the command, may
 // widen the run's tool-access level for commands that match the allowlist,
 // refuses hard-denied and unmatched commands, and records a start event. The
-// post hook records the end event. Events go to an append-only file inside the
+// post hook records the end event; for a start still open when the run ends
+// (the engine refused the command after the hook, or the run was killed), the
+// sink writes it. Events go to an append-only file inside the
 // box that only root can write; the hooks reach it through a root-run sink
 // process the daemon starts, never by writing the file themselves.
 
@@ -61,13 +63,18 @@ enum AgentCommandEventKind {
   AGENT_COMMAND_EVENT_KIND_UNSPECIFIED = 0;
   // Written before the command runs.
   AGENT_COMMAND_EVENT_KIND_START = 1;
-  // Written when the command has finished, with its exit code.
+  // Written when the command has finished, with its exit code, by the post
+  // hook (engine run) or the command hook (command mode). Also written by the
+  // sink when the run ends with a START that has no END, so every START has
+  // exactly one END: then outcome is NOT_RUN or UNKNOWN, close_reason says
+  // why, and there is no exit code.
   AGENT_COMMAND_EVENT_KIND_END = 2;
   // The command was refused and the run was told to stop.
   AGENT_COMMAND_EVENT_KIND_BLOCKED = 3;
 }
 
-// AgentCommandCloseReason says why a command was refused and its run ended.
+// AgentCommandCloseReason says why a command was refused and its run ended
+// (BLOCKED), or why the sink closed a START that got no END (END).
 enum AgentCommandCloseReason {
   AGENT_COMMAND_CLOSE_REASON_UNSPECIFIED = 0;
   // A hard deny matched.
@@ -78,6 +85,31 @@ enum AgentCommandCloseReason {
   // The start event could not be recorded, so the command was refused rather
   // than run unaudited.
   AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE = 3;
+  // END written by the sink: the pre hook allowed or deferred the command, the
+  // engine then reported no result for it (no PostToolUse or
+  // PostToolUseFailure), and the run ended cleanly (its exit status is 0). The
+  // engine fires a post hook for every command it runs, success or failure, so
+  // this is a command the engine itself refused after the hook, for example by
+  // --restricted path confinement: it did not run. outcome is NOT_RUN. The
+  // run's exit status is in a file the run user can write, so this rests on
+  // the engine's report, not on a guarantee.
+  AGENT_COMMAND_CLOSE_REASON_ENGINE_REFUSED = 4;
+  // END written by the sink: the run ended with this command started and no
+  // end reported, and not cleanly (killed, timed out, crashed, a non-zero exit
+  // status, no exit status at all, or the sink itself was stopped). The command
+  // may have run in part. outcome is UNKNOWN.
+  AGENT_COMMAND_CLOSE_REASON_INTERRUPTED = 5;
+}
+
+// AgentCommandOutcome says whether the command of an END ran.
+enum AgentCommandOutcome {
+  AGENT_COMMAND_OUTCOME_UNSPECIFIED = 0;
+  // The engine (post hook) or the command hook reported that it finished.
+  AGENT_COMMAND_OUTCOME_RAN = 1;
+  // It did not run (close_reason ENGINE_REFUSED).
+  AGENT_COMMAND_OUTCOME_NOT_RUN = 2;
+  // Unknown: the run was interrupted first (close_reason INTERRUPTED).
+  AGENT_COMMAND_OUTCOME_UNKNOWN = 3;
 }
 
 // AgentCommandEvent is one line of a run's audit file (protojson). Command
@@ -96,11 +128,20 @@ message AgentCommandEvent {
   // (NAME=value) are dropped, never logged.
   repeated string argv = 6;
   AgentCommandClass class = 7;
-  // END only, and only when the engine reported it.
+  // END only, and only when known; absent means unknown, never 0. For an engine
+  // run it comes from the engine's hook input: an exit-code field in
+  // tool_response when present; for PostToolUse without one, 0 (the engine
+  // fires PostToolUse only for exit status 0); for PostToolUseFailure, the
+  // number N when the error text begins with the line "Exit code N" (0-255),
+  // and absent otherwise. That text is the engine's display format, not a
+  // contract: if an engine release changes it, the code is recorded as absent,
+  // not guessed. Command mode records the shell's status.
   optional int32 exit_code = 8;
-  // BLOCKED only.
+  // BLOCKED, and an END the sink wrote for a START without one.
   AgentCommandCloseReason close_reason = 9;
   // Set when the run is an approved re-run (attribution: who approved, which
   // approval, and the event's time). Stamped by the sink.
   AgentRunApproval approval = 10;
+  // END only: whether the command ran.
+  AgentCommandOutcome outcome = 11;
 }

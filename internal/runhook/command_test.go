@@ -150,7 +150,7 @@ func TestRunHookCLI_CommandModeThroughARealSink(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { _ = Serve(ctx, ln, cfg, time.Now) }()
+	go func() { _ = Serve(ctx, ln, cfg, time.Now, nil) }()
 
 	var stdout, stderr strings.Builder
 	code := RunHookCLI([]string{"command", "--config", conf}, strings.NewReader(""), &stdout, &stderr)
@@ -189,7 +189,7 @@ func TestRunHookCLI_CommandModeRefusedWritesBlocked(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { _ = Serve(ctx, ln, cfg, time.Now) }()
+	go func() { _ = Serve(ctx, ln, cfg, time.Now, nil) }()
 
 	var stderr strings.Builder
 	if code := RunHookCLI([]string{"command", "--config", conf}, strings.NewReader(""), &strings.Builder{}, &stderr); code != BlockedExitCode {

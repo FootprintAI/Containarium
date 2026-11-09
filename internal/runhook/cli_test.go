@@ -25,17 +25,17 @@ func TestRunEnded(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	if runEnded(dir, "r1", since, time.Now(), alive) {
+	if e, _ := runEnded(dir, "r1", since, time.Now(), alive); e {
 		t.Error("no record yet, inside the grace period: still running")
 	}
-	if !runEnded(dir, "r1", since, since.Add(recordGrace+time.Second), alive) {
+	if e, _ := runEnded(dir, "r1", since, since.Add(recordGrace+time.Second), alive); !e {
 		t.Error("no record after the grace period: the run never started")
 	}
 	writeRecord(t, dir, time.Now())
-	if runEnded(dir, "r1", since, time.Now(), alive) {
+	if e, _ := runEnded(dir, "r1", since, time.Now(), alive); e {
 		t.Error("live process: still running")
 	}
-	if !runEnded(dir, "r1", since, time.Now(), dead) {
+	if e, _ := runEnded(dir, "r1", since, time.Now(), dead); !e {
 		t.Error("process gone: ended")
 	}
 	// A previous run's record and exit sidecar do not count.
@@ -46,13 +46,13 @@ func TestRunEnded(t *testing.T) {
 	}
 	past := since.Add(-time.Hour)
 	_ = os.Chtimes(filepath.Join(old, "r1.exit"), past, past)
-	if runEnded(old, "r1", since, time.Now(), dead) {
+	if e, _ := runEnded(old, "r1", since, time.Now(), dead); e {
 		t.Error("an earlier run's files must not stop this run's sink")
 	}
 	if err := os.WriteFile(filepath.Join(dir, "r1.exit"), []byte("0 1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !runEnded(dir, "r1", since, time.Now(), alive) {
+	if e, _ := runEnded(dir, "r1", since, time.Now(), alive); !e {
 		t.Error("exit sidecar written: ended")
 	}
 }

@@ -58,7 +58,8 @@ func RunCommand(cfg Config, stderr io.Writer, send Sender, run ShellRunner) int 
 	}
 	code := run(cfg.Command)
 	end := &pb.AgentCommandEvent{Kind: pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_END,
-		ToolUseId: CommandToolUseID, Argv: d.Argv, ExitCode: &code}
+		ToolUseId: CommandToolUseID, Argv: d.Argv, ExitCode: &code,
+		Outcome: pb.AgentCommandOutcome_AGENT_COMMAND_OUTCOME_RAN}
 	if err := send(end); err != nil {
 		fmt.Fprintf(stderr, "the end event could not be recorded: %v\n", err)
 	}

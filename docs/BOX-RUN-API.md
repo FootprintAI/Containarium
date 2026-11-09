@@ -191,7 +191,44 @@ stopped by the hook (`continue: false`). A command run never starts the
 command: it prints the reason to its log and exits `120`.
 
 Every command that runs gets a `START` event before it runs and an `END` event
-with its exit code. Output and environment are never recorded, and arguments
+with its exit code. Every `START` gets exactly one `END`, and each `END` has an
+`outcome` (`AgentCommandOutcome`):
+
+- **`RAN`**: the post hook (engine run) or the command hook (command run)
+  reported that the command finished.
+- **`NOT_RUN`**, close reason `ENGINE_REFUSED`: the pre hook allowed or deferred
+  the command, but the engine then refused it itself (for example
+  `--restricted` working-directory confinement), so no post hook fired. The
+  sink writes this `END` when the run ends cleanly (exit status `0`) with the
+  `START` still open. The engine fires a post hook for every command it runs,
+  so such a command did not run. This rests on the engine's report and on the
+  run's exit status, which sits in a file the run user can write.
+- **`UNKNOWN`**, close reason `INTERRUPTED`: the run ended any other way with
+  the `START` still open (killed, timed out, crashed, a non-zero or missing
+  exit status, or the sink stopped by a signal). The command may have run in
+  part. The sink writes this `END` too.
+
+A sink-written `END` has no exit code. The pre hook's own process cannot write
+it, because it exits before the engine decides; the sink is the one process
+that lives until the run ends.
+
+**Exit code.** `exit_code` is absent when it is not known, never `0` by
+default. For an engine run it comes from the engine's hook input:
+
+- an exit-code field in `tool_response`, when the engine sends one;
+- `PostToolUse` without such a field: `0`, since the engine fires
+  `PostToolUse` only for exit status `0`;
+- `PostToolUseFailure`: `N` when the error text begins with the line
+  `Exit code N` (`0`-`255`, then a newline or the end of the text). Any
+  other text (missing, non-numeric, out of range, the phrase on a later line)
+  records no exit code.
+
+That error text is the engine's display format (observed with Claude Code
+2.1.319), not a documented field. If an engine release changes it, failed
+commands are recorded with no exit code until the parser follows. A command
+run records the shell's own status.
+
+Output and environment are never recorded, and arguments
 are redacted from a default list plus `command_policy.redact_patterns`. Events
 are protojson `AgentCommandEvent` lines in
 `/var/lib/containarium-run-audit/events/<run_name>.jsonl` inside the box. A

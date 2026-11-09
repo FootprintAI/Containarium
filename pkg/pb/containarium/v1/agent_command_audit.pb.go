@@ -90,7 +90,11 @@ const (
 	AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_UNSPECIFIED AgentCommandEventKind = 0
 	// Written before the command runs.
 	AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_START AgentCommandEventKind = 1
-	// Written when the command has finished, with its exit code.
+	// Written when the command has finished, with its exit code, by the post
+	// hook (engine run) or the command hook (command mode). Also written by the
+	// sink when the run ends with a START that has no END, so every START has
+	// exactly one END: then outcome is NOT_RUN or UNKNOWN, close_reason says
+	// why, and there is no exit code.
 	AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_END AgentCommandEventKind = 2
 	// The command was refused and the run was told to stop.
 	AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_BLOCKED AgentCommandEventKind = 3
@@ -139,7 +143,8 @@ func (AgentCommandEventKind) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_agent_command_audit_proto_rawDescGZIP(), []int{1}
 }
 
-// AgentCommandCloseReason says why a command was refused and its run ended.
+// AgentCommandCloseReason says why a command was refused and its run ended
+// (BLOCKED), or why the sink closed a START that got no END (END).
 type AgentCommandCloseReason int32
 
 const (
@@ -152,6 +157,20 @@ const (
 	// The start event could not be recorded, so the command was refused rather
 	// than run unaudited.
 	AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE AgentCommandCloseReason = 3
+	// END written by the sink: the pre hook allowed or deferred the command, the
+	// engine then reported no result for it (no PostToolUse or
+	// PostToolUseFailure), and the run ended cleanly (its exit status is 0). The
+	// engine fires a post hook for every command it runs, success or failure, so
+	// this is a command the engine itself refused after the hook, for example by
+	// --restricted path confinement: it did not run. outcome is NOT_RUN. The
+	// run's exit status is in a file the run user can write, so this rests on
+	// the engine's report, not on a guarantee.
+	AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_ENGINE_REFUSED AgentCommandCloseReason = 4
+	// END written by the sink: the run ended with this command started and no
+	// end reported, and not cleanly (killed, timed out, crashed, a non-zero exit
+	// status, no exit status at all, or the sink itself was stopped). The command
+	// may have run in part. outcome is UNKNOWN.
+	AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_INTERRUPTED AgentCommandCloseReason = 5
 )
 
 // Enum value maps for AgentCommandCloseReason.
@@ -161,12 +180,16 @@ var (
 		1: "AGENT_COMMAND_CLOSE_REASON_HARD_DENY",
 		2: "AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED",
 		3: "AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE",
+		4: "AGENT_COMMAND_CLOSE_REASON_ENGINE_REFUSED",
+		5: "AGENT_COMMAND_CLOSE_REASON_INTERRUPTED",
 	}
 	AgentCommandCloseReason_value = map[string]int32{
 		"AGENT_COMMAND_CLOSE_REASON_UNSPECIFIED":       0,
 		"AGENT_COMMAND_CLOSE_REASON_HARD_DENY":         1,
 		"AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED":       2,
 		"AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE": 3,
+		"AGENT_COMMAND_CLOSE_REASON_ENGINE_REFUSED":    4,
+		"AGENT_COMMAND_CLOSE_REASON_INTERRUPTED":       5,
 	}
 )
 
@@ -195,6 +218,62 @@ func (x AgentCommandCloseReason) Number() protoreflect.EnumNumber {
 // Deprecated: Use AgentCommandCloseReason.Descriptor instead.
 func (AgentCommandCloseReason) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_agent_command_audit_proto_rawDescGZIP(), []int{2}
+}
+
+// AgentCommandOutcome says whether the command of an END ran.
+type AgentCommandOutcome int32
+
+const (
+	AgentCommandOutcome_AGENT_COMMAND_OUTCOME_UNSPECIFIED AgentCommandOutcome = 0
+	// The engine (post hook) or the command hook reported that it finished.
+	AgentCommandOutcome_AGENT_COMMAND_OUTCOME_RAN AgentCommandOutcome = 1
+	// It did not run (close_reason ENGINE_REFUSED).
+	AgentCommandOutcome_AGENT_COMMAND_OUTCOME_NOT_RUN AgentCommandOutcome = 2
+	// Unknown: the run was interrupted first (close_reason INTERRUPTED).
+	AgentCommandOutcome_AGENT_COMMAND_OUTCOME_UNKNOWN AgentCommandOutcome = 3
+)
+
+// Enum value maps for AgentCommandOutcome.
+var (
+	AgentCommandOutcome_name = map[int32]string{
+		0: "AGENT_COMMAND_OUTCOME_UNSPECIFIED",
+		1: "AGENT_COMMAND_OUTCOME_RAN",
+		2: "AGENT_COMMAND_OUTCOME_NOT_RUN",
+		3: "AGENT_COMMAND_OUTCOME_UNKNOWN",
+	}
+	AgentCommandOutcome_value = map[string]int32{
+		"AGENT_COMMAND_OUTCOME_UNSPECIFIED": 0,
+		"AGENT_COMMAND_OUTCOME_RAN":         1,
+		"AGENT_COMMAND_OUTCOME_NOT_RUN":     2,
+		"AGENT_COMMAND_OUTCOME_UNKNOWN":     3,
+	}
+)
+
+func (x AgentCommandOutcome) Enum() *AgentCommandOutcome {
+	p := new(AgentCommandOutcome)
+	*p = x
+	return p
+}
+
+func (x AgentCommandOutcome) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AgentCommandOutcome) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_agent_command_audit_proto_enumTypes[3].Descriptor()
+}
+
+func (AgentCommandOutcome) Type() protoreflect.EnumType {
+	return &file_containarium_v1_agent_command_audit_proto_enumTypes[3]
+}
+
+func (x AgentCommandOutcome) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AgentCommandOutcome.Descriptor instead.
+func (AgentCommandOutcome) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_command_audit_proto_rawDescGZIP(), []int{3}
 }
 
 // AgentCommandPolicy is the caller-supplied (org) policy for one run.
@@ -333,13 +412,22 @@ type AgentCommandEvent struct {
 	// (NAME=value) are dropped, never logged.
 	Argv  []string          `protobuf:"bytes,6,rep,name=argv,proto3" json:"argv,omitempty"`
 	Class AgentCommandClass `protobuf:"varint,7,opt,name=class,proto3,enum=containarium.v1.AgentCommandClass" json:"class,omitempty"`
-	// END only, and only when the engine reported it.
+	// END only, and only when known; absent means unknown, never 0. For an engine
+	// run it comes from the engine's hook input: an exit-code field in
+	// tool_response when present; for PostToolUse without one, 0 (the engine
+	// fires PostToolUse only for exit status 0); for PostToolUseFailure, the
+	// number N when the error text begins with the line "Exit code N" (0-255),
+	// and absent otherwise. That text is the engine's display format, not a
+	// contract: if an engine release changes it, the code is recorded as absent,
+	// not guessed. Command mode records the shell's status.
 	ExitCode *int32 `protobuf:"varint,8,opt,name=exit_code,json=exitCode,proto3,oneof" json:"exit_code,omitempty"`
-	// BLOCKED only.
+	// BLOCKED, and an END the sink wrote for a START without one.
 	CloseReason AgentCommandCloseReason `protobuf:"varint,9,opt,name=close_reason,json=closeReason,proto3,enum=containarium.v1.AgentCommandCloseReason" json:"close_reason,omitempty"`
 	// Set when the run is an approved re-run (attribution: who approved, which
 	// approval, and the event's time). Stamped by the sink.
-	Approval      *AgentRunApproval `protobuf:"bytes,10,opt,name=approval,proto3" json:"approval,omitempty"`
+	Approval *AgentRunApproval `protobuf:"bytes,10,opt,name=approval,proto3" json:"approval,omitempty"`
+	// END only: whether the command ran.
+	Outcome       AgentCommandOutcome `protobuf:"varint,11,opt,name=outcome,proto3,enum=containarium.v1.AgentCommandOutcome" json:"outcome,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -444,6 +532,13 @@ func (x *AgentCommandEvent) GetApproval() *AgentRunApproval {
 	return nil
 }
 
+func (x *AgentCommandEvent) GetOutcome() AgentCommandOutcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return AgentCommandOutcome_AGENT_COMMAND_OUTCOME_UNSPECIFIED
+}
+
 var File_containarium_v1_agent_command_audit_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_agent_command_audit_proto_rawDesc = "" +
@@ -456,7 +551,7 @@ const file_containarium_v1_agent_command_audit_proto_rawDesc = "" +
 	"\vapproval_id\x18\x01 \x01(\tR\n" +
 	"approvalId\x12\x1f\n" +
 	"\vapprover_id\x18\x02 \x01(\tR\n" +
-	"approverId\"\xdb\x03\n" +
+	"approverId\"\x9b\x04\n" +
 	"\x11AgentCommandEvent\x12:\n" +
 	"\x04kind\x18\x01 \x01(\x0e2&.containarium.v1.AgentCommandEventKindR\x04kind\x12.\n" +
 	"\x04time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x04time\x12\x19\n" +
@@ -468,7 +563,8 @@ const file_containarium_v1_agent_command_audit_proto_rawDesc = "" +
 	"\texit_code\x18\b \x01(\x05H\x00R\bexitCode\x88\x01\x01\x12K\n" +
 	"\fclose_reason\x18\t \x01(\x0e2(.containarium.v1.AgentCommandCloseReasonR\vcloseReason\x12=\n" +
 	"\bapproval\x18\n" +
-	" \x01(\v2!.containarium.v1.AgentRunApprovalR\bapprovalB\f\n" +
+	" \x01(\v2!.containarium.v1.AgentRunApprovalR\bapproval\x12>\n" +
+	"\aoutcome\x18\v \x01(\x0e2$.containarium.v1.AgentCommandOutcomeR\aoutcomeB\f\n" +
 	"\n" +
 	"_exit_code*\xc6\x01\n" +
 	"\x11AgentCommandClass\x12#\n" +
@@ -481,12 +577,19 @@ const file_containarium_v1_agent_command_audit_proto_rawDesc = "" +
 	"$AGENT_COMMAND_EVENT_KIND_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eAGENT_COMMAND_EVENT_KIND_START\x10\x01\x12 \n" +
 	"\x1cAGENT_COMMAND_EVENT_KIND_END\x10\x02\x12$\n" +
-	" AGENT_COMMAND_EVENT_KIND_BLOCKED\x10\x03*\xcd\x01\n" +
+	" AGENT_COMMAND_EVENT_KIND_BLOCKED\x10\x03*\xa8\x02\n" +
 	"\x17AgentCommandCloseReason\x12*\n" +
 	"&AGENT_COMMAND_CLOSE_REASON_UNSPECIFIED\x10\x00\x12(\n" +
 	"$AGENT_COMMAND_CLOSE_REASON_HARD_DENY\x10\x01\x12*\n" +
 	"&AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED\x10\x02\x120\n" +
-	",AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE\x10\x03BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	",AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE\x10\x03\x12-\n" +
+	")AGENT_COMMAND_CLOSE_REASON_ENGINE_REFUSED\x10\x04\x12*\n" +
+	"&AGENT_COMMAND_CLOSE_REASON_INTERRUPTED\x10\x05*\xa1\x01\n" +
+	"\x13AgentCommandOutcome\x12%\n" +
+	"!AGENT_COMMAND_OUTCOME_UNSPECIFIED\x10\x00\x12\x1d\n" +
+	"\x19AGENT_COMMAND_OUTCOME_RAN\x10\x01\x12!\n" +
+	"\x1dAGENT_COMMAND_OUTCOME_NOT_RUN\x10\x02\x12!\n" +
+	"\x1dAGENT_COMMAND_OUTCOME_UNKNOWN\x10\x03BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_agent_command_audit_proto_rawDescOnce sync.Once
@@ -500,28 +603,30 @@ func file_containarium_v1_agent_command_audit_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_agent_command_audit_proto_rawDescData
 }
 
-var file_containarium_v1_agent_command_audit_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_containarium_v1_agent_command_audit_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
 var file_containarium_v1_agent_command_audit_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_containarium_v1_agent_command_audit_proto_goTypes = []any{
 	(AgentCommandClass)(0),        // 0: containarium.v1.AgentCommandClass
 	(AgentCommandEventKind)(0),    // 1: containarium.v1.AgentCommandEventKind
 	(AgentCommandCloseReason)(0),  // 2: containarium.v1.AgentCommandCloseReason
-	(*AgentCommandPolicy)(nil),    // 3: containarium.v1.AgentCommandPolicy
-	(*AgentRunApproval)(nil),      // 4: containarium.v1.AgentRunApproval
-	(*AgentCommandEvent)(nil),     // 5: containarium.v1.AgentCommandEvent
-	(*timestamppb.Timestamp)(nil), // 6: google.protobuf.Timestamp
+	(AgentCommandOutcome)(0),      // 3: containarium.v1.AgentCommandOutcome
+	(*AgentCommandPolicy)(nil),    // 4: containarium.v1.AgentCommandPolicy
+	(*AgentRunApproval)(nil),      // 5: containarium.v1.AgentRunApproval
+	(*AgentCommandEvent)(nil),     // 6: containarium.v1.AgentCommandEvent
+	(*timestamppb.Timestamp)(nil), // 7: google.protobuf.Timestamp
 }
 var file_containarium_v1_agent_command_audit_proto_depIdxs = []int32{
 	1, // 0: containarium.v1.AgentCommandEvent.kind:type_name -> containarium.v1.AgentCommandEventKind
-	6, // 1: containarium.v1.AgentCommandEvent.time:type_name -> google.protobuf.Timestamp
+	7, // 1: containarium.v1.AgentCommandEvent.time:type_name -> google.protobuf.Timestamp
 	0, // 2: containarium.v1.AgentCommandEvent.class:type_name -> containarium.v1.AgentCommandClass
 	2, // 3: containarium.v1.AgentCommandEvent.close_reason:type_name -> containarium.v1.AgentCommandCloseReason
-	4, // 4: containarium.v1.AgentCommandEvent.approval:type_name -> containarium.v1.AgentRunApproval
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	5, // 4: containarium.v1.AgentCommandEvent.approval:type_name -> containarium.v1.AgentRunApproval
+	3, // 5: containarium.v1.AgentCommandEvent.outcome:type_name -> containarium.v1.AgentCommandOutcome
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_agent_command_audit_proto_init() }
@@ -535,7 +640,7 @@ func file_containarium_v1_agent_command_audit_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_agent_command_audit_proto_rawDesc), len(file_containarium_v1_agent_command_audit_proto_rawDesc)),
-			NumEnums:      3,
+			NumEnums:      4,
 			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,

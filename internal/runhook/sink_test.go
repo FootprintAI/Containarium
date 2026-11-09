@@ -35,7 +35,7 @@ func TestSink_StampsRedactsAndAppends(t *testing.T) {
 	defer cancel()
 	fixed := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
 	done := make(chan error, 1)
-	go func() { done <- Serve(ctx, ln, cfg, func() time.Time { return fixed }) }()
+	go func() { done <- Serve(ctx, ln, cfg, func() time.Time { return fixed }, nil) }()
 
 	send := DialSender(sock)
 	forged := &pb.AgentCommandEvent{
@@ -104,7 +104,7 @@ func TestSink_RejectsGarbage(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { _ = Serve(ctx, ln, cfg, time.Now) }()
+	go func() { _ = Serve(ctx, ln, cfg, time.Now, nil) }()
 
 	c, err := net.Dial("unix", sock)
 	if err != nil {
