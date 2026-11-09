@@ -343,6 +343,9 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	if req.GetModel() != "" && !validBoxRunModel(req.GetModel()) {
 		return nil, status.Errorf(codes.InvalidArgument, "model must match %s", boxRunModelPattern.String())
 	}
+	if err := validateBoxRunCommandPolicy(req); err != nil {
+		return nil, err
+	}
 	if err := s.authorizeBoxRuns(ctx, req.GetUsername()); err != nil {
 		return nil, err
 	}
@@ -471,6 +474,12 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 			return nil, status.Errorf(codes.FailedPrecondition, "%q: %v", req.GetUsername(), err)
 		}
 	}
+	// The command policy's hooks evaluate the level's own rules and rely on the
+	// unprivileged run user not owning their files (#3582).
+	if req.GetCommandPolicy() != nil && level == "" {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"%q has no tool-access level recorded; command_policy needs one", req.GetUsername())
+	}
 
 	// Lazily attach the release to old boxes before rotating any previous run.
 	// Only BUILD_TOOLS requires it; the other levels keep working on hosts
@@ -491,6 +500,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	}
 
 	// The level and required mount are ready; now provision the run user.
+	ownerHome := home
 	if level != "" {
 		runHome, err := prepareUnprivilegedRun(listExec, box, dir, home, level)
 		if err != nil {
@@ -535,6 +545,23 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	if req.GetModel() != "" {
 		// Validated above to a plain id; quoted anyway, as the prompt is.
 		command += " --model " + coderun.ShellQuoteSingle(req.GetModel())
+	}
+
+	if req.GetCommandPolicy() != nil {
+		// Root-owned configuration and sink first: the run must not start
+		// before its first command can be recorded (#3582).
+		runID, err := newBoxRunAuditID()
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "run audit id: %v", err)
+		}
+		setup, err := boxRunAuditSetupScript(boxRunAuditConfig(name, runID, policy, req), dir, ownerHome)
+		if err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "%q: %v", req.GetUsername(), err)
+		}
+		if _, err := listExec(box, setup); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "set up the command policy on %q: %v", req.GetUsername(), err)
+		}
+		policy.Settings = boxRunHookSettingsJSON(name)
 	}
 
 	if level != "" {
@@ -707,13 +734,15 @@ const (
 	DaemonCapBoxRunCommand = "box_run_command"
 	// DaemonCapRunUsage: BoxRun.usage, RunAgentSkillResponse.usage and CrewRun.usage (#3467).
 	DaemonCapRunUsage = "run_usage"
+	// DaemonCapBoxRunCommandPolicy: StartBoxRunRequest.command_policy and approval (#3582).
+	DaemonCapBoxRunCommandPolicy = "box_run_command_policy"
 	// DaemonCapBoxFiles (the WriteBoxFile RPC, #3548) is declared in box_file_write.go,
 	// DaemonCapBoxFilesStream (WriteBoxFileStream) in box_file_stream.go.
 )
 
 // daemonCapabilities is the list GetSystemInfo reports.
 func daemonCapabilities() []string {
-	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream}
+	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxRunCommandPolicy, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream}
 }
 
 // boxRunNameCollidesWithDerivedFile reports whether name would alias a file or

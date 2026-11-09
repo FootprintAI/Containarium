@@ -7,6 +7,7 @@ import "google/protobuf/timestamp.proto";
 import "containarium/v1/sandbox.proto";
 import "containarium/v1/agent.proto";
 import "containarium/v1/run_usage.proto";
+import "containarium/v1/agent_command_audit.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -197,6 +198,24 @@ message StartBoxRunRequest {
   // default of 900; more than 3600 is INVALID_ARGUMENT, as is a value without
   // command.
   int32 timeout_seconds = 9;
+  // Command allowlist and audit events for this run (#3582). Requires a
+  // recorded tool-access level and the Claude Code engine (FAILED_PRECONDITION
+  // otherwise) and is refused with command (INVALID_ARGUMENT). Every shell
+  // command the agent requests is then classified before it runs: within the
+  // level it runs as before; outside it, it runs only if an allow entry
+  // matches; a hard deny (network clients, git push, git remote, git transport
+  // options) or no match refuses it and ENDS the run. Each command gets a start
+  // event before it runs and an end event with its exit code, in an
+  // append-only file inside the box that the run user cannot write
+  // (/var/lib/containarium-run-audit/events/<run_name>.jsonl, protojson
+  // AgentCommandEvent lines). Capability "box_run_command_policy".
+  AgentCommandPolicy command_policy = 11;
+  // Set when this run is a re-run a human approved after a refusal: every
+  // event of the run records it. Needs command_policy, and is refused with
+  // session_id or continue_session (INVALID_ARGUMENT): an approval starts a new
+  // run, it never resumes the refused one. Each id must match
+  // [A-Za-z0-9._:@-]{1,128}.
+  AgentRunApproval approval = 12;
 }
 
 message StartBoxRunResponse {

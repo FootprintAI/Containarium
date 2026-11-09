@@ -1,0 +1,106 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// Command allowlist and audit events for agent runs (#3582).
+//
+// A run started with StartBoxRunRequest.command_policy gets a pair of engine
+// hooks: one before each shell command (PreToolUse) and one after it
+// (PostToolUse, PostToolUseFailure). The pre hook classifies the command, may
+// widen the run's tool-access level for commands that match the allowlist,
+// refuses hard-denied and unmatched commands, and records a start event. The
+// post hook records the end event. Events go to an append-only file inside the
+// box that only root can write; the hooks reach it through a root-run sink
+// process the daemon starts, never by writing the file themselves.
+
+// AgentCommandPolicy is the caller-supplied (org) policy for one run.
+message AgentCommandPolicy {
+  // Allowlist entries, each an argv glob: whitespace-separated elements, the
+  // first the executable name (matched exactly, no wildcard), every other a
+  // pattern where `*` matches any run of characters inside ONE argv element. An
+  // entry matches a command with exactly as many elements. A command that holds
+  // a shell operator, expansion or redirection never matches. A match lets the
+  // command run even when the run's tool-access level would not; hard denies
+  // still apply. At most 256 entries of at most 512 bytes each.
+  repeated string allow = 1;
+  // Regular expressions (RE2) added to the default redaction list. Any part of
+  // a logged argument that matches is replaced by "[REDACTED]". At most 64.
+  repeated string redact_patterns = 2;
+}
+
+// AgentRunApproval names the human approval a re-run carries: a command that
+// was refused ends its run, and an approval starts a NEW run with this set; it
+// never resumes the refused one.
+message AgentRunApproval {
+  // Opaque id of the approval, as the caller's approval record names it.
+  string approval_id = 1;
+  // Opaque id of the user who approved.
+  string approver_id = 2;
+}
+
+// AgentCommandClass is how the pre hook classified a command.
+enum AgentCommandClass {
+  AGENT_COMMAND_CLASS_UNSPECIFIED = 0;
+  // Within the run's tool-access level; the engine's own rules decide it.
+  AGENT_COMMAND_CLASS_LEVEL = 1;
+  // Outside the level, but matched an allowlist entry, so it was allowed.
+  AGENT_COMMAND_CLASS_ALLOWLISTED = 2;
+  // A hard deny matched (network client, git push, git remote, a git
+  // transport option); refused whatever the level or allowlist says.
+  AGENT_COMMAND_CLASS_HARD_DENIED = 3;
+  // Neither the level nor the allowlist matched; refused.
+  AGENT_COMMAND_CLASS_NOT_ALLOWED = 4;
+}
+
+// AgentCommandEventKind is the kind of one audit event.
+enum AgentCommandEventKind {
+  AGENT_COMMAND_EVENT_KIND_UNSPECIFIED = 0;
+  // Written before the command runs.
+  AGENT_COMMAND_EVENT_KIND_START = 1;
+  // Written when the command has finished, with its exit code.
+  AGENT_COMMAND_EVENT_KIND_END = 2;
+  // The command was refused and the run was told to stop.
+  AGENT_COMMAND_EVENT_KIND_BLOCKED = 3;
+}
+
+// AgentCommandCloseReason says why a command was refused and its run ended.
+enum AgentCommandCloseReason {
+  AGENT_COMMAND_CLOSE_REASON_UNSPECIFIED = 0;
+  // A hard deny matched.
+  AGENT_COMMAND_CLOSE_REASON_HARD_DENY = 1;
+  // Neither the level nor the allowlist matched (or the command could not be
+  // parsed).
+  AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED = 2;
+  // The start event could not be recorded, so the command was refused rather
+  // than run unaudited.
+  AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE = 3;
+}
+
+// AgentCommandEvent is one line of a run's audit file (protojson). Command
+// output and environment variables are never part of it.
+message AgentCommandEvent {
+  AgentCommandEventKind kind = 1;
+  // Stamped by the sink, not by the hook.
+  google.protobuf.Timestamp time = 2;
+  // The run's name and the daemon-chosen id of this start of it. Stamped by the
+  // sink from its own configuration.
+  string run_name = 3;
+  string run_id = 4;
+  // The engine's id for the tool call: pairs a START with its END.
+  string tool_use_id = 5;
+  // The command's arguments after redaction. Leading environment assignments
+  // (NAME=value) are dropped, never logged.
+  repeated string argv = 6;
+  AgentCommandClass class = 7;
+  // END only, and only when the engine reported it.
+  optional int32 exit_code = 8;
+  // BLOCKED only.
+  AgentCommandCloseReason close_reason = 9;
+  // Set when the run is an approved re-run (attribution: who approved, which
+  // approval, and the event's time). Stamped by the sink.
+  AgentRunApproval approval = 10;
+}

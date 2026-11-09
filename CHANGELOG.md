@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Command allowlist and audit events for agent runs** (#3582). `StartBoxRunRequest.command_policy` (capability `box_run_command_policy`) installs a PreToolUse and PostToolUse hook pair (`agent-box permission-hook`) on a Claude Code run at a recorded tool-access level. Each shell command is classified before it runs: within the level it runs as before; outside it, it runs only when an org allowlist entry matches (an argv glob: exact executable, `*` within one argument, no shell operators); hard denies (network clients, `git push`, `git remote`, git transport options) and unmatched commands are refused with a typed close reason and a blocked event, and the run ends. Every command gets a start event before it runs and an end event with its exit code (never its output or environment), with arguments redacted from a default list plus `command_policy.redact_patterns`. Events go to a root-owned append-only file inside the box, written only by a root-run sink (`agent-box run-audit-sink`) the daemon starts before the run; the run user cannot write it. `StartBoxRunRequest.approval` carries the approval and approver ids of an approved re-run, which every event records; it is refused with `session_id` or `continue_session`, since an approval starts a new run. Needs an agent-box with the new modes on the box.
+
 ## [0.132.1] - 2026-11-09
 
 

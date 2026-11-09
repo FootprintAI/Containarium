@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/footprintai/containarium/internal/runhook"
 	"github.com/footprintai/containarium/internal/toolaccess"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -32,6 +33,9 @@ type boxRunPolicy struct {
 	// Denied are rules that refuse a command even when an Allowed rule matches
 	// (--disallowedTools).
 	Denied []string
+	// Settings is an inline --settings JSON (the command policy's hooks,
+	// #3582); empty adds no flag.
+	Settings string
 }
 
 // bashRules spells each command prefix both bare and with arguments, because
@@ -94,27 +98,12 @@ func boxRunGitCommandHeads() []string {
 	return heads
 }
 
-// boxRunCloneNoArgShorts are the short options of `git clone` that take no value.
-// Git lets them bundle in front of an option that does (`-qu <cmd>`), so each is
-// also listed in front of `u` and `c` below.
-var boxRunCloneNoArgShorts = []string{"l", "s", "q", "v", "n", "4", "6"}
-
-// boxRunGitTransportDenied are, per allowed subcommand, the option words that make
-// git run a program or load configuration chosen by the command line (#3397).
-// Git accepts any unambiguous prefix of a long option, so `--upload-pack` is also
-// reachable as `--upl` (fetch) or `--u` (clone); the shortest forms are listed.
+// boxRunGitTransportDenied are, per allowed subcommand, the option words that
+// make git run a program or load configuration chosen by the command line
+// (#3397). The command policy's hard denies (#3582) use the same lists.
 // Fail-closed: a harmless argument that matches is refused too (a clone URL or
 // directory argument starting with `-u` or `-c`, for example).
-func boxRunGitTransportDenied() map[string][]string {
-	clone := []string{"--u*", "-u*", "--receive-pack*", "--con*", "-c*", "--te*"}
-	for _, l := range boxRunCloneNoArgShorts {
-		clone = append(clone, "-"+l+"u*", "-"+l+"c*")
-	}
-	return map[string][]string{
-		"fetch": {"--upload-pack*", "--upl*", "--receive-pack*", "--config*"},
-		"clone": clone,
-	}
-}
+func boxRunGitTransportDenied() map[string][]string { return runhook.GitTransportDenied() }
 
 // boxRunGitTransportDenyRules spells those words as deny rules. The CLI's `*`
 // also matches spaces, so each word is matched right after the subcommand and
@@ -191,6 +180,9 @@ func (p boxRunPolicy) commandFlags() string {
 	q := shellSingleQuote
 	var b strings.Builder
 	b.WriteString(" --restricted --tools " + q(strings.Join(p.Tools, ",")))
+	if p.Settings != "" {
+		b.WriteString(" --settings " + q(p.Settings))
+	}
 	if len(p.Denied) > 0 {
 		b.WriteString(" --disallowedTools")
 		for _, r := range p.Denied {

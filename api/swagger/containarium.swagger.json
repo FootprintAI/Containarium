@@ -11204,6 +11204,26 @@
       },
       "description": "AgentCard is the discovery document a skill serves so peer agents can find\nit and learn how to delegate to it (A2A, Phase 1). It is carried in-proto so\nthe wire format stays insulated from upstream A2A churn."
     },
+    "AgentCommandPolicy": {
+      "type": "object",
+      "properties": {
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowlist entries, each an argv glob: whitespace-separated elements, the\nfirst the executable name (matched exactly, no wildcard), every other a\npattern where `*` matches any run of characters inside ONE argv element. An\nentry matches a command with exactly as many elements. A command that holds\na shell operator, expansion or redirection never matches. A match lets the\ncommand run even when the run's tool-access level would not; hard denies\nstill apply. At most 256 entries of at most 512 bytes each."
+        },
+        "redactPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Regular expressions (RE2) added to the default redaction list. Any part of\na logged argument that matches is replaced by \"[REDACTED]\". At most 64."
+        }
+      },
+      "description": "AgentCommandPolicy is the caller-supplied (org) policy for one run."
+    },
     "AgentCredentialSource": {
       "type": "string",
       "enum": [
@@ -11270,6 +11290,20 @@
         }
       },
       "description": "AgentEngineStatus is one engine's readiness row, as ListAgentEngines\nreports it. One row per AgentEngine value (#2223)."
+    },
+    "AgentRunApproval": {
+      "type": "object",
+      "properties": {
+        "approvalId": {
+          "type": "string",
+          "description": "Opaque id of the approval, as the caller's approval record names it."
+        },
+        "approverId": {
+          "type": "string",
+          "description": "Opaque id of the user who approved."
+        }
+      },
+      "description": "AgentRunApproval names the human approval a re-run carries: a command that\nwas refused ends its run, and an approval starts a NEW run with this set; it\nnever resumes the refused one."
     },
     "AgentSkill": {
       "type": "object",
@@ -22430,6 +22464,14 @@
           "type": "integer",
           "format": "int32",
           "description": "With command: the daemon ends the command after this many seconds\n(`timeout -k 5`, so the run exits with code 124). 0 means the daemon's\ndefault of 900; more than 3600 is INVALID_ARGUMENT, as is a value without\ncommand."
+        },
+        "commandPolicy": {
+          "$ref": "#/definitions/AgentCommandPolicy",
+          "description": "Command allowlist and audit events for this run (#3582). Requires a\nrecorded tool-access level and the Claude Code engine (FAILED_PRECONDITION\notherwise) and is refused with command (INVALID_ARGUMENT). Every shell\ncommand the agent requests is then classified before it runs: within the\nlevel it runs as before; outside it, it runs only if an allow entry\nmatches; a hard deny (network clients, git push, git remote, git transport\noptions) or no match refuses it and ENDS the run. Each command gets a start\nevent before it runs and an end event with its exit code, in an\nappend-only file inside the box that the run user cannot write\n(/var/lib/containarium-run-audit/events/\u003crun_name\u003e.jsonl, protojson\nAgentCommandEvent lines). Capability \"box_run_command_policy\"."
+        },
+        "approval": {
+          "$ref": "#/definitions/AgentRunApproval",
+          "description": "Set when this run is a re-run a human approved after a refusal: every\nevent of the run records it. Needs command_policy, and is refused with\nsession_id or continue_session (INVALID_ARGUMENT): an approval starts a new\nrun, it never resumes the refused one. Each id must match\n[A-Za-z0-9._:@-]{1,128}."
         }
       },
       "description": "StartBoxRunRequest starts (or resumes) a coding-agent run on a box through\nthe daemon API — no SSH client, no agent-box RPC (#2193): the daemon\nroot-execs the same on-disk contract `containarium code run` leaves via\nagent-box's process_start, so ListBoxRuns and TailBoxRunLog read a\ndaemon-started run exactly like one `code run` started.\n\nThe engine and its credential source are never request fields: they come\nfrom the box's own ~/.containarium/code.json (`code install`, #1727) —\nthis RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of\nscope by the same rule #2030 settled for `code install`: this starts or\nresumes an already-authenticated session only."
