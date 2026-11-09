@@ -202,7 +202,7 @@ type ContainerServer struct {
 	// apply holds it for writing, a run start for reading (#3510).
 	boxSkillSetsInstall boxSkillSetsInstallFunc
 	boxSkillSetLocks    sync.Map       // key: box name -> *sync.RWMutex
-	boxRunStarts        boxGateHolders // run starts holding a box's gate, for naming in a refused apply (#3530)
+	boxGateHolders      boxGateHolders // who holds each box's gate (run starts, an apply), for a refused apply's reason and message (#3530, #3537)
 	// skillSetsApplyLease overrides the apply marker's lease
 	// (sdlcskills.ApplyMarkerLease) for tests; 0 = the default (#3529).
 	skillSetsApplyLease time.Duration
