@@ -134,7 +134,8 @@ verification of a pushed commit.
   run user can, including on a box recorded at a restrictive level, which an
   engine run at that level could not be told to do by a prompt. The level
   bounds what the run user may do as a Unix account (its sudo grant), not what
-  a command may invoke.
+  a command may invoke. With `command_policy` set, the command is decided like
+  an engine run's shell command instead; see the next section.
 - The working directory is the run user's home. A command that needs a checkout
   makes it: for example `git clone <url> work && cd work && git checkout <sha>
   && make test`, through the box's own credential helper.
@@ -154,6 +155,62 @@ verification of a pushed commit.
 
 The CLI counterpart is `containarium code run <box> --command '<text>'
 [--timeout 15m] [--name <run>]` (the SSH path, as the box's own user).
+
+## Command allowlist and audit events: `command_policy`
+
+`command_policy` (capability `box_run_command_policy`) puts every shell
+command of a run through one decision before it runs, and records an audit
+event for it. It needs a box with a recorded tool-access level
+(`FAILED_PRECONDITION` otherwise) and, for an engine run, the Claude Code
+engine. It applies to both kinds of run:
+
+- **Engine run.** The daemon installs a PreToolUse and a PostToolUse hook pair
+  (`agent-box permission-hook pre|post`) through `--settings`. Each shell
+  command the agent requests is decided by the pre hook.
+- **Command run** (`command`). The run executes `agent-box permission-hook
+  command` in place of `sh -c`. It applies the same decision to the command,
+  which the daemon wrote into the run's root-owned configuration, and runs it
+  only if it is allowed. The timeout and exit code work as for a plain command
+  run.
+
+The decision, in order:
+
+1. **Hard denies** refuse the command whatever the allowlist says: network
+   client executables, `git push`, `git remote`, and git transport options.
+2. **The org allowlist** (`command_policy.allow`) runs a command outside the
+   level when an entry matches: an argv glob with an exact executable, `*`
+   within one argument, and no shell operators.
+3. **The level's own rules** run the command as before.
+4. **Anything else** is refused.
+
+A refused command ends the run. Nothing waits for an answer: an approved re-run
+is a new run that carries `approval`. A refusal records a `BLOCKED` event with
+an `AgentCommandCloseReason` (`HARD_DENY`, `NOT_ALLOWED`, or
+`AUDIT_UNAVAILABLE` when the start event cannot be recorded). An engine run is
+stopped by the hook (`continue: false`). A command run never starts the
+command: it prints the reason to its log and exits `120`.
+
+Every command that runs gets a `START` event before it runs and an `END` event
+with its exit code. Output and environment are never recorded, and arguments
+are redacted from a default list plus `command_policy.redact_patterns`. Events
+are protojson `AgentCommandEvent` lines in
+`/var/lib/containarium-run-audit/events/<run_name>.jsonl` inside the box. A
+root-run sink (`agent-box run-audit-sink`) that the daemon starts before the run
+is the only writer, and the run user cannot write that file.
+
+Limits:
+
+- **At `FULL_SUDO` these controls are advisory.** The allowlist, the hard
+  denies and the hooks are installed and decide exactly as at the other levels.
+  But the run user has passwordless sudo, so it can become root. As root it can
+  change the configuration, stop the sink or run commands the hooks never see.
+  At `FULL_SUDO` they do not bind the run user and are not a security
+  boundary. Use `NONE` or `BUILD_TOOLS` where the allowlist must hold.
+- **Network denial is command-level only.** It refuses network client
+  executables. `git clone`/`git fetch` and package managers still reach their
+  remotes and registries, and nothing filters network traffic itself.
+- A command is decided as one line. Programs that the command or a script it
+  runs start in turn are not decided again.
 
 ## Putting a file on the box: `WriteBoxFile`
 
@@ -230,7 +287,8 @@ The REST gateway rejects request fields it does not know, so a caller must not
 send `run_name`, `structured_output`, `model` or `command` to a daemon that
 predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the optional
 features a daemon supports: `box_run_name`, `box_run_structured_output`,
-`box_run_model`, `box_run_command`, `box_files` and `box_files_stream`. An older daemon does
+`box_run_model`, `box_run_command`, `box_run_command_policy`, `box_files` and
+`box_files_stream`. An older daemon does
 not send the field at all; treat a missing name as unsupported. Names are only
 added. `GetSystemInfo` requires an admin principal. A caller that cannot read it
 can gate on the daemon version instead: the first release that contains these

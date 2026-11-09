@@ -184,11 +184,13 @@ message StartBoxRunRequest {
   // prompt, session_id, continue_session, structured_output and model
   // (INVALID_ARGUMENT, before anything on the box is touched). The command
   // runs as the box's run user with the sudo grant of its recorded
-  // tool-access level, in that user's home directory: the level selects the
-  // run user and its sudo grant, nothing more. The engine's allow/deny tool
-  // policy applies to engine runs only, so a caller holding the command-mode
-  // scope can run any program the run user can. A caller that needs a
-  // checkout makes it part of the command. The run is
+  // tool-access level, in that user's home directory. Without command_policy
+  // the level selects the run user and its sudo grant, nothing more: the
+  // engine's allow/deny tool policy does not apply, so a caller holding the
+  // command-mode scope can run any program the run user can. With
+  // command_policy the command goes through the same decision, sink and events
+  // as an engine run's shell commands (see command_policy). A caller that needs
+  // a checkout makes it part of the command. The run is
   // listed, tailed and stopped like any other (ListBoxRuns, TailBoxRunLog,
   // StopBoxRun); BoxRun.session_id stays empty. Capability "box_run_command"
   // in SystemInfo.capabilities.
@@ -199,16 +201,20 @@ message StartBoxRunRequest {
   // command.
   int32 timeout_seconds = 9;
   // Command allowlist and audit events for this run (#3582). Requires a
-  // recorded tool-access level and the Claude Code engine (FAILED_PRECONDITION
-  // otherwise) and is refused with command (INVALID_ARGUMENT). Every shell
-  // command the agent requests is then classified before it runs: within the
-  // level it runs as before; outside it, it runs only if an allow entry
-  // matches; a hard deny (network clients, git push, git remote, git transport
-  // options) or no match refuses it and ENDS the run. Each command gets a start
-  // event before it runs and an end event with its exit code, in an
-  // append-only file inside the box that the run user cannot write
-  // (/var/lib/containarium-run-audit/events/<run_name>.jsonl, protojson
-  // AgentCommandEvent lines). Capability "box_run_command_policy".
+  // recorded tool-access level (FAILED_PRECONDITION otherwise) and, for an
+  // engine run, the Claude Code engine. Every shell command is then classified
+  // before it runs: within the level it runs as before; outside it, it runs
+  // only if an allow entry matches; a hard deny (network clients, git push, git
+  // remote, git transport options) or no match refuses it and ENDS the run. An
+  // engine run gets this through PreToolUse / PostToolUse hooks; a command-mode
+  // run (command) through the same decision applied to its one command, which
+  // on a refusal never runs: the run exits 120 and records a BLOCKED event with
+  // its close reason. Each command gets a start event before it runs and an end
+  // event with its exit code, in an append-only file inside the box that the
+  // run user cannot write (/var/lib/containarium-run-audit/events/<run_name>.jsonl,
+  // protojson AgentCommandEvent lines). At FULL_SUDO all of this applies but is
+  // advisory: the run user can become root and step around it, so it is not a
+  // security boundary at that level. Capability "box_run_command_policy".
   AgentCommandPolicy command_policy = 11;
   // Set when this run is a re-run a human approved after a refusal: every
   // event of the run records it. Needs command_policy, and is refused with

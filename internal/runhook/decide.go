@@ -49,6 +49,10 @@ type Config struct {
 	// RedactPatterns are the operator's additions to the default redactions.
 	RedactPatterns []string  `json:"redact_patterns,omitempty"`
 	Approval       *Approval `json:"approval,omitempty"`
+	// Command is a command-mode run's shell command (StartBoxRunRequest.command):
+	// `agent-box permission-hook command` decides and runs exactly this text, so
+	// what is decided is what the daemon wrote as root. Empty for engine runs.
+	Command string `json:"command,omitempty"`
 }
 
 // Verdict is what the pre hook tells the engine.

@@ -10,19 +10,23 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/runhook"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-// Command allowlist and audit events for engine runs (#3582). A run started
-// with command_policy gets the engine's PreToolUse / PostToolUse hooks
+// Command allowlist and audit events for box runs (#3582). An engine run
+// started with command_policy gets the engine's PreToolUse / PostToolUse hooks
 // (`agent-box permission-hook`, configured through --settings, which
-// --restricted still reads) and a root-run sink (`agent-box run-audit-sink`)
-// that is the only writer of the run's audit file. Everything the hooks and the
+// --restricted still reads); a command-mode run runs `agent-box
+// permission-hook command`, which applies the same decision to the command and
+// records the same events. Both get a root-run sink (`agent-box
+// run-audit-sink`) that is the only writer of the run's audit file. Everything the hooks and the
 // sink read is written as root before the run starts, under a directory the run
 // user cannot write; the hooks run a root-owned copy of agent-box, so the run
-// user cannot swap them either. At FULL_SUDO none of this binds the run user
-// (it can become root), exactly as the level's own flags do not.
+// user cannot swap them either. At FULL_SUDO the controls are installed and
+// decide exactly as at any other level, but they are advisory: the run user
+// can become root and step around all of it, as it can the level's own flags.
 
 var boxRunApprovalIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:@-]{1,128}$`)
 
@@ -32,9 +36,6 @@ func validateBoxRunCommandPolicy(req *pb.StartBoxRunRequest) error {
 	pol, appr := req.GetCommandPolicy(), req.GetApproval()
 	if pol == nil && appr == nil {
 		return nil
-	}
-	if req.GetCommand() != "" {
-		return status.Error(codes.InvalidArgument, "command_policy and approval apply to engine runs, not to command")
 	}
 	if appr != nil {
 		if pol == nil {
@@ -78,6 +79,9 @@ func boxRunAuditConfig(name, runID string, level boxRunPolicy, req *pb.StartBoxR
 		LevelDenied:    append([]string(nil), level.Denied...),
 		RedactPatterns: append([]string(nil), req.GetCommandPolicy().GetRedactPatterns()...),
 	}
+	if req.GetCommand() != "" {
+		cfg.Command = req.GetCommand()
+	}
 	if a := req.GetApproval(); a != nil {
 		cfg.Approval = &runhook.Approval{ID: a.GetApprovalId(), Approver: a.GetApproverId()}
 	}
@@ -113,7 +117,7 @@ cp -L "$src" "$a/bin/agent-box.new"
 chown root:root "$a/bin/agent-box.new"
 chmod 0755 "$a/bin/agent-box.new"
 mv -f "$a/bin/agent-box.new" ` + q(runhook.AgentBoxPath) + `
-` + q(runhook.AgentBoxPath) + ` permission-hook </dev/null 2>&1 | grep -q 'usage: agent-box permission-hook' || { echo "agent-box on this box predates the permission hook: update it" >&2; exit 1; }
+` + q(runhook.AgentBoxPath) + ` permission-hook </dev/null 2>&1 | grep -qF ` + q(runhook.HookUsage) + ` || { echo "agent-box on this box predates the permission hook: update it" >&2; exit 1; }
 printf '%s' ` + q(string(cfgJSON)) + ` > ` + q(conf+".new") + `
 chown root:root ` + q(conf+".new") + `
 chmod 0644 ` + q(conf+".new") + `
@@ -158,4 +162,29 @@ func boxRunHookSettingsJSON(name string) string {
 		"PostToolUseFailure": hook("post"),
 	}})
 	return string(b)
+}
+
+// setUpBoxRunAudit writes run name's root-owned configuration and starts its
+// sink, as root, before anything is spawned: the run must not start before its
+// first command can be recorded.
+func setUpBoxRunAudit(listExec boxScriptFunc, box, dir, name, ownerHome, username string, level boxRunPolicy, req *pb.StartBoxRunRequest) error {
+	runID, err := newBoxRunAuditID()
+	if err != nil {
+		return status.Errorf(codes.Internal, "run audit id: %v", err)
+	}
+	setup, err := boxRunAuditSetupScript(boxRunAuditConfig(name, runID, level, req), dir, ownerHome)
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition, "%q: %v", username, err)
+	}
+	if _, err := listExec(box, setup); err != nil {
+		return status.Errorf(codes.FailedPrecondition, "set up the command policy on %q: %v", username, err)
+	}
+	return nil
+}
+
+// boxRunPolicyCommandLine is a command-mode run's line under a command policy:
+// the root-owned agent-box decides and runs the configured command, under the
+// same timeout as a plain command run.
+func boxRunPolicyCommandLine(name string, timeoutSeconds int) string {
+	return coderun.BuildTimedCommand(runhook.AgentBoxPath+" permission-hook command --config "+shellSingleQuote(runhook.ConfigPath(name)), timeoutSeconds)
 }

@@ -550,16 +550,8 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	if req.GetCommandPolicy() != nil {
 		// Root-owned configuration and sink first: the run must not start
 		// before its first command can be recorded (#3582).
-		runID, err := newBoxRunAuditID()
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "run audit id: %v", err)
-		}
-		setup, err := boxRunAuditSetupScript(boxRunAuditConfig(name, runID, policy, req), dir, ownerHome)
-		if err != nil {
-			return nil, status.Errorf(codes.FailedPrecondition, "%q: %v", req.GetUsername(), err)
-		}
-		if _, err := listExec(box, setup); err != nil {
-			return nil, status.Errorf(codes.FailedPrecondition, "set up the command policy on %q: %v", req.GetUsername(), err)
+		if err := setUpBoxRunAudit(listExec, box, dir, name, ownerHome, req.GetUsername(), policy, req); err != nil {
+			return nil, err
 		}
 		policy.Settings = boxRunHookSettingsJSON(name)
 	}
@@ -643,10 +635,18 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "read the tool-access level of %q: %v", req.GetUsername(), err)
 	}
+	var policy boxRunPolicy
 	if level != "" {
-		if _, err := boxRunPolicyFor(level); err != nil {
+		if policy, err = boxRunPolicyFor(level); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "%q: %v", req.GetUsername(), err)
 		}
+	}
+	// A command policy decides the command against the level's rules and relies
+	// on the unprivileged run user not owning its files, as for an engine run
+	// (#3582).
+	if req.GetCommandPolicy() != nil && level == "" {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"%q has no tool-access level recorded; command_policy needs one", req.GetUsername())
 	}
 	ensureTools := s.boxRunEnsureToolchain
 	if ensureTools == nil && s.manager != nil {
@@ -662,7 +662,7 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 	} else if ensureTools != nil {
 		_ = ensureTools(req.GetUsername())
 	}
-	runAs := req.GetUsername()
+	runAs, ownerHome := req.GetUsername(), home
 	if level != "" {
 		// The run user, its sudo grant for the level and its staged home, as for an
 		// engine run; the engine sign-in is not checked, because no engine starts.
@@ -686,6 +686,15 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 	}
 
 	command := coderun.BuildShellCommand(req.GetCommand(), int(req.GetTimeoutSeconds()))
+	if req.GetCommandPolicy() != nil {
+		// The same sink, decision and events as an engine run's shell commands
+		// (#3582): the command is in the root-owned configuration, and the
+		// root-owned agent-box decides it before running it.
+		if err := setUpBoxRunAudit(listExec, box, dir, name, ownerHome, req.GetUsername(), policy, req); err != nil {
+			return nil, err
+		}
+		command = boxRunPolicyCommandLine(name, int(req.GetTimeoutSeconds()))
+	}
 	out, err := startExec(box, runAs, boxRunSpawnScript(boxRunSpawn{dir: dir, name: name, command: command, home: home}))
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)

@@ -31,12 +31,14 @@ func LoadConfig(path string) (Config, error) {
 	return c, nil
 }
 
-// RunHookCLI is `agent-box permission-hook pre|post --config <path>`. The pre
-// hook always exits 0: its decision, including a fail-closed deny, is on
-// stdout.
+// RunHookCLI is `agent-box permission-hook pre|post|command --config <path>`.
+// The pre hook always exits 0: its decision, including a fail-closed deny, is
+// on stdout. `command` is a command-mode run under a command policy: it decides
+// and runs the configuration's command and exits with its code, or with
+// BlockedExitCode when the command is refused.
 func RunHookCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) < 1 || (args[0] != "pre" && args[0] != "post") {
-		fmt.Fprintln(stderr, "usage: agent-box permission-hook pre|post --config <path>")
+	if len(args) < 1 || (args[0] != "pre" && args[0] != "post" && args[0] != "command") {
+		fmt.Fprintln(stderr, HookUsage)
 		return 2
 	}
 	fs := flag.NewFlagSet("permission-hook", flag.ContinueOnError)
@@ -46,6 +48,14 @@ func RunHookCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	cfg, err := LoadConfig(*path)
+	if args[0] == "command" {
+		if err != nil {
+			fmt.Fprintln(stderr, refusal(pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE,
+				"the hook configuration cannot be read: "+err.Error()))
+			return BlockedExitCode
+		}
+		return RunCommand(cfg, stderr, DialSender(cfg.Socket), RunShell)
+	}
 	if args[0] == "pre" {
 		if err != nil {
 			_ = writeDeny(stdout, pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE, "the hook configuration cannot be read")
@@ -67,6 +77,11 @@ func RunHookCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	return 0
 }
+
+// HookUsage is the permission-hook usage line. The daemon's setup checks the
+// box's agent-box prints it, so an agent-box without the command mode is
+// refused rather than trusted.
+const HookUsage = "usage: agent-box permission-hook pre|post|command --config <path>"
 
 // recordGrace is how long the sink waits for its run's record to appear.
 const recordGrace = 10 * time.Minute

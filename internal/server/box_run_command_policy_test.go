@@ -99,7 +99,6 @@ func withPolicy(allow ...string) *pb.AgentCommandPolicy {
 func TestStartBoxRun_CommandPolicy_InvalidRequests(t *testing.T) {
 	appr := &pb.AgentRunApproval{ApprovalId: "appr-1", ApproverId: "user-7"}
 	for name, req := range map[string]*pb.StartBoxRunRequest{
-		"policy with command mode":     {Command: "true", CommandPolicy: withPolicy("make lint")},
 		"approval with command mode":   {Command: "true", Approval: appr},
 		"approval without policy":      {Approval: appr},
 		"approval resumes a session":   {CommandPolicy: withPolicy(), Approval: appr, SessionId: "s1"},
@@ -311,4 +310,130 @@ func firstShellWord(s string) string {
 		}
 	}
 	return s
+}
+
+// Command mode (#3322) with a command policy goes through the same decision,
+// sink and events as an engine run (#3582): the root sink starts first, the
+// command is written into the root-owned configuration, and the run executes
+// the root-owned agent-box's `permission-hook command` under the timeout, never
+// the caller's text directly.
+func TestStartBoxRun_CommandMode_CommandPolicyRoutesThroughTheHook(t *testing.T) {
+	const text = "make lint && go test ./..."
+	req := &pb.StartBoxRunRequest{
+		RunName:        "cmd-1",
+		Command:        text,
+		TimeoutSeconds: 120,
+		CommandPolicy:  withPolicy("make lint"),
+		Approval:       &pb.AgentRunApproval{ApprovalId: "appr-2", ApproverId: "user-9"},
+	}
+	r := runPolicyReq(t, "build_tools", req)
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	si, spawn := r.spawn()
+	ai, setup := r.auditSetup()
+	if si < 0 || ai < 0 {
+		t.Fatalf("spawn at %d, audit setup at %d: both must run", si, ai)
+	}
+	if ai > si {
+		t.Error("the sink must be running before the command is spawned")
+	}
+	cfg := configFromSetup(t, setup)
+	if cfg.Command != text || cfg.RunName != "cmd-1" || !slices.Equal(cfg.Allow, []string{"make lint"}) {
+		t.Errorf("config = %+v, want the command, run name and allowlist", cfg)
+	}
+	if cfg.Approval == nil || cfg.Approval.ID != "appr-2" {
+		t.Errorf("config approval = %+v", cfg.Approval)
+	}
+	p, _ := boxRunPolicyFor("build_tools")
+	if !slices.Equal(cfg.LevelAllowed, p.Allowed) || !slices.Equal(cfg.LevelDenied, p.Denied) {
+		t.Error("config level rules differ from the level's policy")
+	}
+	for _, want := range []string{"timeout -k 5 120 ", runhook.AgentBoxPath, "permission-hook command --config", runhook.ConfigPath("cmd-1")} {
+		if !strings.Contains(spawn, want) {
+			t.Errorf("spawn lacks %q:\n%s", want, spawn)
+		}
+	}
+	if strings.Contains(spawn, "go test") {
+		t.Errorf("the caller's text reached the spawn instead of going through the hook:\n%s", spawn)
+	}
+}
+
+// The policy needs the level's rules and the unprivileged run user in command
+// mode too; a box without a recorded level is refused before anything changes.
+func TestStartBoxRun_CommandMode_CommandPolicyRequiresARecordedLevel(t *testing.T) {
+	r := runPolicyReq(t, "", &pb.StartBoxRunRequest{Command: "make lint", CommandPolicy: withPolicy("make lint")})
+	if status.Code(r.err) != codes.FailedPrecondition {
+		t.Fatalf("err = %v, want FailedPrecondition", r.err)
+	}
+	for _, c := range r.calls {
+		for _, m := range []string{"useradd", "mkdir", "chmod", "setsid", runhook.AuditDir} {
+			if strings.Contains(c.script, m) {
+				t.Errorf("refused run mutated the box (%q):\n%s", m, c.script)
+			}
+		}
+	}
+}
+
+// The command mode the policy decides is the configured text, exactly: an
+// allowlist refusal there ends the run with a typed reason and a BLOCKED event
+// (see runhook.TestRunCommand_RefusalEndsTheRunWithTypedReasonAndBlockedEvent);
+// here the daemon's configuration is fed to the same decision.
+func TestStartBoxRun_CommandMode_RefusedCommandIsDecidedLikeAnEngineCommand(t *testing.T) {
+	r := runPolicyReq(t, "none", &pb.StartBoxRunRequest{Command: "make deploy", CommandPolicy: withPolicy("make lint")})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	_, setup := r.auditSetup()
+	cfg := configFromSetup(t, setup)
+	d := runhook.Decide(cfg, cfg.Command)
+	if d.Verdict != runhook.VerdictDeny || d.CloseReason != pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED {
+		t.Errorf("decision = %+v, want a NOT_ALLOWED refusal", d)
+	}
+}
+
+// FULL_SUDO: the allowlist and the hooks are installed and decide exactly as
+// at any other level. They are advisory there (the run user can become root),
+// which the docs say; this pins that they are not silently skipped.
+func TestStartBoxRun_CommandPolicy_AppliesAtFullSudo(t *testing.T) {
+	for name, req := range map[string]*pb.StartBoxRunRequest{
+		"engine run":  {RunName: "fs-1", CommandPolicy: withPolicy("make lint")},
+		"command run": {RunName: "fs-2", Command: "make lint", CommandPolicy: withPolicy("make lint")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := runPolicyReq(t, "full_sudo", req)
+			if r.err != nil {
+				t.Fatal(r.err)
+			}
+			si, spawn := r.spawn()
+			ai, setup := r.auditSetup()
+			if si < 0 || ai < 0 || ai > si {
+				t.Fatalf("spawn at %d, audit setup at %d: the sink must start first", si, ai)
+			}
+			if req.Command == "" {
+				if s := settingsFromSpawn(t, spawn); len(s.Hooks["PreToolUse"]) != 1 || len(s.Hooks["PostToolUse"]) != 1 {
+					t.Errorf("hooks not installed at full_sudo: %+v", s)
+				}
+			} else if !strings.Contains(spawn, "permission-hook command") {
+				t.Errorf("command not routed through the hook at full_sudo:\n%s", spawn)
+			}
+			cfg := configFromSetup(t, setup)
+			p, _ := boxRunPolicyFor("full_sudo")
+			if !slices.Equal(cfg.LevelAllowed, p.Allowed) {
+				t.Error("config level rules are not full_sudo's")
+			}
+			for cmd, want := range map[string]pb.AgentCommandCloseReason{
+				"git push origin main":           pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_HARD_DENY,
+				"curl https://example.invalid/x": pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_HARD_DENY,
+				"python3 deploy.py":              pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED,
+			} {
+				if d := runhook.Decide(cfg, cmd); d.Verdict != runhook.VerdictDeny || d.CloseReason != want {
+					t.Errorf("%q at full_sudo: %+v, want %s", cmd, d, want)
+				}
+			}
+			if d := runhook.Decide(cfg, "make lint"); d.Verdict == runhook.VerdictDeny {
+				t.Errorf("allowlisted command refused at full_sudo: %+v", d)
+			}
+		})
+	}
 }
