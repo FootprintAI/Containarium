@@ -176,7 +176,10 @@ engine. It applies to both kinds of run:
 The decision, in order:
 
 1. **Hard denies** refuse the command whatever the allowlist says: network
-   client executables, `git push`, `git remote`, and git transport options.
+   client executables, `git push`, `git remote`, git transport options, and any
+   `GIT_*` environment assignment. The check also reads command substitutions,
+   subshells and quoted redirection targets, and the values of `NAME=value`
+   assignments, which are otherwise left out of the audit event.
 2. **The org allowlist** (`command_policy.allow`) runs a command outside the
    level when an entry matches: an argv glob with an exact executable, `*`
    within one argument, and no shell operators.
@@ -249,6 +252,19 @@ Limits:
   change the configuration, stop the sink or run commands the hooks never see.
   At `FULL_SUDO` they do not bind the run user and are not a security
   boundary. Use `NONE` or `BUILD_TOOLS` where the allowlist must hold.
+- **An allowlist entry cannot name an interpreter on caller-chosen code.** An
+  entry whose executable is a shell, `python*`, `perl`, `ruby`, `node` and the
+  like is refused when it has a `-c`/`-e`/`-m`-style flag or a `*` argument, so
+  the allowlist cannot be widened into "run anything". A fixed interpreter
+  entry (`python3 scripts/check.py`) is accepted, and so is whatever that
+  script does. Wrappers (`env`, `xargs`, `timeout`) are not recognised, so an
+  entry that wraps an interpreter is the operator's to avoid.
+- **The `agent-box` that root runs must be trusted.** The daemon copies a
+  root-owned `agent-box` (from `/usr/local/bin`, else the owner's
+  `~/.local/bin`) and runs it as root. A copy that is not owned by root, or is
+  group- or world-writable, is skipped, and with none left the run is refused.
+  If the setup is refused after a finished run of the same name was rotated
+  aside, that run is restored under its name.
 - **Network denial is command-level only.** It refuses network client
   executables. `git clone`/`git fetch` and package managers still reach their
   remotes and registries, and nothing filters network traffic itself.

@@ -4,16 +4,23 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/agentbox"
 	"github.com/footprintai/containarium/internal/runhook"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -516,6 +523,147 @@ func TestStartBoxRun_CommandPolicy_ExitStatusIsRecordedByRootNotTheRunUser(t *te
 	for _, c := range r.calls {
 		if strings.Contains(c.script, "run-supervise") {
 			t.Errorf("no policy, but the supervisor was used:\n%s", c.script)
+		}
+	}
+}
+
+// agent-box is run as root, so the copy root takes must be a trusted file: the
+// owner's own copy is accepted only if root owns it and no one else can write it.
+func TestBoxRunAgentBoxSource_RefusesAnUntrustedCopy(t *testing.T) {
+	uid := strconv.Itoa(os.Getuid())
+	mk := func(dir string, mode os.FileMode) string {
+		p := filepath.Join(dir, "agent-box")
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, mode); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	run := func(wantUID string, paths ...string) (string, error) {
+		script := boxRunAgentBoxSourceScript(paths, wantUID) + "\necho \"picked $src\"\n"
+		out, err := exec.Command("sh", "-c", "set -e\n"+script).CombinedOutput()
+		return string(out), err
+	}
+
+	good := mk(t.TempDir(), 0o755)
+	if out, err := run(uid, good); err != nil || !strings.Contains(out, "picked "+good) {
+		t.Fatalf("a file owned by the wanted uid, not group/world-writable, is accepted: %v\n%s", err, out)
+	}
+	for name, mode := range map[string]os.FileMode{"group-writable": 0o775, "world-writable": 0o757} {
+		bad := mk(t.TempDir(), mode)
+		if out, err := run(uid, bad); err == nil || strings.Contains(out, "picked") {
+			t.Errorf("%s copy must be refused: %v\n%s", name, err, out)
+		}
+	}
+	// Owned by someone other than the wanted uid (here: root is wanted, the
+	// test user is not root; or an impossible uid when running as root).
+	other := "0"
+	if os.Getuid() == 0 {
+		other = "4242"
+	}
+	if out, err := run(other, good); err == nil || strings.Contains(out, "picked") {
+		t.Errorf("a copy owned by another uid must be refused: %v\n%s", err, out)
+	}
+	// A refused candidate falls through to the next trusted one.
+	bad := mk(t.TempDir(), 0o777)
+	if out, err := run(uid, bad, good); err != nil || !strings.Contains(out, "picked "+good) {
+		t.Errorf("fallthrough to the trusted copy failed: %v\n%s", err, out)
+	}
+	// The real setup script uses root (uid 0) and re-checks the file after copying.
+	setup, err := boxRunAuditSetupScript(runhook.Config{RunName: "r"}, "/run", "/srv/alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(setup, "'0 '?????-??-?' '*)") || !strings.Contains(setup, "changed while it was copied") {
+		t.Errorf("setup script lacks the ownership and swap checks:\n%s", setup)
+	}
+}
+
+// A command-policy setup that refuses (here: no trusted agent-box) after a
+// finished run was rotated aside puts that run back under its own name.
+func TestStartBoxRun_CommandPolicy_SetupFailureRestoresTheRotatedRun(t *testing.T) {
+	const startedAt = 1790000000
+	rec := agentbox.RunRecord{Version: agentbox.RunRecordVersion, Name: "fix-1", PID: 7, BootID: "boot-1",
+		Command: "x", CaptureMode: agentbox.CaptureCombined, StartedAt: time.Unix(startedAt, 0).UTC()}
+	recJSON, _ := json.Marshal(rec)
+	b64 := func(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
+	listing := "B boot-1\nP \nR fix-1.json " + b64(recJSON) + " " + b64([]byte("0\n")) + " - - -\n"
+
+	var mu sync.Mutex
+	var rootCalls []string
+	s := &ContainerServer{
+		boxRunLogDir:          t.TempDir(),
+		boxRunCollaborator:    func(owner, subject string) (bool, error) { return false, nil },
+		boxRunToolAccess:      func(ctx context.Context, username string) (string, error) { return "none", nil },
+		boxRunEnsureToolchain: func(string) error { return nil },
+		boxRunExec: func(box, script string) (string, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			rootCalls = append(rootCalls, script)
+			switch {
+			case strings.Contains(script, "useradd"):
+				return "/srv/" + boxRunUnprivilegedUser + "\n", nil
+			case strings.Contains(script, runhook.AuditDir):
+				return "", errors.New("no trusted agent-box")
+			case strings.Contains(script, "random/boot_id"):
+				return listing, nil
+			}
+			return "", nil
+		},
+		boxRunStartExec: func(box, username, script string) (string, error) {
+			switch {
+			case script == boxRunHomeAndConfigScript():
+				return "/srv/alice\n" + claudeCfg, nil
+			case script == signInProbeScript(t):
+				return "interactive\n", nil
+			}
+			return "", nil
+		},
+	}
+	_, err := s.StartBoxRun(adminCtx(), &pb.StartBoxRunRequest{Username: "alice", Prompt: "p", RunName: "fix-1", CommandPolicy: withPolicy("make lint")})
+	if err == nil {
+		t.Fatal("a failed audit setup must refuse the run")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	rotate, undo := -1, -1
+	for i, c := range rootCalls {
+		if strings.Contains(c, "fix-1.1790000000.json") && strings.Contains(c, "! -e") {
+			undo = i
+		} else if strings.Contains(c, "fix-1.1790000000.json") {
+			rotate = i
+		}
+	}
+	if rotate < 0 {
+		t.Fatalf("the finished run was not rotated; the test does not reach the case:\n%q", rootCalls)
+	}
+	if undo < rotate {
+		t.Errorf("the rotated run was not restored after the setup failed:\n%q", rootCalls)
+	}
+}
+
+func TestBoxRunUnrotateScript_UndoesTheRotation(t *testing.T) {
+	dir := t.TempDir()
+	for _, ext := range []string{"json", "log"} {
+		if err := os.WriteFile(filepath.Join(dir, "r."+ext), []byte(ext), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, script := range []string{boxRunRotateScript(dir, "r", 77), boxRunUnrotateScript(dir, "r", 77)} {
+		if out, err := exec.Command("sh", "-c", script).CombinedOutput(); err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		if script == boxRunRotateScript(dir, "r", 77) {
+			if _, err := os.Stat(filepath.Join(dir, "r.json")); err == nil {
+				t.Fatal("rotation did not move the record")
+			}
+		}
+	}
+	for _, ext := range []string{"json", "log"} {
+		if b, err := os.ReadFile(filepath.Join(dir, "r."+ext)); err != nil || string(b) != ext {
+			t.Errorf("r.%s not restored: %v %q", ext, err, b)
 		}
 	}
 }

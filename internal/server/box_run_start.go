@@ -331,6 +331,42 @@ func boxRunRotateScript(dir, name string, startedAtUnix int64) string {
 	return b.String()
 }
 
+// boxRunUnrotateScript undoes boxRunRotateScript for the run that was rotated
+// aside under startedAtUnix: each file goes back to its own name, unless
+// something already occupies that name.
+func boxRunUnrotateScript(dir, name string, startedAtUnix int64) string {
+	q := shellSingleQuote
+	suffix := "." + strconv.FormatInt(startedAtUnix, 10)
+	var b strings.Builder
+	for _, ext := range []string{"json", "log", "stderr.log", "exit", "session", "session.snap", "tools"} {
+		orig := q(dir + "/" + name + "." + ext)
+		aside := q(dir + "/" + name + suffix + "." + ext)
+		fmt.Fprintf(&b, "[ -e %s ] && [ ! -e %s ] && mv %s %s 2>/dev/null; ", aside, orig, aside, orig)
+	}
+	b.WriteString("true\n")
+	return b.String()
+}
+
+// setUpBoxRunAuditOrRestore runs the command policy's audit setup. When it
+// fails after a finished run was rotated aside, that run is put back under its
+// own name, so a refused start leaves the earlier run as it was (the setup's
+// refusals, such as an untrusted agent-box, are start-time preconditions).
+// The setup stays after the rotation: the sink reads the run directory and
+// could take a not-yet-rotated previous run's record for the new run's.
+func setUpBoxRunAuditOrRestore(listExec boxScriptFunc, startExec boxRunStartFunc, box, dir, name, ownerHome, username string, level boxRunPolicy, req *pb.StartBoxRunRequest, rotated bool, startedAtUnix int64, asRoot bool) error {
+	err := setUpBoxRunAudit(listExec, box, dir, name, ownerHome, username, level, req)
+	if err == nil || !rotated {
+		return err
+	}
+	undo := boxRunUnrotateScript(dir, name, startedAtUnix)
+	if asRoot {
+		_, _ = listExec(box, undo)
+	} else {
+		_, _ = startExec(box, username, undo)
+	}
+	return err
+}
+
 // checkBoxRunCollision looks for an existing run under name via the SAME
 // listing ListBoxRuns uses, so "is a previous run for this name still going?"
 // is answered with the identical outcome logic a caller would see from
@@ -620,7 +656,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	if req.GetCommandPolicy() != nil {
 		// Root-owned configuration and sink first: the run must not start
 		// before its first command can be recorded (#3582).
-		if err := setUpBoxRunAudit(listExec, box, dir, name, ownerHome, req.GetUsername(), policy, req); err != nil {
+		if err := setUpBoxRunAuditOrRestore(listExec, startExec, box, dir, name, ownerHome, req.GetUsername(), policy, req, rotate, collision.GetStartedAt().AsTime().Unix(), level != ""); err != nil {
 			return nil, err
 		}
 		policy.Settings = boxRunHookSettingsJSON(name)
@@ -760,7 +796,7 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 		// The same sink, decision and events as an engine run's shell commands
 		// (#3582): the command is in the root-owned configuration, and the
 		// root-owned agent-box decides it before running it.
-		if err := setUpBoxRunAudit(listExec, box, dir, name, ownerHome, req.GetUsername(), policy, req); err != nil {
+		if err := setUpBoxRunAuditOrRestore(listExec, startExec, box, dir, name, ownerHome, req.GetUsername(), policy, req, rotate, collision.GetStartedAt().AsTime().Unix(), level != ""); err != nil {
 			return nil, err
 		}
 		command = boxRunPolicyCommandLine(name, int(req.GetTimeoutSeconds()))

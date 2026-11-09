@@ -57,12 +57,34 @@ const maxNestedShell = 3
 
 // HardDeny reports the first hard deny c hits, with a short reason.
 func HardDeny(c Command) (string, bool) {
+	return denyCommand(c, 0)
+}
+
+func denyCommand(c Command, depth int) (string, bool) {
+	for _, w := range c.AssignWords {
+		if r, ok := denyAssignment(w, depth); ok {
+			return r, true
+		}
+	}
 	for _, seg := range c.Segments {
-		if r, ok := denySegment(seg, 0); ok {
+		if r, ok := denySegment(seg, depth); ok {
 			return r, true
 		}
 	}
 	return "", false
+}
+
+// denyAssignment refuses any GIT_* assignment (GIT_SSH, GIT_SSH_COMMAND,
+// GIT_CONFIG_*, GIT_EXEC_PATH, ... make git run a program or load
+// configuration chosen by the caller) and scans every other value for a
+// hard-denied command.
+func denyAssignment(w string, depth int) (string, bool) {
+	eq := strings.IndexByte(w, '=')
+	name, val := w[:eq], w[eq+1:]
+	if strings.HasPrefix(strings.ToUpper(name), "GIT_") {
+		return "git environment assignment " + name, true
+	}
+	return denySegment([]string{val}, depth)
 }
 
 func anyGlob(patterns []string, w string) bool {
@@ -76,6 +98,12 @@ func anyGlob(patterns []string, w string) bool {
 
 func denySegment(words []string, depth int) (string, bool) {
 	for i, w := range words {
+		if isAssignment(w) {
+			if r, ok := denyAssignment(w, depth); ok {
+				return r, true
+			}
+			continue
+		}
 		base := path.Base(w)
 		for _, n := range NetworkClients {
 			if base == n {
@@ -89,10 +117,8 @@ func denySegment(words []string, depth int) (string, bool) {
 		}
 		if depth < maxNestedShell && strings.ContainsAny(w, " \t\n;&|`$()<>") {
 			if inner, err := ParseCommand(w); err == nil {
-				for _, s := range inner.Segments {
-					if r, ok := denySegment(s, depth+1); ok {
-						return r, true
-					}
+				if r, ok := denyCommand(inner, depth+1); ok {
+					return r, true
 				}
 			}
 		}

@@ -134,3 +134,19 @@ func TestLevelRules_Match(t *testing.T) {
 		t.Error("a deny rule must win over an allow rule")
 	}
 }
+
+func TestParseAllowlist_RefusesInterpretersThatRunCallerCode(t *testing.T) {
+	for _, e := range []string{
+		"sh -c *", "bash -c", "bash -lc ls", "/bin/dash -c ls", "zsh -c ls", "python3 -c ls", "python3.12 -m http.server",
+		"perl -e 1", "ruby -e 1", "node -e 1", "node --eval 1", "python3 *", "node *", "bash *",
+	} {
+		if _, err := ParseAllowlist([]string{e}); err == nil {
+			t.Errorf("ParseAllowlist(%q) must be refused", e)
+		}
+	}
+	for _, e := range []string{"python3 scripts/check.py", "node build.js", "make lint", "go test *", "bash"} {
+		if _, err := ParseAllowlist([]string{e}); err != nil {
+			t.Errorf("ParseAllowlist(%q) = %v, want accepted", e, err)
+		}
+	}
+}

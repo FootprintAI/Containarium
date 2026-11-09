@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -113,12 +114,9 @@ mkdir -p "$a" "$a/bin" "$a/s" "$a/events" "$a/exit"
 chown root:root "$a" "$a/bin" "$a/s" "$a/events" "$a/exit"
 chmod 0755 "$a" "$a/bin" "$a/s"
 chmod 0700 "$a/events" "$a/exit"
-src=
-for c in /usr/local/bin/agent-box ` + q(ownerHome+"/.local/bin/agent-box") + `; do
-  if [ -x "$c" ]; then src=$c; break; fi
-done
-[ -n "$src" ] || { echo "agent-box is not installed on this box: the command policy cannot be enforced" >&2; exit 1; }
+` + boxRunAgentBoxSourceScript([]string{"/usr/local/bin/agent-box", ownerHome + "/.local/bin/agent-box"}, "0") + `
 cp -L "$src" "$a/bin/agent-box.new"
+[ "$(stat -L -c '%u %A %i %Y %s' "$src")" = "$srcstat" ] || { rm -f "$a/bin/agent-box.new"; echo "agent-box changed while it was copied: refusing it" >&2; exit 1; }
 chown root:root "$a/bin/agent-box.new"
 chmod 0755 "$a/bin/agent-box.new"
 mv -f "$a/bin/agent-box.new" ` + q(runhook.AgentBoxPath) + `
@@ -137,6 +135,33 @@ while [ ! -S ` + q(cfg.Socket) + ` ]; do
   sleep 0.1
 done
 `, nil
+}
+
+// boxRunAgentBoxSourceScript picks, among candidates, the agent-box that root
+// copies and then runs as root. A candidate counts only if it is an executable
+// regular file owned by uid (root) and writable by neither group nor others: the
+// owner's own ~/.local/bin copy is the owner's to rewrite, so an unchecked one
+// would be arbitrary code as root. A candidate that fails the check is skipped
+// with a note on stderr; with none left the script exits 1. On success it sets
+// $src and $srcstat (the file's owner, mode, inode, mtime and size, which the
+// caller compares again after copying to catch a swap).
+func boxRunAgentBoxSourceScript(candidates []string, uid string) string {
+	q := shellSingleQuote
+	quoted := make([]string, len(candidates))
+	for i, c := range candidates {
+		quoted[i] = q(c)
+	}
+	return `src=
+srcstat=
+for c in ` + strings.Join(quoted, " ") + `; do
+  [ -f "$c" ] && [ -x "$c" ] || continue
+  st=$(stat -L -c '%u %A %i %Y %s' "$c" 2>/dev/null) || continue
+  case "$st" in
+    ` + q(uid+" ") + `?????-??-?' '*) src=$c; srcstat=$st; break ;;
+  esac
+  echo "agent-box at $c is not owned by uid ` + uid + ` or is group/world-writable: skipping it" >&2
+done
+[ -n "$src" ] || { echo "no trusted agent-box is installed on this box (it must be root-owned and not group/world-writable): the command policy cannot be enforced" >&2; exit 1; }`
 }
 
 type boxRunHookCommand struct {
