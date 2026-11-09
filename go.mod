@@ -22,7 +22,7 @@ require (
 	github.com/pires/go-proxyproto v0.16.0
 	github.com/rs/cors v1.11.1
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.10
+	github.com/spf13/pflag v1.1.0
 	github.com/stretchr/testify v1.12.1
 	github.com/tg123/sshpiper v1.6.1
 	github.com/ti-mo/conntrack v0.6.0
