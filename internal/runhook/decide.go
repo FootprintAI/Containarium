@@ -1,6 +1,8 @@
 package runhook
 
 import (
+	"strings"
+
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -115,12 +117,13 @@ func Decide(cfg Config, command string) Decision {
 			CloseReason: pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_HARD_DENY,
 			Reason:      "hard deny: " + r, Argv: argv}
 	}
-	// What cannot be resolved to the program it runs cannot be checked against
-	// the hard denies, so it is refused here rather than left to the fact that
-	// nothing allows it: any line the parser flags as not simple (operator,
-	// redirection, subshell, expansion, glob), any carrier it cannot evaluate
-	// (brace expansion, a glob in the executable, ANSI-C quoting, arithmetic)
-	// and a quoted shell command nested past the rescan depth.
+	// What the parser cannot resolve to the program it runs cannot be checked
+	// against the hard denies, so it is refused here by name: brace expansion,
+	// a glob in the executable word, ANSI-C quoting and arithmetic expansion in
+	// a command word, and a quoted shell command nested past the rescan depth.
+	// Compound lines, pipes, redirections, substitutions and globs in arguments
+	// are not refused for their shape: the hard-deny scan above read every
+	// segment, and the level covers them segment by segment below.
 	if why := unresolvableReason(c, tooDeep); why != "" {
 		return Decision{Class: pb.AgentCommandClass_AGENT_COMMAND_CLASS_NOT_ALLOWED, Verdict: VerdictDeny,
 			CloseReason: pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_UNRESOLVABLE,
@@ -137,12 +140,24 @@ func Decide(cfg Config, command string) Decision {
 		Reason:      "not within the run's tool-access level and no allowlist entry matches", Argv: argv}
 }
 
-// levelCovers reports whether the level's rules allow the line. Only a simple
-// command reaches it (Decide refuses every other shape first). The engine still
+// levelCovers reports whether the level's rules allow the line. A simple
+// command is matched whole; any other line only when every one of its commands
+// (segments, substitutions included) is allowed on its own. The engine still
 // applies its own rules to a line this lets through (the hook defers), so this
 // can only be stricter.
 func levelCovers(cfg Config, command string, c Command) bool {
-	return c.Simple && levelAllows(cfg.LevelAllowed, cfg.LevelDenied, command)
+	if c.Simple {
+		return levelAllows(cfg.LevelAllowed, cfg.LevelDenied, command)
+	}
+	if len(c.Segments) == 0 {
+		return false
+	}
+	for _, s := range c.Segments {
+		if !levelAllows(cfg.LevelAllowed, cfg.LevelDenied, strings.Join(s, " ")) {
+			return false
+		}
+	}
+	return true
 }
 
 // unresolvableReason says why c cannot be resolved to the program it runs, or
@@ -153,8 +168,6 @@ func unresolvableReason(c Command, tooDeep bool) string {
 		return c.Unresolvable
 	case tooDeep:
 		return "a quoted shell command is nested deeper than the supported depth"
-	case !c.Simple:
-		return "the line is not a single simple command (operator, redirection, subshell, expansion or glob)"
 	}
 	return ""
 }

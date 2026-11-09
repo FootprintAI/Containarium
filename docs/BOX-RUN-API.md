@@ -180,15 +180,16 @@ The decision, in order:
    `GIT_*` environment assignment. The check also reads command substitutions,
    subshells and quoted redirection targets, and the values of `NAME=value`
    assignments, which are otherwise left out of the audit event.
-2. **Unresolvable commands** are refused (`UNRESOLVABLE`) after the hard denies:
-   a line that is not a single simple command (an operator, redirection,
-   subshell, substitution, variable or glob), brace expansion, a glob character
-   in the executable word, ANSI-C quoting (`$'...'`), arithmetic expansion
-   (`$((...))`), and a quoted shell command (`sh -c '...'`) nested more than
-   three deep. The hard denies cannot be shown to hold for these, so they are
-   refused by name, not left to the fact that no rule allows them. Compound
-   lines such as `a && b` are therefore refused under a command policy; run
-   the parts as separate commands.
+2. **Unresolvable commands** are refused (`UNRESOLVABLE`) after the hard
+   denies, only when the parser cannot tell what will execute: brace expansion,
+   a glob character in the executable word, ANSI-C quoting (`$'...'`) and
+   arithmetic expansion (`$((...))`) in a command word, and a quoted shell
+   command (`sh -c '...'`) nested more than three deep. They are refused by
+   name, not left to the fact that no rule allows them. Compound lines
+   (`&&`, `||`, `;`), pipes, redirections, substitutions and globs in arguments
+   are not refused for their shape: the hard-deny scan reads every segment, and
+   every segment must also be covered by the level or the allowlist, otherwise
+   the line is refused (`NOT_ALLOWED`, or `HARD_DENY`).
 3. **The org allowlist** (`command_policy.allow`) runs a command outside the
    level when an entry matches: an argv glob with an exact executable, `*`
    within one argument, and no shell operators.

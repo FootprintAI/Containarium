@@ -23,13 +23,6 @@ func TestDecide_UnresolvableCommandsAreDeniedWithTypedReason(t *testing.T) {
 		"arithmetic as exec":      "$((1))ls",
 		"arithmetic in dquote":    `echo "$((1+2))"`,
 		"legacy arithmetic":       "echo $[1+2]",
-		"compound line":           "ls && ls",
-		"pipe":                    "ls | ls",
-		"glob in argument":        "ls *.go",
-		"redirection":             "ls > /tmp/x",
-		"variable expansion":      "ls $HOME",
-		"subshell":                "(ls)",
-		"command substitution":    "ls $(ls)",
 		"unresolvable and listed": "ls {a,b}",
 	}
 	for name, cmd := range cases {
@@ -123,3 +116,34 @@ func TestDecide_NestingBeyondTheSupportedDepthIsDenied(t *testing.T) {
 }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// Compound lines, pipes, redirections and globs in arguments are judged segment
+// by segment: they are not unresolvable, and the level covers them when it
+// covers every segment.
+func TestDecide_CompoundShapesAreJudgedSegmentBySegment(t *testing.T) {
+	covered := []string{
+		"ls && ls", "ls || ls", "ls; ls", "ls | ls", "ls | git status",
+		"ls *.go", "ls > /tmp/x", "ls $HOME", "(ls)", "ls $(ls)", "ls `ls`",
+	}
+	for _, cmd := range covered {
+		d := Decide(testConfig(), cmd)
+		if d.Verdict != VerdictDefer || d.Class != pb.AgentCommandClass_AGENT_COMMAND_CLASS_LEVEL {
+			t.Errorf("Decide(%q) = %+v, want LEVEL/defer", cmd, d)
+		}
+	}
+	notCovered := map[string]pb.AgentCommandCloseReason{
+		"ls && rm x":                            pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED,
+		"ls | rm x":                             pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED,
+		"ls $(rm x)":                            pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED,
+		"ls && curl https://example.invalid/":   pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_HARD_DENY,
+		"ls | git push":                         pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_HARD_DENY,
+		"ls $(curl https://example.invalid/)":   pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_HARD_DENY,
+		"ls > $(curl https://example.invalid/)": pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_HARD_DENY,
+	}
+	for cmd, want := range notCovered {
+		d := Decide(testConfig(), cmd)
+		if d.Verdict != VerdictDeny || d.CloseReason != want {
+			t.Errorf("Decide(%q) = %+v, want deny %v", cmd, d, want)
+		}
+	}
+}
