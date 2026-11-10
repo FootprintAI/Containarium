@@ -84,6 +84,12 @@ type ContainerActuator interface {
 	EnsureDeleted(ctx context.Context, localName string) error
 }
 
+// ErrContainerDegraded is wrapped by EnsureRunning when a container that is
+// already running cannot be brought to its desired configuration (e.g. its
+// tenant label could not be stamped). The container is left running and the
+// reconciler reports it "degraded" rather than "active".
+var ErrContainerDegraded = errors.New("container degraded")
+
 // HostCheck is one line of the host's `doctor` self-check — mirrors the
 // proto HostCapabilityCheck so callers (the daemon's probe) don't depend on
 // generated types.
@@ -739,6 +745,9 @@ func (c *Client) reconcileAssignment(a *cloudv1.Assignment) {
 			SecretEnv: a.GetSecretEnv(), Routes: routes,
 		}); err != nil {
 			log.Printf("[cloud] ensure running %s: %v", name, err)
+			if errors.Is(err, ErrContainerDegraded) {
+				c.report(a.GetContainerId(), "degraded")
+			}
 			return // leave the cloud's observed state stale; next snapshot retries
 		}
 		c.report(a.GetContainerId(), "active")
