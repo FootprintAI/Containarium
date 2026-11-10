@@ -567,6 +567,11 @@ message GuardStatus {
   // or a VM). Left unguarded and listed for information only; unlike
   // unresolved they do not degrade the verdict (#2396).
   repeated string unmanaged = 10;
+  // isolation_degraded is true while containers are created or kept without
+  // tenant-to-tenant isolation because this host cannot carry bridge NIC
+  // ACLs and the create was allowed to proceed (fail-open, #3521). Clears
+  // once a supported check passes.
+  bool isolation_degraded = 11;
 }
 
 message GetNetworkGuardStatusRequest {}

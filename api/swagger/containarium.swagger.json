@@ -16889,6 +16889,10 @@
             "type": "string"
           },
           "description": "Instances carrying no user.containarium.* key (made directly in Incus,\nor a VM). Left unguarded and listed for information only; unlike\nunresolved they do not degrade the verdict (#2396)."
+        },
+        "isolationDegraded": {
+          "type": "boolean",
+          "description": "isolation_degraded is true while containers are created or kept without\ntenant-to-tenant isolation because this host cannot carry bridge NIC\nACLs and the create was allowed to proceed (fail-open, #3521). Clears\nonce a supported check passes."
         }
       },
       "description": "GuardStatus is one guard's last-pass snapshot."
