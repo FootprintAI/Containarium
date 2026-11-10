@@ -289,6 +289,7 @@ message SystemInfo {
   // "box_run_structured_output" (StartBoxRunRequest.structured_output),
   // "box_run_model" (StartBoxRunRequest.model, BoxRun.model),
   // "box_run_command" (StartBoxRunRequest.command, timeout_seconds),
+  // "box_run_workdir" (StartBoxRunRequest.workdir, BoxRun.workdir, #3551),
   // "box_skill_sets" (the ApplyBoxSkillSets RPC, #3374), "box_files" (the
   // WriteBoxFile RPC, #3548) and "box_files_stream" (the WriteBoxFileStream
   // RPC, files up to 64 MiB, #3548).

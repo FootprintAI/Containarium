@@ -65,6 +65,11 @@ message BoxRun {
   // set; check usage.status before reading usage.models. UNAVAILABLE means the
   // daemon has no usage for the run (never zeros).
   RunUsage usage = 11;
+  // The directory the run was started in, relative to the run's home, as
+  // requested in StartBoxRunRequest.workdir (#3551). Empty when the run started
+  // in the home itself, and for a run from before the field. Capability
+  // "box_run_workdir".
+  string workdir = 12;
 }
 
 // BoxRunTool is one tool the box's run wrapper found on the run's PATH. It says
@@ -224,6 +229,21 @@ message StartBoxRunRequest {
   // run, it never resumes the refused one. Each id must match
   // [A-Za-z0-9._:@-]{1,128}.
   AgentRunApproval approval = 12;
+  // The directory the run starts in, relative to the home directory a run
+  // starts in without it (#3551): the box user's home, or the unprivileged run
+  // user's home on a box with a recorded tool-access level. Empty keeps that
+  // home. Applies to prompt and command runs alike; the engine's session
+  // folder, and what continue_session resumes, follow the directory. The value
+  // must be in the canonical relative form WriteBoxFileRequest.path uses: no
+  // leading "/", no "." or ".." segment, no empty or trailing segment, no
+  // control characters, at most 1024 bytes, and not under .ssh or
+  // .containarium; anything else is INVALID_ARGUMENT before the box is
+  // touched. The directory must already exist and be a directory the run user
+  // can enter, checked as that user before anything on the box is changed:
+  // otherwise FAILED_PRECONDITION naming it, and no run starts. It is never
+  // created, and there is no fallback to the home. BoxRun.workdir reports it.
+  // Capability "box_run_workdir" in SystemInfo.capabilities.
+  string workdir = 13;
 }
 
 message StartBoxRunResponse {
