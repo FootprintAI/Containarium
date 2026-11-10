@@ -50,8 +50,9 @@ transient and retry the start once the apply has returned.
 `ApplyBoxSkillSets` shares a per-box gate with run starts, and applies on one
 box are serialized by it. An apply that finds the gate busy waits for it, at
 most 30 seconds, and stops waiting at once if the caller cancels (the call
-returns `CANCELED`, or `DEADLINE_EXCEEDED` when the caller's own deadline passed). A waiting apply does not make run starts fail: only an
-apply that holds the gate does. When the 30 seconds pass, the apply changes
+returns `CANCELED`, or `DEADLINE_EXCEEDED` when the caller's own deadline
+passed). A waiting apply does not make run starts fail: only an apply that
+holds the gate does. When the 30 seconds pass, the apply changes
 nothing and is refused with `FAILED_PRECONDITION`, and the typed reason says
 what held the gate:
 
