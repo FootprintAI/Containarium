@@ -646,7 +646,7 @@ func TestIntegration_AuthTokenForwarding(t *testing.T) {
 // TestIntegration_PeerTerminalURLResolution verifies terminal URL
 // generation for containers on peer backends.
 func TestIntegration_PeerTerminalURLResolution(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"containers": []map[string]interface{}{
@@ -654,7 +654,8 @@ func TestIntegration_PeerTerminalURLResolution(t *testing.T) {
 				{"name": "bob-container", "state": "Running"},
 			},
 		})
-	}))
+	})
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
 	pool := NewPeerPool("local", "", nil, "")
@@ -665,12 +666,30 @@ func TestIntegration_PeerTerminalURLResolution(t *testing.T) {
 	}
 	pool.mu.Unlock()
 
-	// Alice's terminal should resolve to peer
+	// Alice's terminal should resolve to peer; a plain-http peer stays on ws://
 	url, err := pool.PeerTerminalURL("alice", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	expectedURL := fmt.Sprintf("ws://%s/v1/containers/alice/terminal", srv.Listener.Addr().String())
+	if url != expectedURL {
+		t.Errorf("expected %q, got %q", expectedURL, url)
+	}
+
+	// #3516: an https (pool mTLS) peer resolves to wss://
+	tlsSrv := httptest.NewTLSServer(handler)
+	defer tlsSrv.Close()
+	pool.mu.Lock()
+	pool.peers["gpu-node"] = &PeerClient{
+		ID: "gpu-node", Addr: tlsSrv.Listener.Addr().String(),
+		Healthy: true, client: tlsSrv.Client(), scheme: "https",
+	}
+	pool.mu.Unlock()
+	url, err = pool.PeerTerminalURL("alice", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expectedURL = fmt.Sprintf("wss://%s/v1/containers/alice/terminal", tlsSrv.Listener.Addr().String())
 	if url != expectedURL {
 		t.Errorf("expected %q, got %q", expectedURL, url)
 	}

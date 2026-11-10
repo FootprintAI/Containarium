@@ -293,33 +293,52 @@ func TestPeerPool_PeerTerminalURL_NotFound(t *testing.T) {
 
 func TestPeerPool_PeerTerminalURL_Found(t *testing.T) {
 	// Mock peer with a container
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"containers": []map[string]interface{}{
 				{"name": "alice-container", "state": "Running"},
 			},
 		})
-	}))
-	defer srv.Close()
+	})
 
-	pool := NewPeerPool("local", "", nil, "")
-	pool.mu.Lock()
-	pool.peers["gpu-node"] = &PeerClient{
-		ID:      "gpu-node",
-		Addr:    srv.Listener.Addr().String(),
-		Healthy: true,
-		client:  srv.Client(),
-	}
-	pool.mu.Unlock()
+	// #3516: the terminal URL follows the peer's scheme. A plain-http peer
+	// keeps ws://; an https (pool mTLS) peer gets wss://.
+	for _, tc := range []struct {
+		scheme, wantWS string
+	}{
+		{"", "ws"},
+		{"http", "ws"},
+		{"https", "wss"},
+	} {
+		t.Run("scheme="+tc.scheme, func(t *testing.T) {
+			srv := httptest.NewServer(handler)
+			if tc.scheme == "https" {
+				srv.Close()
+				srv = httptest.NewTLSServer(handler)
+			}
+			defer srv.Close()
 
-	url, err := pool.PeerTerminalURL("alice", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	expected := "ws://" + srv.Listener.Addr().String() + "/v1/containers/alice/terminal"
-	if url != expected {
-		t.Errorf("expected %q, got %q", expected, url)
+			pool := NewPeerPool("local", "", nil, "")
+			pool.mu.Lock()
+			pool.peers["gpu-node"] = &PeerClient{
+				ID:      "gpu-node",
+				Addr:    srv.Listener.Addr().String(),
+				Healthy: true,
+				client:  srv.Client(),
+				scheme:  tc.scheme,
+			}
+			pool.mu.Unlock()
+
+			url, err := pool.PeerTerminalURL("alice", "")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			expected := tc.wantWS + "://" + srv.Listener.Addr().String() + "/v1/containers/alice/terminal"
+			if url != expected {
+				t.Errorf("expected %q, got %q", expected, url)
+			}
+		})
 	}
 }
 
