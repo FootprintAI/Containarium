@@ -64,6 +64,8 @@ type API interface {
 	VerifyBackup(req VerifyBackupRequest) (*VerifyBackupResponse, error)
 	// Whole-box restore (#3358), through the CLI's shared function.
 	RestoreBoxBackup(p client.BoxRestoreParams) (*pb.RestoreBoxBackupResponse, error)
+	// Whole-box backup (#3504), through the CLI's shared function.
+	CreateBoxBackup(p client.BoxBackupParams) (*pb.CreateBackupResponse, error)
 
 	// Re-apply a box's SDLC skill sets (#3511), through the CLI's shared function.
 	ApplyBoxSkillSets(box string, skillSets []string, release string) (*pb.ApplyBoxSkillSetsResponse, error)
