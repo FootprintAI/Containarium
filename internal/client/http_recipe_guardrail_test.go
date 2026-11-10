@@ -39,10 +39,10 @@ func TestHTTPDeployRecipe_SendsGuardrailInput(t *testing.T) {
 			KindsScanned: []pb.GuardrailKind{pb.GuardrailKind_GUARDRAIL_KIND_PII},
 		},
 	}
-	if _, err := c.DeployRecipe("gated", "alice", "", "", "", nil, in); err != nil {
+	if _, err := c.DeployRecipe("gated", "alice", DeployRecipeOptions{GuardrailInput: in}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.DeployRecipe("plain", "alice", "", "", "", nil, nil); err != nil {
+	if _, err := c.DeployRecipe("plain", "alice", DeployRecipeOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(bodies) != 2 {
