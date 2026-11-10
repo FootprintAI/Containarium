@@ -108,6 +108,10 @@ type DualServerConfig struct {
 	// startup waits and answering /health "degraded" (#3130). The gateway
 	// takes it over; nil = the gateway binds HTTPPort itself.
 	StartupListener *gateway.StartupListener
+	// RESTTLSTerminator declares an external TLS terminator in front of the
+	// REST listener (--rest-tls-terminator); it silences the plain-HTTP
+	// startup warning for a non-loopback bind (#3522).
+	RESTTLSTerminator bool
 
 	// Authentication settings
 	JWTSecret string
@@ -2411,6 +2415,7 @@ skipAppHosting:
 		if config.StartupListener != nil {
 			gatewayServer.SetStartupListener(config.StartupListener)
 		}
+		gatewayServer.SetRESTTLSTerminator(config.RESTTLSTerminator)
 
 		// Model-gateway (#674 productionization of #737): when the daemon holds a
 		// provider API key — or an operator registered an OpenAI-compatible
