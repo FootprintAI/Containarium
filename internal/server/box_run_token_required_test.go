@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -222,6 +223,61 @@ func TestStartBoxRun_RunUserWithATokenGetsItsOwnCredentialAndNoPrincipal(t *test
 			}
 			if !staged {
 				t.Error("no script removed an earlier daemon's copy of the box principal from the run user's home")
+			}
+		})
+	}
+}
+
+// A start that fails at the spawn, after the token was installed, removes the
+// token: no run exists whose exit path or stop would. The removal runs as the
+// run user (the token's owner), after the failed spawn, and names the run's
+// own token file.
+func TestStartBoxRun_FailedSpawnRemovesTheInstalledToken(t *testing.T) {
+	for mode, base := range tokenRunModes() {
+		t.Run(mode, func(t *testing.T) {
+			s, r := newTokenRunServer(t, "none")
+			type call struct{ user, script string }
+			var (
+				mu    sync.Mutex
+				calls []call
+			)
+			inner := s.boxRunStartExec
+			s.boxRunStartExec = func(box, username, script string) (string, error) {
+				mu.Lock()
+				calls = append(calls, call{username, script})
+				mu.Unlock()
+				if strings.Contains(script, "setsid") {
+					return "", errors.New("exec failed")
+				}
+				return inner(box, username, script)
+			}
+			req := base
+			req.RunToken = testBoxRunToken
+			_, err := s.StartBoxRun(adminCtx(), req)
+			if status.Code(err) != codes.Unavailable || !strings.Contains(err.Error(), "start run") {
+				t.Fatalf("err = %v, want Unavailable from the failed spawn", err)
+			}
+			if len(r.installs) != 1 {
+				t.Fatalf("token installs = %v, want one before the spawn", r.installs)
+			}
+			removal := "rm -f " + shellSingleQuote(boxRunTokenPath("r1")) + "\n"
+			spawnAt, removeAt := -1, -1
+			for i, c := range calls {
+				switch {
+				case strings.Contains(c.script, "setsid"):
+					spawnAt = i
+				case c.script == removal:
+					removeAt = i
+					if c.user != boxRunUnprivilegedUser {
+						t.Errorf("the token was removed as %q, want the run user %q", c.user, boxRunUnprivilegedUser)
+					}
+				}
+			}
+			if spawnAt < 0 {
+				t.Fatal("the spawn was never attempted")
+			}
+			if removeAt < spawnAt {
+				t.Errorf("no script removed the installed token after the failed spawn (spawn at %d, removal at %d)", spawnAt, removeAt)
 			}
 		})
 	}

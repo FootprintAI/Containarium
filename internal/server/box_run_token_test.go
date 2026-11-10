@@ -67,11 +67,50 @@ func TestBoxRunToken_MoveIsOwnedAndAtomic(t *testing.T) {
 	}
 }
 
-// Stopping a run removes its token, since a killed run never reaches its exit path.
+// stopScriptOutcome runs the stop script with ps, id, kill, sleep and rm
+// replaced by shell functions, and returns what it printed. The group has one
+// member, owned by the box user, for as long as the matching flag says so:
+// aliveBeforeSignal until the script signals it, aliveAfterSignal from then
+// on. rm prints its arguments instead of removing anything, so the output
+// shows which branch removed what, in order.
+func stopScriptOutcome(t *testing.T, aliveBeforeSignal, aliveAfterSignal bool, script string) string {
+	t.Helper()
+	signalled := shellSingleQuote(t.TempDir() + "/signalled")
+	member := func(alive bool) string {
+		if alive {
+			return "echo '1234 1000'"
+		}
+		return ":"
+	}
+	fakes := "id() { echo 1000; }\n" +
+		"kill() { : > " + signalled + "; }\n" +
+		"sleep() { :; }\n" +
+		"rm() { echo \"rm $*\"; }\n" +
+		"ps() { if [ -e " + signalled + " ]; then " + member(aliveAfterSignal) + "; else " + member(aliveBeforeSignal) + "; fi; }\n"
+	return runSh(t, fakes+script)
+}
+
+// Stopping a run removes its token, since a killed run never reaches its exit
+// path. Each branch that ends with the run gone removes it itself: the one
+// that finds the group already gone, and the one that signals it and sees it
+// die. A run that survives the signal keeps its token.
 func TestBoxRunStop_RemovesTheToken(t *testing.T) {
-	stop := boxRunStopScript("/var/run/box", "r1", "ctn-run", 1234, false)
-	if !strings.Contains(stop, "rm -f '"+boxRunTokenPath("r1")+"'") {
-		t.Errorf("stop script does not remove the run's token:\n%s", stop)
+	removal := "rm -f " + boxRunTokenPath("r1") + "\n"
+	for _, tc := range []struct {
+		name                    string
+		aliveBefore, aliveAfter bool
+		want                    string
+	}{
+		{name: "dead: the signal ends the group", aliveBefore: true, aliveAfter: false, want: removal + "dead\n"},
+		{name: "gone: no such group", aliveBefore: false, aliveAfter: false, want: removal + "gone\n"},
+		{name: "alive: the group survives the signal", aliveBefore: true, aliveAfter: true, want: "alive\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stop := boxRunStopScript(t.TempDir(), "r1", "ctn-run", 1234, false)
+			if got := stopScriptOutcome(t, tc.aliveBefore, tc.aliveAfter, stop); got != tc.want {
+				t.Errorf("stop script printed %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
