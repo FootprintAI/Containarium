@@ -4,7 +4,9 @@ package server
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -253,6 +255,132 @@ func TestStartBoxRun_Workdir_LevelChecksUnderTheRunUsersHome(t *testing.T) {
 	}
 	if resp.GetRun().GetWorkdir() != "project" {
 		t.Errorf("run.workdir = %q, want project", resp.GetRun().GetWorkdir())
+	}
+}
+
+// The prompt (engine) path on a leveled box: after the run user's sign-in is
+// checked, the workdir is checked as the run user under the run user's home, not
+// as the owner under the owner's home, and the engine starts there.
+func TestStartBoxRun_Workdir_LevelPromptRunChecksUnderTheRunUsersHome(t *testing.T) {
+	var checkUser, checkScript, spawnUser, spawnScript string
+	s := &ContainerServer{
+		boxRunLogDir:          t.TempDir(),
+		boxRunCollaborator:    func(owner, subject string) (bool, error) { return false, nil },
+		boxRunToolAccess:      func(ctx context.Context, username string) (string, error) { return "none", nil },
+		boxRunEnsureToolchain: func(string) error { return nil },
+		boxRunExec: func(box, script string) (string, error) {
+			if strings.Contains(script, "useradd") {
+				return "/home/ctn-run\n", nil
+			}
+			return "", nil
+		},
+		boxRunStartExec: func(box, username, script string) (string, error) {
+			switch {
+			case script == boxRunHomeAndConfigScript():
+				return "/home/alice\n" + `{"version":1,"engine":"claude","credential":"secret","provider":"anthropic"}`, nil
+			case script == signInProbeScript(t):
+				return "interactive\n", nil
+			case strings.Contains(script, boxRunWorkdirMarkerOK):
+				checkUser, checkScript = username, script
+				return boxRunWorkdirMarkerOK + "\n", nil
+			case strings.Contains(script, "setsid"):
+				spawnUser, spawnScript = username, script
+				return "4242 boot-1\n", nil
+			}
+			return "", nil
+		},
+	}
+	resp, err := s.StartBoxRun(adminCtx(), &pb.StartBoxRunRequest{Username: "alice", Prompt: "do it", RunName: "lvl-wd-eng", Workdir: "project"})
+	if err != nil {
+		t.Fatalf("StartBoxRun: %v", err)
+	}
+	if checkUser != boxRunUnprivilegedUser {
+		t.Errorf("workdir checked as %q, want the run user %q", checkUser, boxRunUnprivilegedUser)
+	}
+	if !strings.Contains(checkScript, "'/home/ctn-run/project'") || strings.Contains(checkScript, "/home/alice") {
+		t.Errorf("workdir check is not under the run user's home: %s", checkScript)
+	}
+	if spawnUser != boxRunUnprivilegedUser {
+		t.Errorf("engine spawned as %q, want %q", spawnUser, boxRunUnprivilegedUser)
+	}
+	if !strings.Contains(spawnScript, "cd '/home/ctn-run/project'") {
+		t.Errorf("the engine does not start in the workdir: %s", spawnScript)
+	}
+	if resp.GetRun().GetWorkdir() != "project" {
+		t.Errorf("run.workdir = %q, want project", resp.GetRun().GetWorkdir())
+	}
+}
+
+// The spawn enters a workdir strictly: one that vanished after the check fails
+// the start and never silently falls back to the home. The home itself is still
+// entered best-effort, as before #3551.
+func TestBoxRunSpawnPrepareScript_WorkdirCdIsStrict(t *testing.T) {
+	home := t.TempDir()
+	work := filepath.Join(home, "project")
+	mustWriteFile(t, work, "", true)
+	run := func(cwd string) (string, error) {
+		sp := boxRunSpawn{dir: filepath.Join(home, "runs"), name: "n", command: "true", home: home, cwd: cwd, prelaunch: "pwd"}
+		out, err := exec.Command("sh", "-c", boxRunSpawnPrepareScript(sp)).Output()
+		return strings.TrimSpace(string(out)), err
+	}
+
+	if got, err := run(work); err != nil || got != work {
+		t.Fatalf("existing workdir: pwd = %q, err = %v; want %q, nil", got, err, work)
+	}
+	got, err := run(filepath.Join(home, "gone"))
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("vanished workdir: err = %v (pwd %q), want the script to exit non-zero", err, got)
+	}
+	if got == home {
+		t.Errorf("vanished workdir fell back to the home")
+	}
+	if got, err := run(""); err != nil || got != home {
+		t.Errorf("no workdir: pwd = %q, err = %v; want %q, nil", got, err, home)
+	}
+}
+
+// Each marker the workdir check prints maps to its own outcome; in particular a
+// directory the run user cannot enter is refused, never accepted.
+func TestResolveBoxRunWorkdir_MapsEachMarker(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		out      string
+		execErr  error
+		wantCode codes.Code
+		wantDir  string
+		wantMsg  string
+	}{
+		{name: "ok", out: boxRunWorkdirMarkerOK + "\n", wantCode: codes.OK, wantDir: "/home/ctn-run/project"},
+		{name: "missing", out: boxRunWorkdirMarkerMissing + "\n", wantCode: codes.FailedPrecondition, wantMsg: "does not exist"},
+		{name: "not a directory", out: boxRunWorkdirMarkerNotDir + "\n", wantCode: codes.FailedPrecondition, wantMsg: "not a directory"},
+		{name: "cannot be entered", out: boxRunWorkdirMarkerNoEnter + "\n", wantCode: codes.FailedPrecondition, wantMsg: "cannot be entered by ctn-run"},
+		{name: "unexpected output", out: "garbage\n", wantCode: codes.Unavailable, wantMsg: "unexpected output"},
+		{name: "exec error", execErr: errors.New("exec down"), wantCode: codes.Unavailable, wantMsg: "exec down"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var asUser string
+			fake := func(box, username, script string) (string, error) {
+				asUser = username
+				return tc.out, tc.execErr
+			}
+			dir, err := resolveBoxRunWorkdir(fake, "box-1", "ctn-run", "/home/ctn-run", "project")
+			if asUser != "ctn-run" {
+				t.Errorf("checked as %q, want ctn-run", asUser)
+			}
+			if status.Code(err) != tc.wantCode {
+				t.Fatalf("err = %v, want code %v", err, tc.wantCode)
+			}
+			if dir != tc.wantDir {
+				t.Errorf("dir = %q, want %q", dir, tc.wantDir)
+			}
+			if err != nil {
+				msg := status.Convert(err).Message()
+				if !strings.Contains(msg, tc.wantMsg) || !strings.Contains(msg, "project") {
+					t.Errorf("message %q does not name the workdir and %q", msg, tc.wantMsg)
+				}
+			}
+		})
 	}
 }
 
