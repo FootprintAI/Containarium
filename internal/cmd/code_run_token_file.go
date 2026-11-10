@@ -71,7 +71,7 @@ func readRunTokenFile(path string) (string, error) {
 
 // codeRunDaemonRequest builds the StartBoxRun request from `code run`'s flags,
 // without the token. Flags that only mean something on the SSH path are
-// refused rather than ignored.
+// refused, except connection flags (--key, --host, ...), which are ignored.
 func codeRunDaemonRequest(box string) (*pb.StartBoxRunRequest, error) {
 	if err := validateBoxName(box); err != nil {
 		return nil, err

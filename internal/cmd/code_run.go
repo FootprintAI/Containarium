@@ -91,8 +91,11 @@ run starts unchanged, with a warning. The default, --approvals deny, is today's 
 instead of over SSH, and sends the per-run token in that file with it. The
 file holds the token on one line; it is read, never printed, and the token is
 never an argument. The daemon must advertise the box_run_token capability; one
-that does not is refused, and no run is started. It needs --server, and it does
-not combine with --approvals ask, --output-format-stream-json or --token-ttl.
+that does not is refused, and no run is started. The capability is read with
+an admin-only call, so the flag needs an admin token: a non-admin box owner is
+refused (PermissionDenied from the capability check), and no run is started.
+It needs --server, and it does not combine with --approvals ask,
+--output-format-stream-json or --token-ttl.
 The run's output and exit status are followed as described above.
 
 Requires the box to already have a coding agent installed and credentialed —

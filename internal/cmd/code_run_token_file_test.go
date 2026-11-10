@@ -324,17 +324,33 @@ func TestCodeRunTokenFile_StartRefused(t *testing.T) {
 	f.noTokenAnywhere(t, err)
 }
 
-// Without --run-token-file the handler is the SSH path's: its own flag check
-// answers, and the fake daemon client is never opened.
+// Without --run-token-file the handler is the SSH path's. The input is one
+// only the SSH path accepts (--approvals ask; the daemon path refuses it before
+// any client), so the test asserts the SSH path's next step was reached: it
+// fetches the daemon's approval key through newRunInputsClient. A tokenless run
+// sent down the daemon path never makes that call, and opening the daemon-API
+// client at all fails the test.
 func TestCodeRun_WithoutTokenFileNeverOpensTheDaemonPath(t *testing.T) {
 	f := newCodeRunTokenFixture(t)
-	codeRunPrompt, codeRunSession, codeRunContinue = "p", "s", true
-	err := f.run("alice")
-	// The SSH path's own validation, unchanged.
-	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
-		t.Fatalf("err = %v, want the SSH path's --session/--continue refusal", err)
+	newCodeRunDaemonClient = func() (codeRunDaemonAPI, error) {
+		t.Error("the daemon-API client was opened without --run-token-file")
+		return f.daemon, nil
 	}
-	if f.clientCalls != 0 {
-		t.Fatalf("the daemon client was opened %d time(s) without --run-token-file", f.clientCalls)
+	savedInputs := newRunInputsClient
+	t.Cleanup(func() { newRunInputsClient = savedInputs })
+	sshPathStep := errors.New("ssh path: approval key fetched")
+	inputsCalls := 0
+	newRunInputsClient = func() (runInputsAPI, error) {
+		inputsCalls++
+		return nil, sshPathStep
+	}
+	codeRunPrompt, codeRunApprovals = "fix the bug", string(coderun.ApprovalsAsk)
+
+	err := f.run("alice")
+	if !errors.Is(err, sshPathStep) {
+		t.Fatalf("err = %v, want the SSH path's approval-key step to be reached", err)
+	}
+	if inputsCalls != 1 {
+		t.Errorf("the SSH path's approval-key client was asked for %d time(s), want 1", inputsCalls)
 	}
 }

@@ -341,6 +341,11 @@ containarium code run <box> --prompt '<task>' --name <run> \
 - The token is sent only to a daemon that lists `box_run_token` in
   `SystemInfo.capabilities`. For any other daemon the CLI refuses, naming the
   capability, and no run is started.
+- Sending a per-run token needs an admin token. The CLI reads the capability
+  list through `GetSystemInfo`, which is admin-only, so a non-admin box owner
+  is refused with `PermissionDenied` from that capability check, even against
+  a daemon that advertises `box_run_token` and although `StartBoxRun` itself
+  accepts the owner. No run is started.
 - `--prompt`, `--session`, `--continue`, `--name`, `--command` and `--timeout`
   map to the request's fields. `--approvals ask`,
   `--output-format-stream-json` and `--token-ttl` belong to the SSH path and
