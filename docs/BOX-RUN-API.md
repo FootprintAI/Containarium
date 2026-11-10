@@ -324,6 +324,38 @@ instruction relative to a project (for example "put the slide under
 
 The capability name is `box_run_workdir`.
 
+## Per-run token: `run_token`
+
+`run_token` is the platform credential for one run. The caller mints it; the
+daemon only delivers it.
+
+- The daemon writes the token to `/run/containarium/run-tokens/<run_name>.token`
+  inside the box, mode 0600 and owned by the user the run executes as, and
+  exports `CONTAINARIUM_JWT_TOKEN_FILE` with that path in the run's shell. The
+  token travels as file content only: it is in no command line and no script.
+- The file is removed when the run exits and when it is stopped
+  (`StopBoxRun`), and a start that fails after the install removes it too.
+- At most 8 KiB, with no NUL and no line break; anything else is
+  `INVALID_ARGUMENT` before the box is touched.
+- **A run as the unprivileged run user must carry it.** On a box with a
+  recorded tool-access level (prompt and command mode alike) a request without
+  `run_token` is `FAILED_PRECONDITION`, naming `run_token` and `box_run_token`,
+  before the run user is provisioned and before anything is staged, rotated or
+  spawned. A run on a box with no recorded level executes as the box owner, is
+  unchanged, and may omit the token.
+- The box principal is no longer copied into the run user's home
+  (`~/.config/containarium/box-token`), and a copy left by an earlier daemon is
+  removed the next time a run is prepared. Whatever the run starts (a
+  credential helper, an MCP server) must read the file named by
+  `CONTAINARIUM_JWT_TOKEN_FILE`. The platform MCP server (`mcp-server`) already
+  does, on every request. The daemon does not rewrite an MCP configuration
+  staged from the owner's home: one that names the old principal path must be
+  changed by whoever maintains it.
+- Capability `box_run_token`. A daemon without it accepts the field and
+  ignores it, so check the capability before sending a token. `GetSystemInfo`
+  needs an admin principal; the typed client and the CLI refuse to send a token
+  when they cannot read the capability list.
+
 ## From the CLI: `code run --run-token-file`
 
 `containarium code run <box>` starts its run over an SSH session by default.
@@ -346,6 +378,9 @@ containarium code run <box> --prompt '<task>' --name <run> \
   is refused with `PermissionDenied` from that capability check, even against
   a daemon that advertises `box_run_token` and although `StartBoxRun` itself
   accepts the owner. No run is started.
+
+  capability, and no run is started. Reading that list needs an admin
+  principal, so the flag is for a caller that has one.
 - `--prompt`, `--session`, `--continue`, `--name`, `--command` and `--timeout`
   map to the request's fields. `--approvals ask`,
   `--output-format-stream-json` and `--token-ttl` belong to the SSH path and
@@ -434,6 +469,11 @@ send `run_name`, `structured_output`, `model`, `command` or `workdir` to a
 daemon that predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the
 optional features a daemon supports: `box_run_name`, `box_run_structured_output`,
 `box_run_model`, `box_run_command`, `box_run_command_policy`, `box_run_workdir`,
+
+send `run_name`, `structured_output`, `model` or `command` to a daemon that
+predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the optional
+features a daemon supports: `box_run_name`, `box_run_structured_output`,
+`box_run_model`, `box_run_token`, `box_run_command`, `box_run_command_policy`,
 `box_files` and `box_files_stream`. An older daemon does
 not send the field at all; treat a missing name as unsupported. Names are only
 added. `GetSystemInfo` requires an admin principal. A caller that cannot read it

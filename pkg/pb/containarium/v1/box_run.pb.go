@@ -1007,11 +1007,24 @@ type StartBoxRunRequest struct {
 	// reason is in the run's log. BoxRun.model reports the id the run was
 	// started with. Capability "box_run_model" in SystemInfo.capabilities.
 	Model string `protobuf:"bytes,7,opt,name=model,proto3" json:"model,omitempty"`
-	// run_token is reserved for a per-run credential. This daemon does not
-	// honour it: the field is accepted and ignored (it is never written to the
-	// box), and the daemon does not advertise the box_run_token capability. A
-	// client must send it only to a daemon that advertises box_run_token, and
-	// must not rely on it for a credential.
+	// run_token is the per-run cloud credential for this run (the agent-run
+	// token, prd/cloud/agent-run-token.md). The daemon writes it to a 0600 file
+	// owned by the run user, points CONTAINARIUM_JWT_TOKEN_FILE at that file for
+	// the run, and deletes it when the run exits or is stopped. The token never
+	// appears in a command line or a script. At most 8 KiB, with no NUL and no
+	// line break (INVALID_ARGUMENT otherwise, before anything on the box is
+	// touched).
+	//
+	// A run as the box's unprivileged run user (a box with a recorded
+	// tool-access level; prompt and command mode alike) MUST carry run_token:
+	// the box principal is no longer copied into the run user's home, so without
+	// it the run would have no platform credential. Such a request without
+	// run_token is FAILED_PRECONDITION, naming run_token and box_run_token,
+	// before anything is rotated or spawned. A run as the box owner (no recorded
+	// level) is unchanged and may omit it.
+	//
+	// Send it only to a daemon that advertises "box_run_token" in
+	// SystemInfo.capabilities: an older daemon accepts the field and ignores it.
 	RunToken string `protobuf:"bytes,10,opt,name=run_token,json=runToken,proto3" json:"run_token,omitempty"`
 	// Command mode (#3322): run this shell command (through `sh -c`) instead of
 	// an engine prompt. No engine starts and no agent credential is loaded, so

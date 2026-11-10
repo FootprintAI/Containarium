@@ -167,7 +167,7 @@ func runWithLevel(t *testing.T, level, engineJSON string) policyRun {
 			return "", nil
 		},
 	}
-	_, r.err = s.StartBoxRun(adminCtx(), &pb.StartBoxRunRequest{Username: "alice", Prompt: "do it"})
+	_, r.err = s.StartBoxRun(adminCtx(), runTokenFor(s, &pb.StartBoxRunRequest{Username: "alice", Prompt: "do it"}))
 	return r
 }
 
