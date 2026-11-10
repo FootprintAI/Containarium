@@ -153,4 +153,10 @@ message AgentCommandEvent {
   AgentRunApproval approval = 10;
   // END only: whether the command ran.
   AgentCommandOutcome outcome = 11;
+  // The event's position in its run's feed: 1 for the first event the sink
+  // writes, then +1 for each. Assigned by the sink under its write lock,
+  // never by a client (a value a client sends is overwritten), and never
+  // reused: a sink restarted for the same run continues after the last event
+  // in the file. A reader that sees a jump knows it missed events.
+  uint64 seq = 12;
 }

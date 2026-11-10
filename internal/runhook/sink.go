@@ -27,6 +27,10 @@ const maxEventLine = 256 << 10
 // sinkIOTimeout bounds one exchange on either side.
 const sinkIOTimeout = 10 * time.Second
 
+// syncFile flushes the events file to disk; a variable so a test can make it
+// fail.
+var syncFile = (*os.File).Sync
+
 // RunExit is how the sink saw its run end.
 type RunExit int32
 
@@ -88,6 +92,15 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, now func() time.Tim
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return err
 	}
+	// A restarted sink continues the run's sequence; a new start's marker
+	// from an earlier sink is stale.
+	if err := os.Remove(DonePath(cfg.EventsPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	last, err := lastSeq(cfg.EventsPath)
+	if err != nil {
+		return err
+	}
 	f, err := os.OpenFile(cfg.EventsPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
@@ -99,6 +112,7 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, now func() time.Tim
 
 	var mu sync.Mutex
 	var open []openStart // in START order; guarded by mu
+	seq := last          // the last seq written; guarded by mu
 	appendEvent := func(e *pb.AgentCommandEvent) error {
 		e.Time = timestamppb.New(now())
 		e.RunName, e.RunId = cfg.RunName, cfg.RunID
@@ -107,18 +121,23 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, now func() time.Tim
 			e.Approval = &pb.AgentRunApproval{ApprovalId: cfg.Approval.ID, ApproverId: cfg.Approval.Approver}
 		}
 		e.Argv = red.Argv(e.Argv)
+		mu.Lock()
+		defer mu.Unlock()
+		// The sequence is the sink's alone: a client value is overwritten, and
+		// a failed write does not consume a number.
+		e.Seq = seq + 1
 		b, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(e)
 		if err != nil {
 			return err
 		}
-		mu.Lock()
-		defer mu.Unlock()
 		if _, err := f.Write(append(b, '\n')); err != nil {
 			return err
 		}
-		if err := f.Sync(); err != nil {
-			return err
-		}
+		// The line is in the file now, so its number is spent and the open
+		// STARTs follow it whether or not the sync below succeeds. A failed
+		// sync is still reported to the hook, but the next event must not
+		// reuse this seq, and a START that was written still needs its END.
+		seq = e.Seq
 		switch e.GetKind() {
 		case pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_START:
 			open = append(open, openStart{toolUseID: e.GetToolUseId(), argv: e.GetArgv(), class: e.GetClass()})
@@ -130,7 +149,7 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, now func() time.Tim
 				}
 			}
 		}
-		return nil
+		return syncFile(f)
 	}
 	closeOpen := func() error {
 		how := RunExitInterrupted
@@ -157,7 +176,7 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, now func() time.Tim
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				wg.Wait()
-				return closeOpen()
+				return errors.Join(closeOpen(), markDone(cfg.EventsPath))
 			}
 			continue
 		}
@@ -217,4 +236,42 @@ func DialSender(socket string) Sender {
 		}
 		return nil
 	}
+}
+
+// lastSeq is the seq of the last event in an existing events file (0 for none).
+// The file is the sink's alone, so it holds one event per line with seq equal to
+// the line number; a file that does not end in a complete line, or whose last
+// event has another seq, is refused rather than continued.
+func lastSeq(path string) (uint64, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if len(b) == 0 {
+		return 0, nil
+	}
+	if b[len(b)-1] != '\n' {
+		return 0, fmt.Errorf("audit file %s does not end in a complete event", path)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+	var e pb.AgentCommandEvent
+	if err := protojson.Unmarshal([]byte(lines[len(lines)-1]), &e); err != nil {
+		return 0, fmt.Errorf("audit file %s: last event: %w", path, err)
+	}
+	if e.GetSeq() != uint64(len(lines)) {
+		return 0, fmt.Errorf("audit file %s: last event has seq %d on line %d", path, e.GetSeq(), len(lines))
+	}
+	return e.GetSeq(), nil
+}
+
+// markDone creates the done marker, 0600, once the last event is written.
+func markDone(eventsPath string) error {
+	f, err := os.OpenFile(DonePath(eventsPath), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	return errors.Join(f.Chmod(0o600), f.Sync(), f.Close())
 }

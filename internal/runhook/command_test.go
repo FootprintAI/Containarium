@@ -149,8 +149,11 @@ func TestRunHookCLI_CommandModeThroughARealSink(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = Serve(ctx, ln, cfg, time.Now, nil) }()
+	served := make(chan struct{})
+	// The sink writes its done marker as it stops: let it finish before the
+	// temp directory goes.
+	defer func() { cancel(); <-served }()
+	go func() { _ = Serve(ctx, ln, cfg, time.Now, nil); close(served) }()
 
 	var stdout, stderr strings.Builder
 	code := RunHookCLI([]string{"command", "--config", conf}, strings.NewReader(""), &stdout, &stderr)
@@ -188,8 +191,11 @@ func TestRunHookCLI_CommandModeRefusedWritesBlocked(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = Serve(ctx, ln, cfg, time.Now, nil) }()
+	served := make(chan struct{})
+	// The sink writes its done marker as it stops: let it finish before the
+	// temp directory goes.
+	defer func() { cancel(); <-served }()
+	go func() { _ = Serve(ctx, ln, cfg, time.Now, nil); close(served) }()
 
 	var stderr strings.Builder
 	if code := RunHookCLI([]string{"command", "--config", conf}, strings.NewReader(""), &strings.Builder{}, &stderr); code != BlockedExitCode {

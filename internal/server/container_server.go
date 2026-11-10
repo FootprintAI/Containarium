@@ -146,7 +146,10 @@ type ContainerServer struct {
 	boxRunExec         boxScriptFunc
 	boxRunCollaborator collaboratorCheckFunc
 	boxRunLogDir       string
-	boxRunPoll         time.Duration
+	// boxRunAuditDir is the box path of the run audit directory the command
+	// event feed is read from (#3582); empty means runhook.AuditDir.
+	boxRunAuditDir string
+	boxRunPoll     time.Duration
 	// boxRunStartExec is StartBoxRun's own exec seam (#2193), separate from
 	// boxRunExec: production needs to run AS the box's own Linux user (so the
 	// spawned engine reads that user's credentials and the files it creates

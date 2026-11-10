@@ -638,6 +638,59 @@ message ListRunInputsRequest {
   string run_name = 2;
 }
 
+// ListRunCommandEventsRequest reads a run's command events (#3582).
+message ListRunCommandEventsRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // The run's name, as ListBoxRuns reports it.
+  string run_name = 2;
+  // Return only events with a seq greater than this. 0 reads from the start.
+  uint64 after_seq = 3;
+  // At most this many events. 0 means the default, 500; the maximum is 500.
+  int32 limit = 4;
+}
+
+// RunCommandEventEntry is one event with its position in the run's feed.
+message RunCommandEventEntry {
+  // The event's seq, the same value as event.seq.
+  uint64 seq = 1;
+  // The START, END or BLOCKED event the run's audit sink recorded.
+  AgentCommandEvent event = 2;
+}
+
+message ListRunCommandEventsResponse {
+  // Events with seq > after_seq in seq order, at most limit of them. A jump in
+  // seq between consecutive entries means events were missed.
+  repeated RunCommandEventEntry events = 1;
+  // True when the run's audit sink has finished (every START has its END) and
+  // this page reaches the last event: nothing more will ever be added. False
+  // while the run can still add events, or when more events are waiting past
+  // this page.
+  bool ended = 2;
+  // Where the feed stands as of this page. A reader polls while it is OPEN
+  // and stops at ENDED or INCOMPLETE.
+  RunCommandFeedState state = 3;
+}
+
+// RunCommandFeedState is where a run's command event feed stands as of one
+// page of it.
+enum RunCommandFeedState {
+  // A daemon that predates this field; read ended instead.
+  RUN_COMMAND_FEED_STATE_UNSPECIFIED = 0;
+  // More events can still come, or more are waiting past this page. Ask
+  // again after the last seq received.
+  RUN_COMMAND_FEED_STATE_OPEN = 1;
+  // The same as ended = true: the feed is complete and this page reaches its
+  // last event.
+  RUN_COMMAND_FEED_STATE_ENDED = 2;
+  // The run has stopped and its audit sink is gone without finishing the
+  // feed (it was killed, or could not start). This page reaches the last
+  // event stored and this start of the run adds nothing more, but the feed
+  // is not complete: events may be missing from its end, and a START may
+  // have no END. ended stays false.
+  RUN_COMMAND_FEED_STATE_INCOMPLETE = 3;
+}
+
 message ListRunInputsResponse {
   // Open requests, oldest first. Empty once the run has exited: nothing is
   // waiting on an answer then. A request past expires_at is not listed.
