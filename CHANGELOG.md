@@ -7,15 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.133.0] - 2026-11-10
+
+
 ### Added
 
 - **Per-run command event feed with sequence numbers** (#3582). Every event the run's audit sink writes now carries `seq` (`AgentCommandEvent.seq`): 1 for the first, +1 for each, assigned by the sink under its write lock (a client-sent value is overwritten) and continued, never reused, if the sink restarts for the same run. `GET /v1/containers/{username}/code-runs/{run_name}/command-events?afterSeq=N&limit=M` (`ListRunCommandEvents`, `ssh:write`, box owner or collaborator, read-only) returns `{"events":[{"seq":"1","event":{...}}],"ended":false}` in seq order after `afterSeq`; `limit` defaults to and is capped at 500. `ended` is true once the sink has finished (it creates a root-only `.done` marker after its last event) and the page reaches the last event, or for a run with no feed once it has stopped. `state` (`RUN_COMMAND_FEED_STATE_OPEN`, `_ENDED`, `_INCOMPLETE`) carries the same and one case more: `INCOMPLETE` when the run has stopped and its sink is gone without the marker (killed, or unable to start), so a reader stops polling a feed that can no longer end; `ended` stays false there. A sync error after an event line was written no longer lets the next event reuse its `seq`. A feed that holds another run's event or a gap is refused (`INTERNAL`), not returned.
 
 - **Command allowlist and audit events for agent runs** (#3582). `StartBoxRunRequest.command_policy` (capability `box_run_command_policy`) installs a PreToolUse and PostToolUse hook pair (`agent-box permission-hook`) on a Claude Code run at a recorded tool-access level. Each shell command is classified before it runs: within the level it runs as before; outside it, it runs only when an org allowlist entry matches (an argv glob: exact executable, `*` within one argument, no shell operators); hard denies (network clients, `git push`, `git remote`, git transport options) and unmatched commands are refused with a typed close reason and a blocked event, and the run ends. Every command gets a start event before it runs and an end event with its exit code (never its output or environment), with arguments redacted from a default list plus `command_policy.redact_patterns`. Events go to a root-owned append-only file inside the box, written only by a root-run sink (`agent-box run-audit-sink`) the daemon starts before the run; the run user cannot write it. `StartBoxRunRequest.approval` carries the approval and approver ids of an approved re-run, which every event records; it is refused with `session_id` or `continue_session`, since an approval starts a new run. A command-mode run (`command`) with `command_policy` goes through the same decision and events: the root-owned agent-box decides the command before running it, and a refused command never runs (exit 120, a blocked event with its close reason). At `FULL_SUDO` all of this applies but is advisory, since the run user can become root; it is not a security boundary at that level. Network denial is command-level only (network client executables); `git clone`/`fetch` and package managers still reach the network. Every start event gets exactly one end event: when the run ends with a start still open, the sink writes the end itself, with outcome `NOT_RUN` and close reason `ENGINE_REFUSED` after a clean exit (the engine refused the command after the hook, so no post hook fired), or outcome `UNKNOWN` and close reason `INTERRUPTED` after any other exit (killed, timed out, crashed). The sink reads that exit status only from a root-only file written by `agent-box run-supervise`, the root parent the daemon launches the run through, so the run user cannot turn an interrupted run into a clean one by writing the run directory's exit file. A failed engine command's exit code is read only from an error text that begins with the line `Exit code N` (0-255); any other text records no exit code rather than a guess. Needs an agent-box with the new modes on the box.
+- **MCP `create_backup` takes a whole box** (#3504). New argument `scope`:
+  `"box"` backs up the tenant's whole box, like `containarium backup create
+  --box`, and the backup restores with `restore_box_backup`. The tool and the
+  CLI now call one shared client function. A box backup needs `key_mode`; the
+  database-only arguments (`database`, `hook`, `hook_format`, `label`,
+  `db_user`, `db_password`) and a `gcs` destination without `gcs_bucket` are
+  refused before any request is sent. The call waits up to 30 minutes, as the
+  CLI does over HTTP. Without `scope`, or with `"database"`, nothing changes.
+- **Agent runs enforce an org command allowlist, with an audit event for every command (#3583).** A PreToolUse hook checks each shell command before it runs: hard denies first, then the org allowlist, then the level's own rules. A refused command is blocked and recorded with an audit event. A PostToolUse hook records the outcome of each command.
+- **A run's command events are readable in order (#3597).** Each agent command event carries a sequence number, starting at 1. A new read-only `ListRunCommandEvents` RPC, with `GET /v1/containers/{username}/code-runs/{run_name}/command-events`, returns events after a sequence number. The run's feed is marked done when the run ends.
 
 ### Fixed
 
 - **Command policy hard denies cannot be bypassed through a redirection or an assignment** (#3582). A command or process substitution after `>` or `<` (`ls > $(curl ...)`, `cat <(curl ...)`) is its own command and is checked; a `NAME=value` assignment's value is checked, and any `GIT_*` assignment is refused, in compound lines too. An allowlist entry that runs an interpreter on caller-chosen code (`sh -c *`, `python3 -c`, ...) is refused. Root copies `agent-box` only from a root-owned file that is not group- or world-writable. A refused policy setup restores a rotated-aside previous run.
+- **`ApplyBoxSkillSets` refusal and help wording** (#3557). When the 30-second
+  wait for a box ends with no run start recorded in flight, the
+  `RUN_IN_PROGRESS` message now says "Retry shortly" instead of promising that
+  a retry finds the box free: an apply can hold the box unrecorded for an
+  instant. The `code skill-sets` help and the `apply_box_skill_sets` MCP tool
+  description no longer say run starts held the box for 30 seconds; like
+  `docs/BOX-RUN-API.md`, they say the message names the starts in flight at the
+  moment the wait ended.
 
 ## [0.132.1] - 2026-11-09
 
