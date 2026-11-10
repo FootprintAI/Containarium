@@ -2,11 +2,13 @@ package runhook
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -174,6 +176,44 @@ func TestSink_SeqIsGaplessUnderConcurrency(t *testing.T) {
 		if e.GetSeq() != uint64(i+1) {
 			t.Fatalf("line %d has seq %d, want %d", i+1, e.GetSeq(), i+1)
 		}
+	}
+}
+
+// A sync that fails after the line was written is reported to the hook, but
+// the line is in the file: its seq is spent and its START is still closed, so
+// the feed stays one the reader and a restarted sink accept.
+func TestSink_SyncFailureDoesNotReuseSeq(t *testing.T) {
+	var calls atomic.Int32
+	orig := syncFile
+	syncFile = func(f *os.File) error {
+		if calls.Add(1) == 1 {
+			return errors.New("sync failed")
+		}
+		return orig(f)
+	}
+	t.Cleanup(func() { syncFile = orig })
+
+	cfg, send, stop := startSink(t, nil)
+	if err := send(&pb.AgentCommandEvent{Kind: pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_START, ToolUseId: "t1"}); err == nil {
+		t.Fatal("a failed sync was not reported to the sender")
+	}
+	if err := send(&pb.AgentCommandEvent{Kind: pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_BLOCKED, ToolUseId: "t2"}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	got := stop()
+	if len(got) != 3 {
+		t.Fatalf("got %d events, want the START, the BLOCKED and the sink's closing END", len(got))
+	}
+	for i, e := range got {
+		if e.GetSeq() != uint64(i+1) {
+			t.Errorf("line %d has seq %d, want %d", i+1, e.GetSeq(), i+1)
+		}
+	}
+	if e := got[2]; e.GetKind() != pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_END || e.GetToolUseId() != "t1" {
+		t.Errorf("last event = %v, want the closing END of the START whose sync failed", e)
+	}
+	if last, err := lastSeq(cfg.EventsPath); err != nil || last != 3 {
+		t.Errorf("lastSeq = %d, %v: a restarted sink would not continue this feed", last, err)
 	}
 }
 

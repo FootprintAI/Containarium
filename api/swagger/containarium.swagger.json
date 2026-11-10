@@ -3709,7 +3709,7 @@
     "/v1/containers/{username}/code-runs/{runName}/command-events": {
       "get": {
         "summary": "List a box code run's command events",
-        "description": "Returns the run's command events (START, END, BLOCKED) with after_seq \u003c seq, in seq order, at most limit (default and maximum 500), read from the run's audit file, which only root on the box can write. seq starts at 1 and is assigned by the audit sink. ended is true once the sink has finished and the page reaches the last event. A run that does not exist is NOT_FOUND; a run started without a command policy has no events. Box owner or collaborator, ssh:write scope.",
+        "description": "Returns the run's command events (START, END, BLOCKED) with after_seq \u003c seq, in seq order, at most limit (default and maximum 500), read from the run's audit file, which only root on the box can write. seq starts at 1 and is assigned by the audit sink. ended is true once the sink has finished and the page reaches the last event. state says the same as an enum (OPEN, ENDED) and adds INCOMPLETE: the run has stopped and its sink is gone without finishing the feed, so the page holds the last events there will be but ended stays false. A run that does not exist is NOT_FOUND; a run started without a command policy has no events. Box owner or collaborator, ssh:write scope.",
         "operationId": "ContainerService_ListRunCommandEvents",
         "responses": {
           "200": {
@@ -17982,6 +17982,10 @@
         "ended": {
           "type": "boolean",
           "description": "True when the run's audit sink has finished (every START has its END) and\nthis page reaches the last event: nothing more will ever be added. False\nwhile the run can still add events, or when more events are waiting past\nthis page."
+        },
+        "state": {
+          "$ref": "#/definitions/RunCommandFeedState",
+          "description": "Where the feed stands as of this page. A reader polls while it is OPEN\nand stops at ENDED or INCOMPLETE."
         }
       }
     },
@@ -21010,6 +21014,17 @@
         }
       },
       "description": "RunCommandEventEntry is one event with its position in the run's feed."
+    },
+    "RunCommandFeedState": {
+      "type": "string",
+      "enum": [
+        "RUN_COMMAND_FEED_STATE_UNSPECIFIED",
+        "RUN_COMMAND_FEED_STATE_OPEN",
+        "RUN_COMMAND_FEED_STATE_ENDED",
+        "RUN_COMMAND_FEED_STATE_INCOMPLETE"
+      ],
+      "default": "RUN_COMMAND_FEED_STATE_UNSPECIFIED",
+      "description": "RunCommandFeedState is where a run's command event feed stands as of one\npage of it.\n\n - RUN_COMMAND_FEED_STATE_UNSPECIFIED: A daemon that predates this field; read ended instead.\n - RUN_COMMAND_FEED_STATE_OPEN: More events can still come, or more are waiting past this page. Ask\nagain after the last seq received.\n - RUN_COMMAND_FEED_STATE_ENDED: The same as ended = true: the feed is complete and this page reaches its\nlast event.\n - RUN_COMMAND_FEED_STATE_INCOMPLETE: The run has stopped and its audit sink is gone without finishing the\nfeed (it was killed, or could not start). This page reaches the last\nevent stored and this start of the run adds nothing more, but the feed\nis not complete: events may be missing from its end, and a START may\nhave no END. ended stays false."
     },
     "RunCrewBody": {
       "type": "object",

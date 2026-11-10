@@ -27,6 +27,10 @@ const maxEventLine = 256 << 10
 // sinkIOTimeout bounds one exchange on either side.
 const sinkIOTimeout = 10 * time.Second
 
+// syncFile flushes the events file to disk; a variable so a test can make it
+// fail.
+var syncFile = (*os.File).Sync
+
 // RunExit is how the sink saw its run end.
 type RunExit int32
 
@@ -129,9 +133,10 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, now func() time.Tim
 		if _, err := f.Write(append(b, '\n')); err != nil {
 			return err
 		}
-		if err := f.Sync(); err != nil {
-			return err
-		}
+		// The line is in the file now, so its number is spent and the open
+		// STARTs follow it whether or not the sync below succeeds. A failed
+		// sync is still reported to the hook, but the next event must not
+		// reuse this seq, and a START that was written still needs its END.
 		seq = e.Seq
 		switch e.GetKind() {
 		case pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_START:
@@ -144,7 +149,7 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, now func() time.Tim
 				}
 			}
 		}
-		return nil
+		return syncFile(f)
 	}
 	closeOpen := func() error {
 		how := RunExitInterrupted

@@ -573,6 +573,70 @@ func (RunInputCloseReason) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{8}
 }
 
+// RunCommandFeedState is where a run's command event feed stands as of one
+// page of it.
+type RunCommandFeedState int32
+
+const (
+	// A daemon that predates this field; read ended instead.
+	RunCommandFeedState_RUN_COMMAND_FEED_STATE_UNSPECIFIED RunCommandFeedState = 0
+	// More events can still come, or more are waiting past this page. Ask
+	// again after the last seq received.
+	RunCommandFeedState_RUN_COMMAND_FEED_STATE_OPEN RunCommandFeedState = 1
+	// The same as ended = true: the feed is complete and this page reaches its
+	// last event.
+	RunCommandFeedState_RUN_COMMAND_FEED_STATE_ENDED RunCommandFeedState = 2
+	// The run has stopped and its audit sink is gone without finishing the
+	// feed (it was killed, or could not start). This page reaches the last
+	// event stored and this start of the run adds nothing more, but the feed
+	// is not complete: events may be missing from its end, and a START may
+	// have no END. ended stays false.
+	RunCommandFeedState_RUN_COMMAND_FEED_STATE_INCOMPLETE RunCommandFeedState = 3
+)
+
+// Enum value maps for RunCommandFeedState.
+var (
+	RunCommandFeedState_name = map[int32]string{
+		0: "RUN_COMMAND_FEED_STATE_UNSPECIFIED",
+		1: "RUN_COMMAND_FEED_STATE_OPEN",
+		2: "RUN_COMMAND_FEED_STATE_ENDED",
+		3: "RUN_COMMAND_FEED_STATE_INCOMPLETE",
+	}
+	RunCommandFeedState_value = map[string]int32{
+		"RUN_COMMAND_FEED_STATE_UNSPECIFIED": 0,
+		"RUN_COMMAND_FEED_STATE_OPEN":        1,
+		"RUN_COMMAND_FEED_STATE_ENDED":       2,
+		"RUN_COMMAND_FEED_STATE_INCOMPLETE":  3,
+	}
+)
+
+func (x RunCommandFeedState) Enum() *RunCommandFeedState {
+	p := new(RunCommandFeedState)
+	*p = x
+	return p
+}
+
+func (x RunCommandFeedState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RunCommandFeedState) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_box_run_proto_enumTypes[9].Descriptor()
+}
+
+func (RunCommandFeedState) Type() protoreflect.EnumType {
+	return &file_containarium_v1_box_run_proto_enumTypes[9]
+}
+
+func (x RunCommandFeedState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RunCommandFeedState.Descriptor instead.
+func (RunCommandFeedState) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{9}
+}
+
 // RunInputAnswerOutcome is what AnswerRunInput did.
 type RunInputAnswerOutcome int32
 
@@ -624,11 +688,11 @@ func (x RunInputAnswerOutcome) String() string {
 }
 
 func (RunInputAnswerOutcome) Descriptor() protoreflect.EnumDescriptor {
-	return file_containarium_v1_box_run_proto_enumTypes[9].Descriptor()
+	return file_containarium_v1_box_run_proto_enumTypes[10].Descriptor()
 }
 
 func (RunInputAnswerOutcome) Type() protoreflect.EnumType {
-	return &file_containarium_v1_box_run_proto_enumTypes[9]
+	return &file_containarium_v1_box_run_proto_enumTypes[10]
 }
 
 func (x RunInputAnswerOutcome) Number() protoreflect.EnumNumber {
@@ -637,7 +701,7 @@ func (x RunInputAnswerOutcome) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use RunInputAnswerOutcome.Descriptor instead.
 func (RunInputAnswerOutcome) EnumDescriptor() ([]byte, []int) {
-	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{9}
+	return file_containarium_v1_box_run_proto_rawDescGZIP(), []int{10}
 }
 
 // BoxRun is one current run record on a box.
@@ -2769,7 +2833,10 @@ type ListRunCommandEventsResponse struct {
 	// this page reaches the last event: nothing more will ever be added. False
 	// while the run can still add events, or when more events are waiting past
 	// this page.
-	Ended         bool `protobuf:"varint,2,opt,name=ended,proto3" json:"ended,omitempty"`
+	Ended bool `protobuf:"varint,2,opt,name=ended,proto3" json:"ended,omitempty"`
+	// Where the feed stands as of this page. A reader polls while it is OPEN
+	// and stops at ENDED or INCOMPLETE.
+	State         RunCommandFeedState `protobuf:"varint,3,opt,name=state,proto3,enum=containarium.v1.RunCommandFeedState" json:"state,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2816,6 +2883,13 @@ func (x *ListRunCommandEventsResponse) GetEnded() bool {
 		return x.Ended
 	}
 	return false
+}
+
+func (x *ListRunCommandEventsResponse) GetState() RunCommandFeedState {
+	if x != nil {
+		return x.State
+	}
+	return RunCommandFeedState_RUN_COMMAND_FEED_STATE_UNSPECIFIED
 }
 
 type ListRunInputsResponse struct {
@@ -3317,10 +3391,11 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\x05limit\x18\x04 \x01(\x05R\x05limit\"b\n" +
 	"\x14RunCommandEventEntry\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x04R\x03seq\x128\n" +
-	"\x05event\x18\x02 \x01(\v2\".containarium.v1.AgentCommandEventR\x05event\"s\n" +
+	"\x05event\x18\x02 \x01(\v2\".containarium.v1.AgentCommandEventR\x05event\"\xaf\x01\n" +
 	"\x1cListRunCommandEventsResponse\x12=\n" +
 	"\x06events\x18\x01 \x03(\v2%.containarium.v1.RunCommandEventEntryR\x06events\x12\x14\n" +
-	"\x05ended\x18\x02 \x01(\bR\x05ended\"\xe6\x01\n" +
+	"\x05ended\x18\x02 \x01(\bR\x05ended\x12:\n" +
+	"\x05state\x18\x03 \x01(\x0e2$.containarium.v1.RunCommandFeedStateR\x05state\"\xe6\x01\n" +
 	"\x15ListRunInputsResponse\x12-\n" +
 	"\x04open\x18\x01 \x03(\v2\x19.containarium.v1.RunInputR\x04open\x12\x18\n" +
 	"\arunning\x18\x02 \x01(\bR\arunning\x12\x1a\n" +
@@ -3395,7 +3470,12 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\x1eRUN_INPUT_CLOSE_REASON_EXPIRED\x10\x02\x12$\n" +
 	" RUN_INPUT_CLOSE_REASON_CANCELLED\x10\x03\x12!\n" +
 	"\x1dRUN_INPUT_CLOSE_REASON_NO_KEY\x10\x04\x12$\n" +
-	" RUN_INPUT_CLOSE_REASON_TOO_LARGE\x10\x05*\xe7\x01\n" +
+	" RUN_INPUT_CLOSE_REASON_TOO_LARGE\x10\x05*\xa7\x01\n" +
+	"\x13RunCommandFeedState\x12&\n" +
+	"\"RUN_COMMAND_FEED_STATE_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bRUN_COMMAND_FEED_STATE_OPEN\x10\x01\x12 \n" +
+	"\x1cRUN_COMMAND_FEED_STATE_ENDED\x10\x02\x12%\n" +
+	"!RUN_COMMAND_FEED_STATE_INCOMPLETE\x10\x03*\xe7\x01\n" +
 	"\x15RunInputAnswerOutcome\x12(\n" +
 	"$RUN_INPUT_ANSWER_OUTCOME_UNSPECIFIED\x10\x00\x12%\n" +
 	"!RUN_INPUT_ANSWER_OUTCOME_ANSWERED\x10\x01\x12+\n" +
@@ -3415,7 +3495,7 @@ func file_containarium_v1_box_run_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_box_run_proto_rawDescData
 }
 
-var file_containarium_v1_box_run_proto_enumTypes = make([]protoimpl.EnumInfo, 10)
+var file_containarium_v1_box_run_proto_enumTypes = make([]protoimpl.EnumInfo, 11)
 var file_containarium_v1_box_run_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_containarium_v1_box_run_proto_goTypes = []any{
 	(BoxRunOutcome)(0),                   // 0: containarium.v1.BoxRunOutcome
@@ -3427,88 +3507,90 @@ var file_containarium_v1_box_run_proto_goTypes = []any{
 	(RunInputKind)(0),                    // 6: containarium.v1.RunInputKind
 	(RunInputAnswer)(0),                  // 7: containarium.v1.RunInputAnswer
 	(RunInputCloseReason)(0),             // 8: containarium.v1.RunInputCloseReason
-	(RunInputAnswerOutcome)(0),           // 9: containarium.v1.RunInputAnswerOutcome
-	(*BoxRun)(nil),                       // 10: containarium.v1.BoxRun
-	(*BoxRunTool)(nil),                   // 11: containarium.v1.BoxRunTool
-	(*StartBoxRunRequest)(nil),           // 12: containarium.v1.StartBoxRunRequest
-	(*StartBoxRunResponse)(nil),          // 13: containarium.v1.StartBoxRunResponse
-	(*GetBoxRunUserStatusRequest)(nil),   // 14: containarium.v1.GetBoxRunUserStatusRequest
-	(*GetBoxRunUserStatusResponse)(nil),  // 15: containarium.v1.GetBoxRunUserStatusResponse
-	(*ListBoxRunsRequest)(nil),           // 16: containarium.v1.ListBoxRunsRequest
-	(*ListBoxRunsResponse)(nil),          // 17: containarium.v1.ListBoxRunsResponse
-	(*TailBoxRunLogRequest)(nil),         // 18: containarium.v1.TailBoxRunLogRequest
-	(*TailBoxRunLogResponse)(nil),        // 19: containarium.v1.TailBoxRunLogResponse
-	(*WriteBoxFileRequest)(nil),          // 20: containarium.v1.WriteBoxFileRequest
-	(*WriteBoxFileResponse)(nil),         // 21: containarium.v1.WriteBoxFileResponse
-	(*WriteBoxFileStreamRequest)(nil),    // 22: containarium.v1.WriteBoxFileStreamRequest
-	(*WriteBoxFileStreamHeader)(nil),     // 23: containarium.v1.WriteBoxFileStreamHeader
-	(*WriteBoxFileStreamResponse)(nil),   // 24: containarium.v1.WriteBoxFileStreamResponse
-	(*StopBoxRunRequest)(nil),            // 25: containarium.v1.StopBoxRunRequest
-	(*StopBoxRunResponse)(nil),           // 26: containarium.v1.StopBoxRunResponse
-	(*BoxRunCheckout)(nil),               // 27: containarium.v1.BoxRunCheckout
-	(*SweepBoxRunCheckoutsRequest)(nil),  // 28: containarium.v1.SweepBoxRunCheckoutsRequest
-	(*SweepBoxRunCheckoutsResponse)(nil), // 29: containarium.v1.SweepBoxRunCheckoutsResponse
-	(*BoxSkillSetChange)(nil),            // 30: containarium.v1.BoxSkillSetChange
-	(*ApplyBoxSkillSetsRequest)(nil),     // 31: containarium.v1.ApplyBoxSkillSetsRequest
-	(*ApplyBoxSkillSetsResponse)(nil),    // 32: containarium.v1.ApplyBoxSkillSetsResponse
-	(*RunInput)(nil),                     // 33: containarium.v1.RunInput
-	(*ListRunInputsRequest)(nil),         // 34: containarium.v1.ListRunInputsRequest
-	(*ListRunCommandEventsRequest)(nil),  // 35: containarium.v1.ListRunCommandEventsRequest
-	(*RunCommandEventEntry)(nil),         // 36: containarium.v1.RunCommandEventEntry
-	(*ListRunCommandEventsResponse)(nil), // 37: containarium.v1.ListRunCommandEventsResponse
-	(*ListRunInputsResponse)(nil),        // 38: containarium.v1.ListRunInputsResponse
-	(*AnswerRunInputRequest)(nil),        // 39: containarium.v1.AnswerRunInputRequest
-	(*AnswerRunInputResponse)(nil),       // 40: containarium.v1.AnswerRunInputResponse
-	(*GetRunApprovalKeyRequest)(nil),     // 41: containarium.v1.GetRunApprovalKeyRequest
-	(*GetRunApprovalKeyResponse)(nil),    // 42: containarium.v1.GetRunApprovalKeyResponse
-	(*timestamppb.Timestamp)(nil),        // 43: google.protobuf.Timestamp
-	(CaptureMode)(0),                     // 44: containarium.v1.CaptureMode
-	(*RunUsage)(nil),                     // 45: containarium.v1.RunUsage
-	(*AgentCommandPolicy)(nil),           // 46: containarium.v1.AgentCommandPolicy
-	(*AgentRunApproval)(nil),             // 47: containarium.v1.AgentRunApproval
-	(CodeCredentialSource)(0),            // 48: containarium.v1.CodeCredentialSource
-	(*durationpb.Duration)(nil),          // 49: google.protobuf.Duration
-	(*AgentCommandEvent)(nil),            // 50: containarium.v1.AgentCommandEvent
+	(RunCommandFeedState)(0),             // 9: containarium.v1.RunCommandFeedState
+	(RunInputAnswerOutcome)(0),           // 10: containarium.v1.RunInputAnswerOutcome
+	(*BoxRun)(nil),                       // 11: containarium.v1.BoxRun
+	(*BoxRunTool)(nil),                   // 12: containarium.v1.BoxRunTool
+	(*StartBoxRunRequest)(nil),           // 13: containarium.v1.StartBoxRunRequest
+	(*StartBoxRunResponse)(nil),          // 14: containarium.v1.StartBoxRunResponse
+	(*GetBoxRunUserStatusRequest)(nil),   // 15: containarium.v1.GetBoxRunUserStatusRequest
+	(*GetBoxRunUserStatusResponse)(nil),  // 16: containarium.v1.GetBoxRunUserStatusResponse
+	(*ListBoxRunsRequest)(nil),           // 17: containarium.v1.ListBoxRunsRequest
+	(*ListBoxRunsResponse)(nil),          // 18: containarium.v1.ListBoxRunsResponse
+	(*TailBoxRunLogRequest)(nil),         // 19: containarium.v1.TailBoxRunLogRequest
+	(*TailBoxRunLogResponse)(nil),        // 20: containarium.v1.TailBoxRunLogResponse
+	(*WriteBoxFileRequest)(nil),          // 21: containarium.v1.WriteBoxFileRequest
+	(*WriteBoxFileResponse)(nil),         // 22: containarium.v1.WriteBoxFileResponse
+	(*WriteBoxFileStreamRequest)(nil),    // 23: containarium.v1.WriteBoxFileStreamRequest
+	(*WriteBoxFileStreamHeader)(nil),     // 24: containarium.v1.WriteBoxFileStreamHeader
+	(*WriteBoxFileStreamResponse)(nil),   // 25: containarium.v1.WriteBoxFileStreamResponse
+	(*StopBoxRunRequest)(nil),            // 26: containarium.v1.StopBoxRunRequest
+	(*StopBoxRunResponse)(nil),           // 27: containarium.v1.StopBoxRunResponse
+	(*BoxRunCheckout)(nil),               // 28: containarium.v1.BoxRunCheckout
+	(*SweepBoxRunCheckoutsRequest)(nil),  // 29: containarium.v1.SweepBoxRunCheckoutsRequest
+	(*SweepBoxRunCheckoutsResponse)(nil), // 30: containarium.v1.SweepBoxRunCheckoutsResponse
+	(*BoxSkillSetChange)(nil),            // 31: containarium.v1.BoxSkillSetChange
+	(*ApplyBoxSkillSetsRequest)(nil),     // 32: containarium.v1.ApplyBoxSkillSetsRequest
+	(*ApplyBoxSkillSetsResponse)(nil),    // 33: containarium.v1.ApplyBoxSkillSetsResponse
+	(*RunInput)(nil),                     // 34: containarium.v1.RunInput
+	(*ListRunInputsRequest)(nil),         // 35: containarium.v1.ListRunInputsRequest
+	(*ListRunCommandEventsRequest)(nil),  // 36: containarium.v1.ListRunCommandEventsRequest
+	(*RunCommandEventEntry)(nil),         // 37: containarium.v1.RunCommandEventEntry
+	(*ListRunCommandEventsResponse)(nil), // 38: containarium.v1.ListRunCommandEventsResponse
+	(*ListRunInputsResponse)(nil),        // 39: containarium.v1.ListRunInputsResponse
+	(*AnswerRunInputRequest)(nil),        // 40: containarium.v1.AnswerRunInputRequest
+	(*AnswerRunInputResponse)(nil),       // 41: containarium.v1.AnswerRunInputResponse
+	(*GetRunApprovalKeyRequest)(nil),     // 42: containarium.v1.GetRunApprovalKeyRequest
+	(*GetRunApprovalKeyResponse)(nil),    // 43: containarium.v1.GetRunApprovalKeyResponse
+	(*timestamppb.Timestamp)(nil),        // 44: google.protobuf.Timestamp
+	(CaptureMode)(0),                     // 45: containarium.v1.CaptureMode
+	(*RunUsage)(nil),                     // 46: containarium.v1.RunUsage
+	(*AgentCommandPolicy)(nil),           // 47: containarium.v1.AgentCommandPolicy
+	(*AgentRunApproval)(nil),             // 48: containarium.v1.AgentRunApproval
+	(CodeCredentialSource)(0),            // 49: containarium.v1.CodeCredentialSource
+	(*durationpb.Duration)(nil),          // 50: google.protobuf.Duration
+	(*AgentCommandEvent)(nil),            // 51: containarium.v1.AgentCommandEvent
 }
 var file_containarium_v1_box_run_proto_depIdxs = []int32{
-	43, // 0: containarium.v1.BoxRun.started_at:type_name -> google.protobuf.Timestamp
-	43, // 1: containarium.v1.BoxRun.ended_at:type_name -> google.protobuf.Timestamp
+	44, // 0: containarium.v1.BoxRun.started_at:type_name -> google.protobuf.Timestamp
+	44, // 1: containarium.v1.BoxRun.ended_at:type_name -> google.protobuf.Timestamp
 	0,  // 2: containarium.v1.BoxRun.outcome:type_name -> containarium.v1.BoxRunOutcome
-	44, // 3: containarium.v1.BoxRun.capture_mode:type_name -> containarium.v1.CaptureMode
-	11, // 4: containarium.v1.BoxRun.tools:type_name -> containarium.v1.BoxRunTool
-	45, // 5: containarium.v1.BoxRun.usage:type_name -> containarium.v1.RunUsage
+	45, // 3: containarium.v1.BoxRun.capture_mode:type_name -> containarium.v1.CaptureMode
+	12, // 4: containarium.v1.BoxRun.tools:type_name -> containarium.v1.BoxRunTool
+	46, // 5: containarium.v1.BoxRun.usage:type_name -> containarium.v1.RunUsage
 	1,  // 6: containarium.v1.BoxRunTool.provenance:type_name -> containarium.v1.BoxRunToolProvenance
 	2,  // 7: containarium.v1.BoxRunTool.location:type_name -> containarium.v1.BoxRunToolLocation
-	46, // 8: containarium.v1.StartBoxRunRequest.command_policy:type_name -> containarium.v1.AgentCommandPolicy
-	47, // 9: containarium.v1.StartBoxRunRequest.approval:type_name -> containarium.v1.AgentRunApproval
-	10, // 10: containarium.v1.StartBoxRunResponse.run:type_name -> containarium.v1.BoxRun
-	48, // 11: containarium.v1.GetBoxRunUserStatusResponse.state:type_name -> containarium.v1.CodeCredentialSource
-	10, // 12: containarium.v1.ListBoxRunsResponse.runs:type_name -> containarium.v1.BoxRun
-	23, // 13: containarium.v1.WriteBoxFileStreamRequest.header:type_name -> containarium.v1.WriteBoxFileStreamHeader
-	10, // 14: containarium.v1.StopBoxRunResponse.run:type_name -> containarium.v1.BoxRun
+	47, // 8: containarium.v1.StartBoxRunRequest.command_policy:type_name -> containarium.v1.AgentCommandPolicy
+	48, // 9: containarium.v1.StartBoxRunRequest.approval:type_name -> containarium.v1.AgentRunApproval
+	11, // 10: containarium.v1.StartBoxRunResponse.run:type_name -> containarium.v1.BoxRun
+	49, // 11: containarium.v1.GetBoxRunUserStatusResponse.state:type_name -> containarium.v1.CodeCredentialSource
+	11, // 12: containarium.v1.ListBoxRunsResponse.runs:type_name -> containarium.v1.BoxRun
+	24, // 13: containarium.v1.WriteBoxFileStreamRequest.header:type_name -> containarium.v1.WriteBoxFileStreamHeader
+	11, // 14: containarium.v1.StopBoxRunResponse.run:type_name -> containarium.v1.BoxRun
 	3,  // 15: containarium.v1.StopBoxRunResponse.signal:type_name -> containarium.v1.BoxRunStopSignal
-	43, // 16: containarium.v1.BoxRunCheckout.newest_modification:type_name -> google.protobuf.Timestamp
+	44, // 16: containarium.v1.BoxRunCheckout.newest_modification:type_name -> google.protobuf.Timestamp
 	4,  // 17: containarium.v1.BoxRunCheckout.disposition:type_name -> containarium.v1.BoxRunCheckoutDisposition
-	49, // 18: containarium.v1.SweepBoxRunCheckoutsResponse.max_age:type_name -> google.protobuf.Duration
-	27, // 19: containarium.v1.SweepBoxRunCheckoutsResponse.checkouts:type_name -> containarium.v1.BoxRunCheckout
-	30, // 20: containarium.v1.ApplyBoxSkillSetsResponse.installed:type_name -> containarium.v1.BoxSkillSetChange
-	30, // 21: containarium.v1.ApplyBoxSkillSetsResponse.removed:type_name -> containarium.v1.BoxSkillSetChange
+	50, // 18: containarium.v1.SweepBoxRunCheckoutsResponse.max_age:type_name -> google.protobuf.Duration
+	28, // 19: containarium.v1.SweepBoxRunCheckoutsResponse.checkouts:type_name -> containarium.v1.BoxRunCheckout
+	31, // 20: containarium.v1.ApplyBoxSkillSetsResponse.installed:type_name -> containarium.v1.BoxSkillSetChange
+	31, // 21: containarium.v1.ApplyBoxSkillSetsResponse.removed:type_name -> containarium.v1.BoxSkillSetChange
 	6,  // 22: containarium.v1.RunInput.kind:type_name -> containarium.v1.RunInputKind
-	43, // 23: containarium.v1.RunInput.created_at:type_name -> google.protobuf.Timestamp
-	43, // 24: containarium.v1.RunInput.expires_at:type_name -> google.protobuf.Timestamp
-	50, // 25: containarium.v1.RunCommandEventEntry.event:type_name -> containarium.v1.AgentCommandEvent
-	36, // 26: containarium.v1.ListRunCommandEventsResponse.events:type_name -> containarium.v1.RunCommandEventEntry
-	33, // 27: containarium.v1.ListRunInputsResponse.open:type_name -> containarium.v1.RunInput
-	7,  // 28: containarium.v1.AnswerRunInputRequest.answer:type_name -> containarium.v1.RunInputAnswer
-	9,  // 29: containarium.v1.AnswerRunInputResponse.outcome:type_name -> containarium.v1.RunInputAnswerOutcome
-	7,  // 30: containarium.v1.AnswerRunInputResponse.closed_answer:type_name -> containarium.v1.RunInputAnswer
-	8,  // 31: containarium.v1.AnswerRunInputResponse.close_reason:type_name -> containarium.v1.RunInputCloseReason
-	43, // 32: containarium.v1.AnswerRunInputResponse.closed_at:type_name -> google.protobuf.Timestamp
-	33, // [33:33] is the sub-list for method output_type
-	33, // [33:33] is the sub-list for method input_type
-	33, // [33:33] is the sub-list for extension type_name
-	33, // [33:33] is the sub-list for extension extendee
-	0,  // [0:33] is the sub-list for field type_name
+	44, // 23: containarium.v1.RunInput.created_at:type_name -> google.protobuf.Timestamp
+	44, // 24: containarium.v1.RunInput.expires_at:type_name -> google.protobuf.Timestamp
+	51, // 25: containarium.v1.RunCommandEventEntry.event:type_name -> containarium.v1.AgentCommandEvent
+	37, // 26: containarium.v1.ListRunCommandEventsResponse.events:type_name -> containarium.v1.RunCommandEventEntry
+	9,  // 27: containarium.v1.ListRunCommandEventsResponse.state:type_name -> containarium.v1.RunCommandFeedState
+	34, // 28: containarium.v1.ListRunInputsResponse.open:type_name -> containarium.v1.RunInput
+	7,  // 29: containarium.v1.AnswerRunInputRequest.answer:type_name -> containarium.v1.RunInputAnswer
+	10, // 30: containarium.v1.AnswerRunInputResponse.outcome:type_name -> containarium.v1.RunInputAnswerOutcome
+	7,  // 31: containarium.v1.AnswerRunInputResponse.closed_answer:type_name -> containarium.v1.RunInputAnswer
+	8,  // 32: containarium.v1.AnswerRunInputResponse.close_reason:type_name -> containarium.v1.RunInputCloseReason
+	44, // 33: containarium.v1.AnswerRunInputResponse.closed_at:type_name -> google.protobuf.Timestamp
+	34, // [34:34] is the sub-list for method output_type
+	34, // [34:34] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_box_run_proto_init() }
@@ -3530,7 +3612,7 @@ func file_containarium_v1_box_run_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_box_run_proto_rawDesc), len(file_containarium_v1_box_run_proto_rawDesc)),
-			NumEnums:      10,
+			NumEnums:      11,
 			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   0,

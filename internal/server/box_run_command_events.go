@@ -32,27 +32,72 @@ const (
 	commandEventsMaxAfterSeq = 1 << 53
 )
 
-// commandEventsScript prints "D 1" or "D 0" (the sink's done marker), then
+// commandSinkUID is the box user the audit sink runs as: root.
+const commandSinkUID = "0"
+
+// commandSinkProbeScript prints "S 1" when a process owned by uid is running
+// `run-audit-sink --config <configPath>` (the run's sink, which the launch
+// script starts with exactly that configuration), else "S 0". Only a process
+// of that user counts, so the run user cannot stand in for the sink. The
+// needle is put together in the box: the script's own text, which is in the
+// command line of the shell running it, never holds it in one piece.
+func commandSinkProbeScript(configPath, uid string) string {
+	return fmt.Sprintf(`n=run-audit-sink
+c=%s
+s=0
+for p in $(grep -lsF -- "$c" /proc/[0-9]*/cmdline 2>/dev/null); do
+  [ "$(stat -c %%u "${p%%/cmdline}" 2>/dev/null)" = %s ] || continue
+  if tr '\0' ' ' <"$p" 2>/dev/null | grep -qF -- " $n --config $c "; then s=1; break; fi
+done
+echo "S $s"
+`, shellSingleQuote(configPath), shellSingleQuote(uid))
+}
+
+// commandEventsScript prints sinkProbe's line, if one is given (see
+// commandSinkProbeScript), then "D 1" or "D 0" (the sink's done marker), then
 // "E -" when the run has no feed, else "E <base64 of the lines after afterSeq>"
 // with at most limit+1 lines, so the daemon can tell a page that reaches the
-// end from one that does not. The marker is read first: it is created after
-// the last event, so a marker seen means the lines read after it are the last.
+// end from one that does not. The order is what makes each answer final: the
+// sink creates the marker after its last event and exits after the marker, so
+// a sink seen gone means the marker read after it will not change, and a
+// marker seen means the lines read after it are the last.
 // Both files open through the same symlink guard as the run reader.
-func commandEventsScript(eventsPath string, afterSeq uint64, limit int) string {
-	return fmt.Sprintf(`%sif open3 %s; then echo "D 1"; exec 3<&-; else echo "D 0"; fi
+func commandEventsScript(eventsPath string, afterSeq uint64, limit int, sinkProbe string) string {
+	return fmt.Sprintf(`%s%sif open3 %s; then echo "D 1"; exec 3<&-; else echo "D 0"; fi
 if open3 %s; then
   echo "E $(tail -n +%d <&3 | head -n %d | head -c %d | base64 | tr -d '\n')"; exec 3<&-
 else echo "E -"; fi
-`, boxRunOpenFn, shellSingleQuote(runhook.DonePath(eventsPath)), shellSingleQuote(eventsPath),
+`, boxRunOpenFn, sinkProbe, shellSingleQuote(runhook.DonePath(eventsPath)), shellSingleQuote(eventsPath),
 		afterSeq+1, limit+1, commandEventsReadCap)
 }
 
 // commandEventsPage is one read of the feed.
 type commandEventsPage struct {
-	exists bool // the run has a feed file
-	done   bool // the sink has finished
-	lines  [][]byte
-	cut    bool // the byte cap stopped the read before limit+1 lines
+	exists   bool // the run has a feed file
+	done     bool // the sink has finished
+	sinkGone bool // the sink was looked for and is not running
+	lines    [][]byte
+	cut      bool // the byte cap stopped the read before limit+1 lines
+}
+
+// commandFeedState is the state of a feed as of one page: more is whether
+// events are waiting past the page, running whether the run is.
+//
+// ENDED keeps its one meaning: the sink finished (or the run never had one
+// and has stopped). A run that has stopped is not enough to end a feed that
+// has a sink, because the sink writes its closing events after the run
+// exits. INCOMPLETE is the feed that can no longer end: the run has stopped,
+// the sink is gone, and it left no done marker.
+func commandFeedState(p commandEventsPage, running, more bool) pb.RunCommandFeedState {
+	switch {
+	case more:
+		return pb.RunCommandFeedState_RUN_COMMAND_FEED_STATE_OPEN
+	case p.done || (!p.exists && !running):
+		return pb.RunCommandFeedState_RUN_COMMAND_FEED_STATE_ENDED
+	case p.exists && !running && p.sinkGone:
+		return pb.RunCommandFeedState_RUN_COMMAND_FEED_STATE_INCOMPLETE
+	}
+	return pb.RunCommandFeedState_RUN_COMMAND_FEED_STATE_OPEN
 }
 
 func parseCommandEventsOutput(out string) (commandEventsPage, error) {
@@ -63,6 +108,9 @@ func parseCommandEventsOutput(out string) (commandEventsPage, error) {
 		case line == "D 1":
 			p.done = true
 		case line == "D 0":
+		case line == "S 0":
+			p.sinkGone = true
+		case line == "S 1":
 		case line == "E -":
 			sawE = true
 		case strings.HasPrefix(line, "E "):
@@ -124,7 +172,13 @@ func (s *ContainerServer) ListRunCommandEvents(ctx context.Context, req *pb.List
 	if auditDir == "" {
 		auditDir = runhook.AuditDir
 	}
-	out, err := s.boxRunExecFn()(box, commandEventsScript(runhook.EventsPathUnder(auditDir, name), after, limit))
+	// Whether the sink is still there only matters once the run has stopped;
+	// a running run's feed is open either way, so its polls skip the probe.
+	sinkProbe := ""
+	if !running {
+		sinkProbe = commandSinkProbeScript(runhook.ConfigPath(name), commandSinkUID)
+	}
+	out, err := s.boxRunExecFn()(box, commandEventsScript(runhook.EventsPathUnder(auditDir, name), after, limit, sinkProbe))
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "read the command events of run %q: %v", name, err)
 	}
@@ -155,6 +209,7 @@ func (s *ContainerServer) ListRunCommandEvents(ctx context.Context, req *pb.List
 	// Ended: no more events can ever come and this page has the last one. A run
 	// that was started without a command policy has no sink and no feed; once
 	// it is not running that is the end too.
-	resp.Ended = !more && (page.done || (!page.exists && !running))
+	resp.State = commandFeedState(page, running, more)
+	resp.Ended = resp.State == pb.RunCommandFeedState_RUN_COMMAND_FEED_STATE_ENDED
 	return resp, nil
 }

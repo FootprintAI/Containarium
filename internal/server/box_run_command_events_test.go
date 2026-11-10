@@ -5,7 +5,9 @@ package server
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -168,6 +170,136 @@ func TestListRunCommandEvents_NoFeedIsEmpty(t *testing.T) {
 	resp := r.list(t, 0, 0)
 	if len(resp.GetEvents()) != 0 || resp.GetEnded() {
 		t.Errorf("a running run with no feed: %v, want empty and not ended", resp)
+	}
+}
+
+func (r *eventsRun) stop(t *testing.T) {
+	t.Helper()
+	resp, err := r.s.StopBoxRun(tenantCtx(r.owner), &pb.StopBoxRunRequest{Username: r.owner, RunName: r.run, Force: true})
+	if err != nil {
+		t.Fatalf("StopBoxRun: %v", err)
+	}
+	if !resp.GetExited() {
+		t.Fatal("the run did not stop")
+	}
+}
+
+// A run started without a command policy has no sink and no feed: once it has
+// stopped, that is the end.
+func TestListRunCommandEvents_StoppedRunWithNoFeedIsEnded(t *testing.T) {
+	r := startEventsRun(t)
+	r.stop(t)
+	resp := r.list(t, 0, 0)
+	if len(resp.GetEvents()) != 0 || !resp.GetEnded() {
+		t.Errorf("a stopped run with no feed: %v, want empty and ended", resp)
+	}
+	if resp.GetState() != pb.RunCommandFeedState_RUN_COMMAND_FEED_STATE_ENDED {
+		t.Errorf("state = %v, want ENDED", resp.GetState())
+	}
+}
+
+// A feed whose sink is gone without its done marker, on a run that has
+// stopped, will never end: the reader is told so (INCOMPLETE) on the page that
+// reaches the last stored event, and it is never reported as ended.
+func TestListRunCommandEvents_StoppedRunWithUnfinishedFeedIsIncomplete(t *testing.T) {
+	r := startEventsRun(t)
+	r.feed(t, r.run, 1, 3)
+	if resp := r.list(t, 0, 0); resp.GetState() != pb.RunCommandFeedState_RUN_COMMAND_FEED_STATE_OPEN {
+		t.Errorf("running: state = %v, want OPEN", resp.GetState())
+	}
+	r.stop(t)
+
+	resp := r.list(t, 0, 0)
+	if got := seqs(resp); len(got) != 3 {
+		t.Fatalf("seqs = %v, want the 3 stored events", got)
+	}
+	if resp.GetEnded() || resp.GetState() != pb.RunCommandFeedState_RUN_COMMAND_FEED_STATE_INCOMPLETE {
+		t.Errorf("ended=%v state=%v, want not ended and INCOMPLETE", resp.GetEnded(), resp.GetState())
+	}
+	if resp := r.list(t, 0, 2); resp.GetState() != pb.RunCommandFeedState_RUN_COMMAND_FEED_STATE_OPEN {
+		t.Errorf("a page with events still waiting: state = %v, want OPEN", resp.GetState())
+	}
+	if resp := r.list(t, 3, 0); len(resp.GetEvents()) != 0 || resp.GetState() != pb.RunCommandFeedState_RUN_COMMAND_FEED_STATE_INCOMPLETE {
+		t.Errorf("past the last stored event: %v, want empty and INCOMPLETE", resp)
+	}
+
+	// The done marker is still what ends a feed.
+	r.done(t, r.run)
+	if resp := r.list(t, 0, 0); !resp.GetEnded() || resp.GetState() != pb.RunCommandFeedState_RUN_COMMAND_FEED_STATE_ENDED {
+		t.Errorf("with the done marker: ended=%v state=%v, want ended and ENDED", resp.GetEnded(), resp.GetState())
+	}
+}
+
+func TestCommandFeedState(t *testing.T) {
+	const (
+		open       = pb.RunCommandFeedState_RUN_COMMAND_FEED_STATE_OPEN
+		ended      = pb.RunCommandFeedState_RUN_COMMAND_FEED_STATE_ENDED
+		incomplete = pb.RunCommandFeedState_RUN_COMMAND_FEED_STATE_INCOMPLETE
+	)
+	for _, tc := range []struct {
+		name          string
+		page          commandEventsPage
+		running, more bool
+		want          pb.RunCommandFeedState
+	}{
+		{"running, no feed", commandEventsPage{}, true, false, open},
+		{"stopped, no feed", commandEventsPage{sinkGone: true}, false, false, ended},
+		{"running, feed", commandEventsPage{exists: true}, true, false, open},
+		{"sink done", commandEventsPage{exists: true, done: true, sinkGone: true}, false, false, ended},
+		{"sink done, more waiting", commandEventsPage{exists: true, done: true}, false, true, open},
+		// The run has exited and the sink is still writing its closing events:
+		// a stopped run alone neither ends the feed nor fails it.
+		{"stopped, sink still running", commandEventsPage{exists: true}, false, false, open},
+		{"stopped, sink gone, no marker", commandEventsPage{exists: true, sinkGone: true}, false, false, incomplete},
+		{"stopped, sink gone, more waiting", commandEventsPage{exists: true, sinkGone: true}, false, true, open},
+	} {
+		if got := commandFeedState(tc.page, tc.running, tc.more); got != tc.want {
+			t.Errorf("%s: state = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The probe finds the sink by its command line and its owner, and nothing
+// else: not the shell running the probe (whose command line holds the script),
+// and not a process of another user.
+func TestCommandSinkProbeScript(t *testing.T) {
+	conf := filepath.Join(t.TempDir(), "r1.policy.json")
+	me := strconv.Itoa(os.Getuid())
+	probe := func(uid string) commandEventsPage {
+		t.Helper()
+		out, err := exec.Command("sh", "-c", commandEventsScript(filepath.Join(t.TempDir(), "none.jsonl"), 0, 1, commandSinkProbeScript(conf, uid))).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		page, err := parseCommandEventsOutput(string(out))
+		if err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		return page
+	}
+	if !probe(me).sinkGone {
+		t.Fatal("a sink was found with none running")
+	}
+
+	// A process with the sink's command line: `read` blocks on the open pipe.
+	sink := exec.Command("sh", "-c", "read x", "agent-box", "run-audit-sink", "--config", conf, "--run-dir", "/nowhere")
+	stdin, err := sink.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = sink.Process.Kill()
+		_ = sink.Wait()
+	})
+	if probe(me).sinkGone {
+		t.Error("the running sink was not found")
+	}
+	if !probe(strconv.Itoa(os.Getuid() + 1)).sinkGone {
+		t.Error("a process of another user counted as the sink")
 	}
 }
 

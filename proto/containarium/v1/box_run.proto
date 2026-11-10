@@ -667,6 +667,28 @@ message ListRunCommandEventsResponse {
   // while the run can still add events, or when more events are waiting past
   // this page.
   bool ended = 2;
+  // Where the feed stands as of this page. A reader polls while it is OPEN
+  // and stops at ENDED or INCOMPLETE.
+  RunCommandFeedState state = 3;
+}
+
+// RunCommandFeedState is where a run's command event feed stands as of one
+// page of it.
+enum RunCommandFeedState {
+  // A daemon that predates this field; read ended instead.
+  RUN_COMMAND_FEED_STATE_UNSPECIFIED = 0;
+  // More events can still come, or more are waiting past this page. Ask
+  // again after the last seq received.
+  RUN_COMMAND_FEED_STATE_OPEN = 1;
+  // The same as ended = true: the feed is complete and this page reaches its
+  // last event.
+  RUN_COMMAND_FEED_STATE_ENDED = 2;
+  // The run has stopped and its audit sink is gone without finishing the
+  // feed (it was killed, or could not start). This page reaches the last
+  // event stored and this start of the run adds nothing more, but the feed
+  // is not complete: events may be missing from its end, and a START may
+  // have no END. ended stays false.
+  RUN_COMMAND_FEED_STATE_INCOMPLETE = 3;
 }
 
 message ListRunInputsResponse {
