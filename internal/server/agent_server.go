@@ -1500,7 +1500,7 @@ func runtimeEnvPrefix(res agentengine.Resolved, model string) string {
 func (s *AgentSkillServer) startServeMode(ctx context.Context, containerName, seedDir, skillID string, engineRes agentengine.Resolved, model string) error {
 	box := s.inBox()
 	if box == nil {
-		return fmt.Errorf("no container manager to start %s's serve mode on %s", skillID, containerName)
+		return fmt.Errorf("no container manager to start %q's serve mode on %q", skillID, containerName)
 	}
 	// Stop any previous serve-mode instance before starting a new one
 	// (cloud#1733). The box is reused across runs — provisionSkillBox
@@ -1532,14 +1532,14 @@ func (s *AgentSkillServer) startServeMode(ctx context.Context, containerName, se
 	cmd := s.serveModeCommand(seedDir, skillID, engineRes, model)
 	_, stderr, exitCode, err := box.ExecWithExitCode(containerName, []string{"bash", "-lc", cmd})
 	if err != nil && !incusExecCommandMissing(err) {
-		return fmt.Errorf("could not launch %s's serve mode on %s: %w", skillID, containerName, err)
+		return fmt.Errorf("could not launch %q's serve mode on %q: %w", skillID, containerName, err)
 	}
 	if err != nil || exitCode == exitCommandNotFound {
 		log.Printf("[agent-skill] agent-runtime not found on %q (image may not ship it); stderr=%q", containerName, scrubInBoxText(stderr))
-		return fmt.Errorf("on %s: %w", containerName, errInBoxRuntimeMissing)
+		return fmt.Errorf("on %q: %w", containerName, errInBoxRuntimeMissing)
 	}
 	if exitCode != 0 {
-		return fmt.Errorf("%s's serve-mode launch on %s exited %d; stderr=%s", skillID, containerName, exitCode, scrubInBoxText(stderr))
+		return fmt.Errorf("%q's serve-mode launch on %q exited %d; stderr=%s", skillID, containerName, exitCode, scrubInBoxText(stderr))
 	}
 	return s.waitForServeReady(ctx, box, containerName, skillID)
 }
@@ -1590,7 +1590,7 @@ func (s *AgentSkillServer) waitForServeReady(ctx context.Context, box inBoxRunne
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("waiting for %s's serve mode on %s: %w", skillID, containerName, ctx.Err())
+			return fmt.Errorf("waiting for %q's serve mode on %q: %w", skillID, containerName, ctx.Err())
 		case <-time.After(interval):
 		}
 	}
@@ -1599,9 +1599,9 @@ func (s *AgentSkillServer) waitForServeReady(ctx context.Context, box inBoxRunne
 		[]string{"bash", "-lc", fmt.Sprintf("tail -c %d %s 2>/dev/null", serveLogTailBytes, serveLogPath)})
 	tail = scrubInBoxText(tail)
 	if strings.Contains(tail, "command not found") {
-		return fmt.Errorf("on %s: %w; %s: %s", containerName, errInBoxRuntimeMissing, serveLogPath, tail)
+		return fmt.Errorf("on %q: %w; %s: %s", containerName, errInBoxRuntimeMissing, serveLogPath, tail)
 	}
-	return fmt.Errorf("%s's serve mode on %s did not answer /agent-card within %s; the tail of %s: %s",
+	return fmt.Errorf("%q's serve mode on %q did not answer /agent-card within %s; the tail of %s: %s",
 		skillID, containerName, timeout, serveLogPath, tail)
 }
 
@@ -1739,34 +1739,34 @@ func (s *AgentSkillServer) runInBoxAgentResult(containerName, seedDir, runID, sk
 func (s *AgentSkillServer) runInBoxAgentRun(containerName, seedDir, runID, skillID string, engineRes agentengine.Resolved, model string) (inBoxArtifact, error) {
 	box := s.inBox()
 	if box == nil {
-		return inBoxArtifact{}, fmt.Errorf("no container manager to run the in-box agent on %s", containerName)
+		return inBoxArtifact{}, fmt.Errorf("no container manager to run the in-box agent on %q", containerName)
 	}
 
 	_, stderr, exitCode, err := box.ExecWithExitCode(containerName,
 		[]string{"bash", "-lc", s.runModeCommand(seedDir, runID, skillID, engineRes, model)})
 	if err != nil && !incusExecCommandMissing(err) {
-		return inBoxArtifact{}, fmt.Errorf("could not exec the in-box agent on %s: %w", containerName, err)
+		return inBoxArtifact{}, fmt.Errorf("could not exec the in-box agent on %q: %w", containerName, err)
 	}
 	if err != nil || exitCode == exitCommandNotFound {
 		log.Printf("[agent-skill] agent-runtime not found on %q (image may not ship it yet); stderr=%q",
 			containerName, scrubInBoxText(stderr))
-		return inBoxArtifact{}, fmt.Errorf("on %s: %w", containerName, errInBoxRuntimeMissing)
+		return inBoxArtifact{}, fmt.Errorf("on %q: %w", containerName, errInBoxRuntimeMissing)
 	}
 	if exitCode != 0 {
 		log.Printf("[agent-skill] in-box agent on %q exited %d; stderr=%q", containerName, exitCode, scrubInBoxText(stderr))
 		if reason := s.inBoxArtifactError(box, containerName, seedDir); reason != "" {
-			return inBoxArtifact{}, fmt.Errorf("in-box agent on %s exited %d: %s", containerName, exitCode, reason)
+			return inBoxArtifact{}, fmt.Errorf("in-box agent on %q exited %d: %s", containerName, exitCode, reason)
 		}
-		return inBoxArtifact{}, fmt.Errorf("in-box agent on %s exited %d (no error recorded in artifact.json)", containerName, exitCode)
+		return inBoxArtifact{}, fmt.Errorf("in-box agent on %q exited %d (no error recorded in artifact.json)", containerName, exitCode)
 	}
 
 	raw, err := box.ReadFile(containerName, seedDir+"/artifact.json")
 	if err != nil {
-		return inBoxArtifact{}, fmt.Errorf("could not read artifact from %s: %w", containerName, err)
+		return inBoxArtifact{}, fmt.Errorf("could not read artifact from %q: %w", containerName, err)
 	}
 	a, err := parseArtifact(raw)
 	if err != nil {
-		return inBoxArtifact{}, fmt.Errorf("in-box agent on %s reported an error: %s", containerName, scrubInBoxText(err.Error()))
+		return inBoxArtifact{}, fmt.Errorf("in-box agent on %q reported an error: %s", containerName, scrubInBoxText(err.Error()))
 	}
 	return a, nil
 }
