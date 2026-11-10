@@ -276,6 +276,12 @@ enum NetworkPolicyUncoveredPath {
   // that could not be removed keeps allowing traffic the policy no longer does.
   // The failed entries are retried on the next pass.
   NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE = 4;
+  // The operator-signature store could not be read on the latest refresh, so
+  // the enforcer keeps the last good signature set in the kernel. Signatures
+  // added, changed or removed since then are not applied until the store
+  // answers again; the state clears on its own (#3519). Reported only while
+  // the enforcer is running.
+  NETWORK_POLICY_UNCOVERED_PATH_OPERATOR_SIGNATURES_STALE = 5;
 }
 
 // NetworkPolicySource says which policy a tenant's loaded state came from.
