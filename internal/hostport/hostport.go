@@ -11,6 +11,7 @@ package hostport
 
 import (
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -44,4 +45,28 @@ func Split(addr string, defaultPort int) (host string, port int) {
 	}
 
 	return addr, defaultPort
+}
+
+// IsLoopback reports whether an endpoint (host, host:port, or a URL) points at
+// the local machine. Only the literal name "localhost" and loopback IPs
+// qualify; a lookalike such as "localhost.example.com" does not.
+func IsLoopback(endpoint string) bool {
+	hostport := endpoint
+	if strings.Contains(endpoint, "://") {
+		u, err := url.Parse(endpoint)
+		if err != nil {
+			return false
+		}
+		hostport = u.Host
+	}
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
