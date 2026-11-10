@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/coderun/engine"
 	"github.com/spf13/cobra"
@@ -86,6 +87,14 @@ Claude Code setup for later runs; that is out of scope.) --approvals ask needs
 the daemon (--server). On an engine without a permission hook (pi, Codex) the
 run starts unchanged, with a warning. The default, --approvals deny, is today's behaviour.
 
+--run-token-file <path> starts the run through the daemon API (StartBoxRun)
+instead of over SSH, and sends the per-run token in that file with it. The
+file holds the token on one line; it is read, never printed, and the token is
+never an argument. The daemon must advertise the box_run_token capability; one
+that does not is refused, and no run is started. It needs --server, and it does
+not combine with --approvals ask, --output-format-stream-json or --token-ttl.
+The run's output and exit status are followed as described above.
+
 Requires the box to already have a coding agent installed and credentialed —
 see 'containarium code install <box>'.`,
 	Args: cobra.ExactArgs(1),
@@ -129,6 +138,11 @@ stays on the box, readable via 'containarium code status' or another
 
 func runCodeRun(cmd *cobra.Command, args []string) error {
 	box := args[0]
+	// #3610: a per-run token selects the daemon-API path, for an agent run
+	// and a --command run alike. Without the flag nothing below changes.
+	if codeRunTokenFile != "" {
+		return runCodeRunWithToken(cmd, box)
+	}
 	if strings.TrimSpace(codeRunCommand) != "" {
 		return runCodeRunCommand(cmd, box)
 	}
@@ -260,10 +274,13 @@ type codeRunStarter interface {
 // (reportCodeRunStarted): every `code run` path starts here, so a note from
 // the start (#3529) reaches the person on each of them (#3540).
 func startCodeRun(ctx context.Context, sess codeRunStarter, diag io.Writer, box, name, command, captureMode string) (*coderun.ProcessStartResult, error) {
-	started, err := sess.ProcessStart(ctx, name, command, "", captureMode)
+	// The function the MCP code_run tool starts its run through too (#3610).
+	// No token here: this is the SSH path.
+	run, err := client.StartCodeRun(ctx, client.CodeRunStart{Session: sess, Name: name, Command: command, CaptureMode: captureMode})
 	if err != nil {
 		return nil, err
 	}
+	started := run.Process
 	reportCodeRunStarted(diag, started, box)
 	return started, nil
 }

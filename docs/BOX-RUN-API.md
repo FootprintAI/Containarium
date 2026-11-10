@@ -324,6 +324,35 @@ instruction relative to a project (for example "put the slide under
 
 The capability name is `box_run_workdir`.
 
+## From the CLI: `code run --run-token-file`
+
+`containarium code run <box>` starts its run over an SSH session by default.
+With `--run-token-file <path>` it calls `StartBoxRun` instead and sends the
+token in that file as `run_token`:
+
+```
+containarium code run <box> --prompt '<task>' --name <run> \
+  --run-token-file <path> --server <host>
+```
+
+- The file holds the token on one line. It is read, never printed or logged,
+  and the token is never taken as an argument. An unreadable or empty file is
+  an error before any request is made. The CLI does not mint a token.
+- The token is sent only to a daemon that lists `box_run_token` in
+  `SystemInfo.capabilities`. For any other daemon the CLI refuses, naming the
+  capability, and no run is started.
+- `--prompt`, `--session`, `--continue`, `--name`, `--command` and `--timeout`
+  map to the request's fields. `--approvals ask`,
+  `--output-format-stream-json` and `--token-ttl` belong to the SSH path and
+  are refused with this flag.
+- After the start the command follows the run's log and exits non-zero when
+  the run does, through the reads `code logs --follow` and `code runs` make.
+- The engine, its credential source and the run user come from the box, as for
+  any `StartBoxRun` call; the SSH path runs as the box's own user.
+
+The platform MCP tool `code_run` starts its run through the same function and
+takes no token parameter, so it always uses the SSH path.
+
 ## Putting a file on the box: `WriteBoxFile`
 
 `WriteBoxFile` (`PUT /v1/containers/{username}/files`, `containarium code
