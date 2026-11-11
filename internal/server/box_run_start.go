@@ -151,6 +151,10 @@ func readBoxRunHomeAndConfig(exec boxRunStartFunc, box, username string) (home, 
 // launch script.
 type boxRunSpawn struct {
 	dir, name, command, home string
+	// cwd is the directory the run starts in (StartBoxRunRequest.workdir, #3551,
+	// already shown to exist). Empty or equal to home keeps the home, entered
+	// best-effort as before; any other value must be entered or the spawn fails.
+	cwd string
 	// prelaunch runs before the engine is launched (the session-directory
 	// snapshot a fresh run's discovery compares against). Empty for none.
 	prelaunch string
@@ -163,6 +167,14 @@ type boxRunSpawn struct {
 	// the engine's JSON result object, and reads the session id out of that
 	// object when the engine exits (StartBoxRunRequest.structured_output).
 	structured bool
+}
+
+// runDir is the directory the run starts in: cwd, or the home when unset.
+func (sp boxRunSpawn) runDir() string {
+	if sp.cwd != "" {
+		return sp.cwd
+	}
+	return sp.home
 }
 
 // boxRunSpawnScript builds the script that spawns the command detached
@@ -206,8 +218,14 @@ func boxRunSpawnPrepareScript(sp boxRunSpawn) string {
 		script += ": > " + q(stderrPath) + "\n" +
 			"chmod 600 " + q(stderrPath) + " 2>/dev/null || true\n"
 	}
-	script += "rm -f " + q(exitPath) + " " + q(sessionPath) + " " + q(sessionPath+".snap") + " " + q(toolsPath) + " " + q(toolsTmp) + " " + q(toolsTmp+".e.") + "*\n" +
-		"cd " + q(sp.home) + " 2>/dev/null || true\n"
+	script += "rm -f " + q(exitPath) + " " + q(sessionPath) + " " + q(sessionPath+".snap") + " " + q(toolsPath) + " " + q(toolsTmp) + " " + q(toolsTmp+".e.") + "*\n"
+	if sp.runDir() == sp.home {
+		script += "cd " + q(sp.home) + " 2>/dev/null || true\n"
+	} else {
+		// Never a silent fallback to the home: a workdir that vanished since it
+		// was checked fails the start (set -e).
+		script += "cd " + q(sp.runDir()) + "\n"
+	}
 	if sp.prelaunch != "" {
 		script += sp.prelaunch + "\n"
 	}
@@ -255,7 +273,7 @@ func boxRunSupervisedLaunchScript(sp boxRunSpawn, runUser string) string {
 		"p=" + q(launch) + "\n" +
 		"rm -f \"$p\"\n" +
 		"setsid " + q(runhook.AgentBoxPath) + " run-supervise --config " + q(runhook.ConfigPath(sp.name)) +
-		" --user " + q(runUser) + " --dir " + q(sp.home) + " --command " + q(boxRunSpawnInner(sp)) +
+		" --user " + q(runUser) + " --dir " + q(sp.runDir()) + " --command " + q(boxRunSpawnInner(sp)) +
 		" </dev/null >\"$p\" 2>/dev/null &\n" +
 		"i=0\n" +
 		"while [ ! -s \"$p\" ]; do\n" +
@@ -466,6 +484,9 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	if err := validateBoxRunCommandPolicy(req); err != nil {
 		return nil, err
 	}
+	if err := validateBoxRunWorkdir(req.GetWorkdir()); err != nil {
+		return nil, err
+	}
 	if err := s.authorizeBoxRuns(ctx, req.GetUsername()); err != nil {
 		return nil, err
 	}
@@ -640,6 +661,13 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		}
 	}
 
+	// The run's directory (#3551), checked as the run user under the home the run
+	// starts in, before anything is rotated or spawned.
+	cwd, err := resolveBoxRunWorkdir(startExec, box, runAs, home, req.GetWorkdir())
+	if err != nil {
+		return nil, err
+	}
+
 	// Only now does a finished prior run under this name get rotated aside. In
 	// the unprivileged path the rotate runs as root: the finished run's files may
 	// belong to the owner (a run from before a level was recorded), which the
@@ -685,7 +713,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		command += policy.commandFlags()
 	}
 
-	sp := boxRunSpawn{dir: dir, name: name, command: command, home: home, structured: req.GetStructuredOutput()}
+	sp := boxRunSpawn{dir: dir, name: name, command: command, home: home, cwd: cwd, structured: req.GetStructuredOutput()}
 	sidecar := dir + "/" + name + ".session"
 	switch {
 	case req.GetSessionId() != "":
@@ -698,9 +726,10 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	default:
 		// A fresh run: snapshot the engine's session directory BEFORE the
 		// launch, then poll for the one entry this run creates. Never the
-		// newest pre-existing one (see engine/session_discovery.go).
-		if pre, ok := engine.SessionDiscoveryPrepareCommand(eng.Name(), home, home, sidecar); ok {
-			if cmd, ok := engine.SessionDiscoveryBackgroundCommand(eng.Name(), home, home, sidecar); ok {
+		// newest pre-existing one (see engine/session_discovery.go). The
+		// engine keys its sessions by the directory it starts in.
+		if pre, ok := engine.SessionDiscoveryPrepareCommand(eng.Name(), home, cwd, sidecar); ok {
+			if cmd, ok := engine.SessionDiscoveryBackgroundCommand(eng.Name(), home, cwd, sidecar); ok {
 				sp.prelaunch = pre
 				sp.sessionTrailer = cmd
 			}
@@ -727,11 +756,12 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		PID:         pid,
 		BootID:      strings.TrimSpace(boot),
 		Command:     command,
-		Cwd:         home,
+		Cwd:         cwd,
 		CaptureMode: agentbox.CaptureCombined,
 		LogPath:     dir + "/" + name + ".log",
 		StartedAt:   startedAt,
 		Model:       req.GetModel(),
+		Workdir:     req.GetWorkdir(),
 		Resumed:     boxRunResumed(req),
 	}
 	recordJSON, err := json.Marshal(record)
@@ -797,6 +827,11 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 		}
 		runAs, home = boxRunUnprivilegedUser, runHome
 	}
+	// The run's directory (#3551), checked as the run user before the rotate.
+	cwd, err := resolveBoxRunWorkdir(startExec, box, runAs, home, req.GetWorkdir())
+	if err != nil {
+		return nil, err
+	}
 	if rotate {
 		rotateScript := boxRunRotateScript(dir, name, collision.GetStartedAt().AsTime().Unix())
 		var err error
@@ -820,7 +855,7 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 		}
 		command = boxRunPolicyCommandLine(name, int(req.GetTimeoutSeconds()))
 	}
-	out, err := spawnBoxRun(startExec, listExec, box, runAs, boxRunSpawn{dir: dir, name: name, command: command, home: home}, req.GetCommandPolicy() != nil)
+	out, err := spawnBoxRun(startExec, listExec, box, runAs, boxRunSpawn{dir: dir, name: name, command: command, home: home, cwd: cwd}, req.GetCommandPolicy() != nil)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
 	}
@@ -838,10 +873,11 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 		PID:         pid,
 		BootID:      strings.TrimSpace(boot),
 		Command:     command,
-		Cwd:         home,
+		Cwd:         cwd,
 		CaptureMode: agentbox.CaptureCombined,
 		LogPath:     dir + "/" + name + ".log",
 		StartedAt:   time.Now().UTC(),
+		Workdir:     req.GetWorkdir(),
 	}
 	recordJSON, err := json.Marshal(record)
 	if err != nil {
@@ -870,13 +906,15 @@ const (
 	DaemonCapRunUsage = "run_usage"
 	// DaemonCapBoxRunCommandPolicy: StartBoxRunRequest.command_policy and approval (#3582).
 	DaemonCapBoxRunCommandPolicy = "box_run_command_policy"
+	// DaemonCapBoxRunWorkdir: StartBoxRunRequest.workdir and BoxRun.workdir (#3551).
+	DaemonCapBoxRunWorkdir = "box_run_workdir"
 	// DaemonCapBoxFiles (the WriteBoxFile RPC, #3548) is declared in box_file_write.go,
 	// DaemonCapBoxFilesStream (WriteBoxFileStream) in box_file_stream.go.
 )
 
 // daemonCapabilities is the list GetSystemInfo reports.
 func daemonCapabilities() []string {
-	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxRunCommandPolicy, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream}
+	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxRunCommandPolicy, DaemonCapBoxRunWorkdir, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream}
 }
 
 // boxRunNameCollidesWithDerivedFile reports whether name would alias a file or

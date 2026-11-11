@@ -79,6 +79,12 @@ type Status struct {
 	// (firewall driver or Incus too old): nothing is guarded, creates are
 	// not refused, and LastError says why. Doctor treats it as red.
 	Unsupported bool
+	// IsolationDegraded is set while tenant containers are being created or
+	// kept without tenant-to-tenant isolation because this host cannot carry
+	// bridge NIC ACLs and the create was allowed to proceed anyway (#3521).
+	// Unlike Unsupported it is also set by Prepare, so a host that creates
+	// boxes before the first pass reports it. Cleared on a supported check.
+	IsolationDegraded bool
 	// LegacyIngressCleared counts per-container ACLs (acl-<user>) whose
 	// pre-#2359 ingress rules this reconciler has cleared since start.
 	LegacyIngressCleared int
@@ -206,6 +212,7 @@ func (r *Reconciler) prepare(ctx context.Context, containerName, tenant string, 
 		}
 		return fmt.Errorf("tenantguard: %w", err)
 	}
+	r.setStatus(func(s *Status) { s.IsolationDegraded = false })
 	in, _, _, err := r.gather(ctx)
 	if err != nil {
 		return fmt.Errorf("tenantguard: %w", err)
@@ -267,7 +274,7 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 		}
 		return r.fail(fmt.Errorf("tenantguard: %w", err))
 	}
-	r.setStatus(func(s *Status) { s.Unsupported = false })
+	r.setStatus(func(s *Status) { s.Unsupported = false; s.IsolationDegraded = false })
 
 	in, unresolved, unmanaged, err := r.gather(ctx)
 	if err != nil {
@@ -579,6 +586,7 @@ func (r *Reconciler) pruneStale(pol Policy) error {
 func (r *Reconciler) warnUnsupported(err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.status.IsolationDegraded = true
 	if r.warned == err.Error() {
 		return
 	}

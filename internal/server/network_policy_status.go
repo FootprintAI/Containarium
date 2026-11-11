@@ -29,6 +29,9 @@ type tenantApplied struct {
 	// EgressIncomplete: an add or removal in the tenant's egress allow-list
 	// failed this pass, so the kernel list differs from the policy (#2983).
 	EgressIncomplete bool
+	// CompileFailed: the tenant's egress or deny rules failed to compile this
+	// pass, so its last good sets are held instead of its policy (#3518).
+	CompileFailed bool
 }
 
 // appliedSnapshot is the enforcer's answer for one tenant.
@@ -91,6 +94,11 @@ func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]b
 		a := out[name]
 		a.EgressIncomplete = true
 		out[name] = a
+	}
+	for _, f := range plan.compileFailed {
+		a := out[f.Tenant]
+		a.CompileFailed = true
+		out[f.Tenant] = a
 	}
 	return out
 }
@@ -202,6 +210,9 @@ func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool, now time
 		if snap.Found && a.EgressIncomplete {
 			st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE)
 		}
+		if snap.Found && a.CompileFailed {
+			st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_POLICY_COMPILE_FAILED)
+		}
 		return st
 	}
 	// LOADED only when every running box is covered; otherwise the modes are
@@ -224,6 +235,9 @@ func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool, now time
 	}
 	if a.EgressIncomplete {
 		st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE)
+	}
+	if a.CompileFailed {
+		st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_POLICY_COMPILE_FAILED)
 	}
 	return st
 }

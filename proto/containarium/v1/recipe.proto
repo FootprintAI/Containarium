@@ -250,6 +250,14 @@ message DeployRecipeRequest {
   // Required for such a recipe (absent is FAILED_PRECONDITION); ignored for
   // an ungated one. A gated recipe cannot be deployed async.
   GuardrailGateInput guardrail_input = 10;
+
+  // SSH public keys to authorize (optional, can be added later).
+  // Forwarded unchanged to the inner CreateContainer; same validation and
+  // limits (at most 32 keys, each at most 8 KiB, each a well-formed OpenSSH
+  // public key). An invalid or over-bound key refuses the whole deploy with
+  // INVALID_ARGUMENT before any container is created. Empty keeps the
+  // key-less behaviour: add keys later with AddSSHKey / SetSSHKeys.
+  repeated string ssh_keys = 11;
 }
 
 // DeployRecipeResponse is the result of a recipe deployment.

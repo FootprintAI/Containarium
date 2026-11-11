@@ -31,8 +31,14 @@ ever mentions an auth-method setting or a managed-settings path.
 ## Deploy
 
 ```bash
-containarium recipe deploy coding-agent my-box --param release=v0.89.0
+containarium recipe deploy coding-agent my-box --param release=v0.89.0 \
+    --ssh-key ~/.ssh/id_ed25519.pub
 ```
+
+`--ssh-key` (optional, repeatable) authorizes that public key on the box when
+it is created, before the recipe's install runs, so no separate key call is
+needed after the deploy. An invalid key refuses the deploy before any box
+exists. The MCP `deploy_recipe` tool takes the same keys as `ssh_keys`.
 
 | Parameter | Meaning |
 |---|---|

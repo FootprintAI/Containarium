@@ -1661,6 +1661,11 @@ func (s *Server) registerTools() {
 						},
 						"required": []string{"staging_ref", "attestation"},
 					},
+					"ssh_keys": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]string{"type": "string"},
+						"description": "SSH public keys to authorize (optional). Applied when the box is created, before the recipe's post_start; an invalid key refuses the deploy. Omitted: no keys (add them later); no ephemeral key is generated.",
+					},
 				},
 				"required": []string{"recipe_id", "name"},
 			},
@@ -3291,6 +3296,9 @@ type deployRecipeArgs struct {
 	GPU            string                 `json:"gpu"`
 	Parameters     map[string]interface{} `json:"parameters"`
 	GuardrailInput json.RawMessage        `json:"guardrail_input"`
+	// SSHKeys are passed through as-is (#3514); the daemon validates them.
+	// Unlike create_container, omitting them generates no ephemeral key.
+	SSHKeys []string `json:"ssh_keys"`
 }
 
 // handleDeployRecipe validates the optional gate input before calling the
@@ -3324,6 +3332,7 @@ func handleDeployRecipe(client API, args map[string]interface{}) (string, error)
 		GPU:            input.GPU,
 		Parameters:     params,
 		GuardrailInput: gate,
+		SSHKeys:        input.SSHKeys,
 	})
 	if err != nil {
 		return "", err

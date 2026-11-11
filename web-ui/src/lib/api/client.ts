@@ -27,12 +27,58 @@ export interface APIError {
 }
 
 /**
+ * localStorage key that acknowledges a scheme-less, non-loopback endpoint is
+ * deliberately reached over plain http:// (silences the warning, #3517).
+ */
+export const PLAINTEXT_OPT_IN_KEY = 'containarium.allowPlaintextFallback';
+
+const warnedPlaintext = new Set<string>();
+
+/** Test hook: forget which endpoints have already been warned about. */
+export function resetPlaintextWarnings(): void {
+  warnedPlaintext.clear();
+}
+
+/**
+ * True for localhost, 127.0.0.0/8 and ::1 (host, host:port or URL). A
+ * lookalike such as localhost.example.com is not loopback.
+ */
+export function isLoopbackEndpoint(endpoint: string): boolean {
+  try {
+    const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(endpoint);
+    const host = new URL(hasScheme ? endpoint : 'http://' + endpoint).hostname
+      .replace(/^\[|\]$/g, '')
+      .toLowerCase();
+    return host === 'localhost' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host);
+  } catch {
+    return false;
+  }
+}
+
+function plaintextOptedIn(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(PLAINTEXT_OPT_IN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Normalize endpoint URL to ensure it has a protocol
  */
-function normalizeEndpoint(endpoint: string): string {
+export function normalizeEndpoint(endpoint: string): string {
   let url = endpoint.trim();
-  // Add http:// if no protocol is specified
+  // Add http:// if no protocol is specified. The default is unchanged, but a
+  // non-loopback endpoint sends the token in the clear, so warn (once) unless
+  // the operator opted in (#3517).
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    if (!isLoopbackEndpoint(url) && !plaintextOptedIn() && !warnedPlaintext.has(url)) {
+      warnedPlaintext.add(url);
+      console.warn(
+        `Server endpoint "${url}" has no scheme; falling back to plaintext http://, so the token is sent unencrypted. ` +
+          `Use an https:// endpoint, or set localStorage["${PLAINTEXT_OPT_IN_KEY}"]="1" to acknowledge.`,
+      );
+    }
     url = 'http://' + url;
   }
   // Remove trailing slash
