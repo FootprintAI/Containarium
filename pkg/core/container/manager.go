@@ -16,13 +16,15 @@ import (
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	"github.com/footprintai/containarium/pkg/core/stacks"
+	"github.com/footprintai/containarium/pkg/core/toolchain"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	incusapi "github.com/lxc/incus/v7/shared/api"
 )
 
 // Manager handles container lifecycle operations
 type Manager struct {
-	incus incus.Backend
+	incus         incus.Backend
+	toolchainRoot string // test override; production uses toolchain.HostRoot
 	// mirrors are the operator-configured registry pull-through mirrors (#908)
 	// injected into each podman-enabled box's registries.conf.d. Empty = boxes
 	// pull from upstream registries as before. See registry_mirror.go.
@@ -52,13 +54,16 @@ const defaultCloudInitWait = 5 * time.Second
 
 // CreateOptions holds options for creating a container
 type CreateOptions struct {
-	Username string
-	Image    string
-	CPU      string
-	Memory   string
-	Disk     string   // Disk size (e.g., "20GB")
-	GPUs     []string // GPU device IDs for passthrough — one per attached GPU ("0"/"1" or PCI address); empty = none
-	StaticIP string   // Static IP address (e.g., "10.100.0.100") - empty for DHCP
+	// NetworkTenant is an explicit, administrator-authorized NIC security domain.
+	// It is independent of the encryption tenant_id and of cloud labels.
+	NetworkTenant string
+	Username      string
+	Image         string
+	CPU           string
+	Memory        string
+	Disk          string   // Disk size (e.g., "20GB")
+	GPUs          []string // GPU device IDs for passthrough — one per attached GPU ("0"/"1" or PCI address); empty = none
+	StaticIP      string   // Static IP address (e.g., "10.100.0.100") - empty for DHCP
 
 	// StoragePool overrides the daemon-wide storage pool for this create.
 	// Empty uses the configured pool (#1213). See box.BoxSpec.StoragePool for
@@ -176,6 +181,14 @@ var (
 
 // Create creates a new container with full setup
 func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
+	if opts.NetworkTenant != "" {
+		if err := incus.ValidateNetworkTenant(opts.NetworkTenant); err != nil {
+			return nil, err
+		}
+		if cloud := opts.Labels[incus.CloudOrgIDLabel]; cloud != "" && cloud != opts.NetworkTenant {
+			return nil, fmt.Errorf("network Tenant conflicts with cloud attribution")
+		}
+	}
 	createStart := time.Now()
 	containerName := opts.Username + "-container"
 
@@ -248,7 +261,15 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	if opts.Verbose {
 		fmt.Printf("  Setting %d label(s)...\n", len(opts.Labels))
 	}
-	labelConfig := make(map[string]string, len(opts.Labels))
+	labelConfig := make(map[string]string, len(opts.Labels)+1)
+	if opts.NetworkTenant != "" {
+		if isVM {
+			return nil, fmt.Errorf("explicit network Tenant requires LXC")
+		}
+		// Persist the native membership with the initial instance config.
+		// Generic labels are not authoritative network membership.
+		labelConfig[incus.TenantLabelKey] = opts.NetworkTenant
+	}
 	for k, v := range opts.Labels {
 		labelConfig[incus.LabelPrefix+k] = v
 	}
@@ -267,9 +288,10 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		Memory:                 opts.Memory,
 		EnableNesting:          opts.EnablePodman,
 		EnablePodmanPrivileged: opts.EnablePodmanPrivileged,
-		AutoStart:              opts.AutoStart,
-		Env:                    otelEnvVars(opts, containerName),
-		ExtraConfig:            labelConfig,
+		// Explicit membership requires a guarded, non-started instance.
+		AutoStart:   opts.AutoStart && opts.NetworkTenant == "",
+		Env:         otelEnvVars(opts, containerName),
+		ExtraConfig: labelConfig,
 	}
 	// Record whether podman was requested, always, so a box created with it
 	// off is distinguishable from a legacy box with no key (#2858).
@@ -350,6 +372,9 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 		config.GPUs = gpus
 	}
 
+	if !isWindows && config.InstanceType != incusapi.InstanceTypeVM && toolchain.Available(m.managedToolchainRoot()) {
+		config.ManagedToolchainRoot = m.managedToolchainRoot()
+	}
 	if err := m.timed(StageCreateInstance, func() error {
 		return m.incus.CreateContainer(config)
 	}); err != nil {
@@ -359,8 +384,12 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	// Guard the NIC before the first start (tenant network guard): a box
 	// that cannot be guarded is deleted rather than started reachable.
 	if err := m.guardNIC(containerName, opts); err != nil {
-		_ = m.incus.DeleteContainer(containerName)
-		return nil, err
+		return nil, m.cleanupGuardedCreate(containerName, err)
+	}
+	if opts.NetworkTenant != "" && opts.AutoStart {
+		if err := m.incus.SetConfig(containerName, "boot.autostart", "true"); err != nil {
+			return nil, m.cleanupGuardedCreate(containerName, fmt.Errorf("%w: guarded autostart: %v", ErrNICGuard, err))
+		}
 	}
 
 	// Step 2: Start container
@@ -473,7 +502,7 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	// See #370.
 	if len(config.Env) > 0 {
 		if err := m.WriteOTelEnvFile(containerName, config.Env); err != nil {
-			log.Printf("[otel] %s: failed to write env file: %v (native-LXC env still stamped)", containerName, err)
+			log.Printf("[otel] %q: failed to write env file: %v (native-LXC env still stamped)", containerName, err)
 		}
 	}
 
@@ -505,6 +534,15 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	}); err != nil {
 		return nil, m.abortCreate(containerName, opts.Username, jumpAccountDone, accountPreexisted,
 			fmt.Errorf("failed to install packages: %w", err))
+	}
+
+	if config.ManagedToolchainRoot != "" {
+		if err := m.incus.Exec(containerName, []string{"sh", "-c", toolchain.SetupScript()}); err != nil {
+			// Optional for box creation (NONE/FULL_SUDO must remain usable).
+			// BUILD_TOOLS repeats this check and refuses a broken/conflicting
+			// tool setup before starting any run.
+			log.Printf("[toolchains] %q: tools unavailable: %v", containerName, err)
+		}
 	}
 
 	// Bring the box under the sshd policy at birth (#2424), on the baked
@@ -823,7 +861,7 @@ func (m *Manager) installPackages(containerName string, enablePodman bool, stack
 		// configured. Best-effort: a mirror-config failure must not fail box
 		// provisioning — podman still pulls from upstream (today's behavior).
 		if err := m.writeRegistryMirrors(containerName); err != nil {
-			log.Printf("Warning: registry-mirror config on %s: %v", containerName, err)
+			log.Printf("Warning: registry-mirror config on %q: %v", containerName, err)
 		}
 
 		// Install podman-compose via pip
@@ -936,7 +974,7 @@ func (m *Manager) installPackages(containerName string, enablePodman bool, stack
 func (m *Manager) enablePodmanRestartDurability(containerName, username string) {
 	// Rootful: system-wide podman-restart.service.
 	if err := m.incus.Exec(containerName, []string{"systemctl", "enable", "podman-restart.service"}); err != nil {
-		log.Printf("Warning: failed to enable system podman-restart.service in %s: %v", containerName, err)
+		log.Printf("Warning: failed to enable system podman-restart.service in %q: %v", containerName, err)
 	}
 
 	// Rootless: linger + user podman-restart.service for the tenant user.
@@ -944,7 +982,7 @@ func (m *Manager) enablePodmanRestartDurability(containerName, username string) 
 		return
 	}
 	if err := m.incus.Exec(containerName, []string{"loginctl", "enable-linger", username}); err != nil {
-		log.Printf("Warning: failed to enable-linger for %s in %s: %v", username, containerName, err)
+		log.Printf("Warning: failed to enable-linger for %q in %q: %v", username, containerName, err)
 	}
 	// Enable the user unit by creating the wants symlink directly. `systemctl
 	// --user enable` would need a live user bus (not guaranteed mid-provision),
@@ -959,7 +997,7 @@ mkdir -p "$home/.config/systemd/user/default.target.wants"
 ln -sf "$unit" "$home/.config/systemd/user/default.target.wants/podman-restart.service"
 chown -R "$1:$1" "$home/.config"`
 	if err := m.incus.Exec(containerName, []string{"bash", "-c", enableUserUnit, "bash", username}); err != nil {
-		log.Printf("Warning: failed to enable user podman-restart.service for %s in %s: %v", username, containerName, err)
+		log.Printf("Warning: failed to enable user podman-restart.service for %q in %q: %v", username, containerName, err)
 	}
 }
 
@@ -1268,6 +1306,43 @@ func (m *Manager) Start(username string) error {
 	return m.incus.StartContainer(containerName)
 }
 
+// StopIfRunning stops the container unless it is already stopped (#3242). A
+// stop request asks for an end state; when that state already holds the call
+// succeeds with changed=false and sends no action to the backend, so callers can
+// skip post-stop work (stamping stopped_at, dropping the key, emitting an
+// event). The state is re-read when the backend's stop fails: a concurrent stop
+// that won the race leaves the instance Stopped, which is success for this
+// caller too (changed=false). Any other failure, including a lookup that
+// reports the instance missing, is returned unchanged for the caller to
+// classify.
+func (m *Manager) StopIfRunning(username string, force bool) (changed bool, err error) {
+	return m.ensureState(username+"-container", "Stopped", func(n string) error { return m.incus.StopContainer(n, force) })
+}
+
+// StartIfStopped is the start counterpart of StopIfRunning: an instance that is
+// already Running is success with changed=false (#3242).
+func (m *Manager) StartIfStopped(username string) (changed bool, err error) {
+	return m.ensureState(username+"-container", "Running", m.incus.StartContainer)
+}
+
+func (m *Manager) ensureState(containerName, want string, act func(string) error) (bool, error) {
+	info, err := m.incus.GetContainer(containerName)
+	if err != nil {
+		return false, err
+	}
+	if info != nil && info.State == want {
+		return false, nil
+	}
+	if err := act(containerName); err != nil {
+		// Close the read-then-act race: someone else reached the end state.
+		if cur, gerr := m.incus.GetContainer(containerName); gerr == nil && cur != nil && cur.State == want {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // Delete deletes a container
 func (m *Manager) Delete(username string, force bool) error {
 	containerName := username + "-container"
@@ -1316,7 +1391,7 @@ func (m *Manager) abortCreate(containerName, username string, jumpAccountDone <-
 		select {
 		case <-jumpAccountDone:
 		case <-time.After(jumpAccountJoinTimeout):
-			log.Printf("[create] %s: the jump-account step did not finish within %s; leaving the host account %q for the operator", containerName, jumpAccountJoinTimeout, username)
+			log.Printf("[create] %q: the jump-account step did not finish within %s; leaving the host account %q for the operator", containerName, jumpAccountJoinTimeout, username)
 			return cause
 		}
 	}
@@ -1324,7 +1399,7 @@ func (m *Manager) abortCreate(containerName, username string, jumpAccountDone <-
 		return cause
 	}
 	if err := deleteJumpServerAccountFn(username, false); err != nil {
-		log.Printf("[create] %s: could not remove the host account %q left by the failed create: %v", containerName, username, err)
+		log.Printf("[create] %q: could not remove the host account %q left by the failed create: %v", containerName, username, err)
 	}
 	return cause
 }
@@ -1497,7 +1572,7 @@ func (m *Manager) InstallStack(username, stackID string) error {
 
 	// Verify the effective user exists in the container; fall back to "ubuntu"
 	if err := m.incus.Exec(containerName, []string{"id", effectiveUser}); err != nil {
-		log.Printf("User %q not found in %s, falling back to ubuntu", effectiveUser, containerName)
+		log.Printf("User %q not found in %q, falling back to ubuntu", effectiveUser, containerName)
 		effectiveUser = "ubuntu"
 	}
 
@@ -1574,7 +1649,7 @@ func (m *Manager) InstallStack(username, stackID string) error {
 			err = m.incus.SetConfig(containerName, incus.StackKey, stackID)
 		}
 		if err != nil {
-			log.Printf("Warning: installed stack %s in %s but could not record it: %v", stackID, containerName, err)
+			log.Printf("Warning: installed stack %q in %q but could not record it: %v", stackID, containerName, err)
 		}
 	}
 
@@ -1690,6 +1765,6 @@ func (m *Manager) ListWithLabels(labelFilter map[string]string) ([]incus.Contain
 // reconciler's silent first-pass backfill instead of tamper detection.
 func (m *Manager) markSSHDPolicy(containerName string) {
 	if err := m.incus.SetConfig(containerName, sshdpolicy.MarkerKey, sshdpolicy.MarkerValue); err != nil {
-		log.Printf("[sshd-policy] %s: set %s: %v", containerName, sshdpolicy.MarkerKey, err)
+		log.Printf("[sshd-policy] %q: set %s: %v", containerName, sshdpolicy.MarkerKey, err)
 	}
 }

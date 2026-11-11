@@ -193,13 +193,42 @@ type installRun struct {
 // script it ran, plus the command's own stdout.
 func runInstall(t *testing.T, box string, flags map[string]string) ([]installRun, string, error) {
 	t.Helper()
+	runs, out, _, err := runInstallWith(t, box, flags, installFakes{})
+	return runs, out, err
+}
 
-	origSSH, origResolve := sshExec, resolveCodeTargetFn
+// installFakes overrides the remote side of runInstallWith: probe answers
+// every sshProbeFn call (the silent preflight / key-wait probes), exec every
+// sshExec call. A nil field succeeds, exec with a verify-shaped output.
+// events, when set, records "probe" and "exec" in call order.
+type installFakes struct {
+	probe  func(args []string) error
+	exec   func(script string) (string, error)
+	events *[]string
+	// urlCmd, when set, answers `code bootstrap --url-cmd` in place of the
+	// canned output (runCodeBootstrapWith only).
+	urlCmd func(ctx context.Context, command, box string, stderr io.Writer) (string, error)
+	// recordAgent, when set, receives every coding-agent record the install
+	// makes. The real server call is always stubbed out.
+	recordAgent func(box string, agent pb.CodingAgent)
+}
+
+// runInstallWith is runInstall with control over the remote side; it also
+// returns the command's stderr.
+func runInstallWith(t *testing.T, box string, flags map[string]string, f installFakes) ([]installRun, string, string, error) {
+	t.Helper()
+
+	origSSH, origResolve, origRecord := sshExec, resolveCodeTargetFn, recordCodingAgentFn
 	origBootstrap, origRelease, origVersion := codeBootstrapURL, codeRelease, codeClaudeCodeVersion
 	t.Cleanup(func() {
-		sshExec, resolveCodeTargetFn = origSSH, origResolve
+		sshExec, resolveCodeTargetFn, recordCodingAgentFn = origSSH, origResolve, origRecord
 		codeBootstrapURL, codeRelease, codeClaudeCodeVersion = origBootstrap, origRelease, origVersion
 	})
+	recordCodingAgentFn = func(_ context.Context, box string, agent pb.CodingAgent, _ io.Writer) {
+		if f.recordAgent != nil {
+			f.recordAgent(box, agent)
+		}
+	}
 
 	codeBootstrapURL, codeRelease, codeClaudeCodeVersion = flags["bootstrap-url"], flags["release"], flags["claude-code-version"]
 
@@ -213,8 +242,23 @@ func runInstall(t *testing.T, box string, flags map[string]string) ([]installRun
 			script = args[len(args)-1]
 		}
 		runs = append(runs, installRun{script: script})
+		if f.events != nil {
+			*f.events = append(*f.events, "exec")
+		}
+		if f.exec != nil {
+			return f.exec(script)
+		}
 		return "1.2.3 (Claude Code)\ncredential sources present:\n  (none)", nil
 	}
+	withProbe(t, func(_ context.Context, args []string) error {
+		if f.events != nil {
+			*f.events = append(*f.events, "probe")
+		}
+		if f.probe != nil {
+			return f.probe(args)
+		}
+		return nil
+	})
 
 	cmd := &cobra.Command{}
 	var out, errBuf bytes.Buffer
@@ -222,7 +266,7 @@ func runInstall(t *testing.T, box string, flags map[string]string) ([]installRun
 	cmd.SetErr(&errBuf)
 	cmd.SetContext(context.Background())
 	err := runCodeInstall(cmd, []string{box})
-	return runs, out.String(), err
+	return runs, out.String(), errBuf.String(), err
 }
 
 func allScripts(runs []installRun) string {
@@ -480,6 +524,7 @@ func TestCodeInstallScripts_AreValidPOSIXShell(t *testing.T) {
 		"agent-box":           agentBoxInstallScript("v0.89.0"),
 		"sdlc-skills":         sdlcSkillsInstallScript("v0.89.0", sdlcskills.SkillSets{}),
 		"bootstrap":           bootstrapScript("https://example.test/b.tar.gz"),
+		"bootstrap-preflight": bootstrapPreflightScript(),
 		"verify":              claudeVerifyScript(),
 
 		"pi-install":        piGateway.InstallScript(engine.InstallOptions{Version: engine.PiVersion, ModelsJSON: string(modelsJSON)}),

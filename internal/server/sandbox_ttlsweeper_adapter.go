@@ -58,7 +58,7 @@ func (a *ttlsweeperSandboxAdapter) ListContainers() ([]ttlsweeper.ContainerView,
 // sweeper is the daemon reaping its own expired state on a schedule, not
 // acting on behalf of a tenant request.
 func (s *SandboxServer) DeleteContainer(_ context.Context, name string, reason string) error {
-	log.Printf("[ttl] auto-deleting sandbox=%s reason=%q", name, reason)
+	log.Printf("[ttl] auto-deleting sandbox=%q reason=%q", name, reason)
 	if member := s.untrackClaimed(name); member != nil {
 		return s.pool.Release(member)
 	}

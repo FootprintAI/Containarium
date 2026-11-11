@@ -50,7 +50,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -67,6 +67,9 @@ jobs:
           else
             version="${GITHUB_REF#refs/tags/v}"
           fi
+          # Validate BEFORE first use (#3396): a newline would forge extra
+          # GITHUB_OUTPUT keys; metacharacters would reach image tags.
+          scripts/ci/validate-release-version.sh "${version}"
           # Derive the minor-series moving tag: 0.16.10 -> v0.16
           minor="v$(echo "$version" | cut -d. -f1-2)"
 
@@ -96,7 +99,7 @@ jobs:
           # later but our prod fleet is amd64 today.
           platforms: linux/amd64
           # Push on tag only; a rehearsal builds the image and discards it.
-          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          push: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.tags.outputs.tags }}
           # Build provenance + SBOM are GHA-default for buildx push;
           # explicit so it's reviewable. NOTE: this is why the Trivy step
@@ -114,7 +117,7 @@ jobs:
       # a signature is a permanent public Rekor entry, and a rehearsal
       # pushes nothing to sign. See docs/security/VERIFYING-RELEASES.md.
       - name: Sign and verify the image (cosign keyless)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: ./.github/actions/sign-image
         with:
           image: ${{ steps.tags.outputs.image }}
@@ -126,13 +129,14 @@ jobs:
       # comment). Real tag pushes only: a rehearsal doesn't push anything,
       # so there is nothing here to pull.
       - name: Pull published image for scanning
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: docker pull ${{ steps.tags.outputs.scan_ref }}
 
       - name: Run Trivy vulnerability scanner (image)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # master
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
           image-ref: ${{ steps.tags.outputs.scan_ref }}
           format: 'sarif'
           output: 'trivy-otel-sidecar-results.sarif'
@@ -142,8 +146,8 @@ jobs:
           exit-code: '1'
 
       - name: Upload Trivy SARIF results
-        if: always() && startsWith(github.ref, 'refs/tags/v')
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
         with:
           sarif_file: trivy-otel-sidecar-results.sarif
 
@@ -164,7 +168,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -180,6 +184,9 @@ jobs:
           else
             version="${GITHUB_REF#refs/tags/v}"
           fi
+          # Validate BEFORE first use (#3396): a newline would forge extra
+          # GITHUB_OUTPUT keys; metacharacters would reach image tags.
+          scripts/ci/validate-release-version.sh "${version}"
           minor="v$(echo "$version" | cut -d. -f1-2)"
           base="ghcr.io/footprintai/containarium-sshpiper"
           {
@@ -202,7 +209,7 @@ jobs:
           file: ./images/sshpiper/Dockerfile
           platforms: linux/amd64
           # Push on tag only; a rehearsal builds the image and discards it.
-          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          push: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.tags.outputs.tags }}
           # See the otel-sidecar job's comment above for why the Trivy step
           # below pulls the pushed tag instead of using `load: true` here.
@@ -215,7 +222,7 @@ jobs:
       # a signature is a permanent public Rekor entry, and a rehearsal
       # pushes nothing to sign. See docs/security/VERIFYING-RELEASES.md.
       - name: Sign and verify the image (cosign keyless)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: ./.github/actions/sign-image
         with:
           image: ${{ steps.tags.outputs.image }}
@@ -227,13 +234,14 @@ jobs:
       # about to be published on a release tag instead. Real tag pushes
       # only, same reasoning as the otel-sidecar job above.
       - name: Pull published image for scanning
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: docker pull ${{ steps.tags.outputs.scan_ref }}
 
       - name: Run Trivy vulnerability scanner (image)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # master
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
           image-ref: ${{ steps.tags.outputs.scan_ref }}
           format: 'sarif'
           output: 'trivy-sshpiper-release-results.sarif'
@@ -243,8 +251,8 @@ jobs:
           exit-code: '1'
 
       - name: Upload Trivy SARIF results
-        if: always() && startsWith(github.ref, 'refs/tags/v')
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
         with:
           sarif_file: trivy-sshpiper-release-results.sarif
 
@@ -265,7 +273,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -281,6 +289,9 @@ jobs:
           else
             version="${GITHUB_REF#refs/tags/v}"
           fi
+          # Validate BEFORE first use (#3396): a newline would forge extra
+          # GITHUB_OUTPUT keys; metacharacters would reach image tags.
+          scripts/ci/validate-release-version.sh "${version}"
           minor="v$(echo "$version" | cut -d. -f1-2)"
           base="ghcr.io/footprintai/containarium-agent-box"
           {
@@ -304,7 +315,7 @@ jobs:
           file: ./images/agent-box/Dockerfile
           platforms: linux/amd64
           # Push on tag only; a rehearsal builds the image and discards it.
-          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          push: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.tags.outputs.tags }}
           # See the otel-sidecar job's comment above for why the Trivy step
           # below pulls the pushed tag instead of using `load: true` here.
@@ -317,7 +328,7 @@ jobs:
       # a signature is a permanent public Rekor entry, and a rehearsal
       # pushes nothing to sign. See docs/security/VERIFYING-RELEASES.md.
       - name: Sign and verify the image (cosign keyless)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: ./.github/actions/sign-image
         with:
           image: ${{ steps.tags.outputs.image }}
@@ -329,13 +340,14 @@ jobs:
       # about to be published on a release tag instead. Real tag pushes
       # only, same reasoning as the otel-sidecar job above.
       - name: Pull published image for scanning
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: docker pull ${{ steps.tags.outputs.scan_ref }}
 
       - name: Run Trivy vulnerability scanner (image)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # master
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
           image-ref: ${{ steps.tags.outputs.scan_ref }}
           format: 'sarif'
           output: 'trivy-agent-box-release-results.sarif'
@@ -345,7 +357,117 @@ jobs:
           exit-code: '1'
 
       - name: Upload Trivy SARIF results
-        if: always() && startsWith(github.ref, 'refs/tags/v')
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
         with:
           sarif_file: trivy-agent-box-release-results.sarif
+
+  # slides-agent (#3434): the prebaked image the `slides-agent` recipe runs in a
+  # box (images/slides-agent/Dockerfile). Published like the sidecars so the
+  # recipe's default image reference, ghcr.io/footprintai/containarium-slides-agent:<release>,
+  # exists for every release tag. Same shape as the agent-box job above.
+  slides-agent:
+    runs-on: ubuntu-latest
+    # Job-level: replaces the workflow-level grant for this job. id-token is
+    # for the keyless cosign signature only.
+    permissions:
+      contents: read
+      packages: write   # for GHCR push and the signature push
+      security-events: write   # for the Trivy SARIF upload
+      id-token: write   # cosign keyless (GitHub OIDC -> Fulcio)
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags
+        id: tags
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            version="${INPUT_VERSION}"
+          else
+            version="${GITHUB_REF#refs/tags/v}"
+          fi
+          # Validate BEFORE first use (#3396): a newline would forge extra
+          # GITHUB_OUTPUT keys; metacharacters would reach image tags.
+          scripts/ci/validate-release-version.sh "${version}"
+          minor="v$(echo "$version" | cut -d. -f1-2)"
+          base="ghcr.io/footprintai/containarium-slides-agent"
+          {
+            echo "image=${base}"
+            # A pre-release tag (0.101.0-rc.1) pushes only its exact tag:
+            # the moving tags keep pointing at the newest full release.
+            case "$version" in
+              *-*) tags="${base}:v${version}" ;;
+              *)   tags="${base}:v${version},${base}:${minor},${base}:latest-stable" ;;
+            esac
+            echo "tags=${tags}"
+            echo "scan_ref=${base}:v${version}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push containarium-slides-agent
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          # Repo root context: the Dockerfile copies images/slides-agent/*.
+          context: .
+          file: ./images/slides-agent/Dockerfile
+          platforms: linux/amd64
+          # Push on tag only; a rehearsal builds the image and discards it.
+          push: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+          tags: ${{ steps.tags.outputs.tags }}
+          # See the otel-sidecar job's comment above for why the Trivy step
+          # below pulls the pushed tag instead of using `load: true` here.
+          provenance: true
+          sbom: true
+
+      # Keyless signature of the pushed digest (never a tag), verified in
+      # the same step against this workflow at this tag; the job fails if
+      # verification does. Tag pushes only, like release.yml's sign-release:
+      # a signature is a permanent public Rekor entry, and a rehearsal
+      # pushes nothing to sign. See docs/security/VERIFYING-RELEASES.md.
+      - name: Sign and verify the image (cosign keyless)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: ./.github/actions/sign-image
+        with:
+          image: ${{ steps.tags.outputs.image }}
+          digest: ${{ steps.build.outputs.digest }}
+          workflow-file: sidecars.yml
+
+      # Note: slides-agent-image.yml already scans a build of this same
+      # Dockerfile on every PR/push to main — this scans the actual image
+      # about to be published on a release tag instead. Real tag pushes
+      # only, same reasoning as the otel-sidecar job above.
+      - name: Pull published image for scanning
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: docker pull ${{ steps.tags.outputs.scan_ref }}
+
+      - name: Run Trivy vulnerability scanner (image)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
+          image-ref: ${{ steps.tags.outputs.scan_ref }}
+          format: 'sarif'
+          output: 'trivy-slides-agent-release-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF results
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
+        with:
+          sarif_file: trivy-slides-agent-release-results.sarif

@@ -1,0 +1,66 @@
+name: server-race
+
+# Runs internal/server under the race detector on Linux (#3564). Nothing else
+# in CI does: distros-go-ci races only ./distros/go/..., and there is no
+# repo-wide `go test ./...` lane. The box-run start path uses setsid and /proc,
+# so this must be Linux (it fails on macOS).
+#
+# Two steps, one job:
+#   1. the box-run / skill-set gate tests (#3510), by name, so a rename or
+#      deletion that makes them match nothing fails the job instead of
+#      silently passing;
+#   2. the whole package, so races in the rest of the daemon surface too.
+# Kept out of the fast unit lane because -race roughly triples build time.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'internal/server/**'
+      - 'pkg/core/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/server-race.yml'
+  # No `branches:` filter on pull_request, deliberately (#1215): it would give
+  # stacked PRs zero checks.
+  pull_request:
+    paths:
+      - 'internal/server/**'
+      - 'pkg/core/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/server-race.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  race:
+    name: go test -race ./internal/server
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go-cached
+        with:
+          go-version: '1.26.11'
+          cache-name: server-race
+
+      - name: Box-run / skill-set gate tests (must exist and pass)
+        run: |
+          set -o pipefail
+          go test -race -count=1 -v \
+            -run 'TestStartBoxRun_RefusedWhileASkillSetApplyIsInstalling|TestApplyBoxSkillSets_WaitsForARunStartThenRefusesIt' \
+            ./internal/server/ | tee gate.out
+          # -run matching nothing exits 0; require both to have actually passed.
+          test "$(grep -c '^--- PASS: TestStartBoxRun_RefusedWhileASkillSetApplyIsInstalling\|^--- PASS: TestApplyBoxSkillSets_WaitsForARunStartThenRefusesIt' gate.out)" = 2
+
+      - name: Whole package under -race
+        run: go test -race -count=1 ./internal/server/...

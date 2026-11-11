@@ -34,6 +34,9 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: agent-runtime/package-lock.json
+      - name: shellcheck the box helpers (helpers/)
+        # shellcheck is preinstalled on ubuntu-latest.
+        run: shellcheck helpers/*
       - run: npm ci
       - name: Typecheck (source and tests)
         run: npm run typecheck

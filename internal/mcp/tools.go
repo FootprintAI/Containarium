@@ -186,9 +186,16 @@ func (s *Server) registerTools() {
 						"type":        "boolean",
 						"description": "Enable Podman support (default: true)",
 					},
+					"network_tenant": map[string]interface{}{"type": "string", "description": "Administrator-authorized native network Tenant; local Linux LXC only. Independent of encryption tenant_id; enforced NIC ACL before first Start."},
 					"disable_auto_sleep": map[string]interface{}{
 						"type":        "boolean",
 						"description": "Create the box with NO auto-sleep timer (default: false). Only matters on a hosted platform that defaults some orgs (for example seat-billed ones) to a 30-minute idle-stop; a self-hosted daemon never auto-sleeps a new box and ignores it.",
+					},
+					"idle_stop_minutes": map[string]interface{}{
+						"type":        "integer",
+						"minimum":     0,
+						"maximum":     2147483647,
+						"description": "Opt in to birth auto-sleep after this many idle minutes; 0 or omitted keeps the self-hosted default off. The daemon applies the policy best-effort during create; creation may succeed without auto-sleep if the settings cannot be saved. Positive values cannot be combined with disable_auto_sleep=true.",
 					},
 					"gpu": map[string]interface{}{
 						"type":        "string",
@@ -1259,7 +1266,7 @@ func (s *Server) registerTools() {
 				"acts on it only if that is the tool call it asked. If the request has changed " +
 				"since, nothing is sent and the call fails with the new request. Answering a request already closed or expired changes " +
 				"nothing and reports how it was closed, as an error. Same signing as " +
-				"`containarium code answer`.",
+				"`containarium code answer`. Needs a token carrying both the code:answer and ssh:write scopes.",
 			InputSchema: map[string]interface{}{
 				"type":     "object",
 				"required": []string{"box", "request_id", "tool", "input", "answer"},
@@ -1654,6 +1661,11 @@ func (s *Server) registerTools() {
 						},
 						"required": []string{"staging_ref", "attestation"},
 					},
+					"ssh_keys": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]string{"type": "string"},
+						"description": "SSH public keys to authorize (optional). Applied when the box is created, before the recipe's post_start; an invalid key refuses the deploy. Omitted: no keys (add them later); no ephemeral key is generated.",
+					},
 				},
 				"required": []string{"recipe_id", "name"},
 			},
@@ -1775,6 +1787,14 @@ func (s *Server) registerTools() {
 						"type":        "string",
 						"description": "Crew input as a JSON string (defaults to {}).",
 					},
+					"model_overrides": map[string]interface{}{
+						"type": "object",
+						"description": "Optional per-member model override, an object of skill id to model id " +
+							"(same as `containarium crew run --model <skill-id>=<model-id>`). The id is passed " +
+							"through as is; a member with no entry keeps its skill's own model. The member needs " +
+							"a named engine. The daemon refuses unusable entries.",
+						"additionalProperties": map[string]interface{}{"type": "string"},
+					},
 				},
 				"required": []string{"crew_id"},
 			},
@@ -1893,6 +1913,10 @@ func (s *Server) registerTools() {
 	s.tools = append(s.tools, gatewayTools()...)
 	// Coding-tool egress allowlist (#2378): read only; writes are admin CLI.
 	s.tools = append(s.tools, codeEgressTools()...)
+	// Re-apply a box's SDLC skill sets (#3511): wraps `containarium code skill-sets`.
+	s.tools = append(s.tools, applyBoxSkillSetsTool())
+	// Write a file into a box (#3548): wraps `containarium code put-file`.
+	s.tools = append(s.tools, putFileTool())
 	// SSH session control (#2522): wraps `containarium sessions terminate`.
 	s.tools = append(s.tools, sessionTools()...)
 
@@ -1903,6 +1927,8 @@ func (s *Server) registerTools() {
 	// entry here or they default to `""` (no-scope, allowed
 	// to any token) — see TestEveryToolHasScope which
 	// enforces this in CI.
+	s.tools = append(s.tools, networkTenantCapabilityTool())
+	s.tools = append(s.tools, tenantNetworkTools()...)
 	scopeByTool := toolScopeAssignments()
 	for i := range s.tools {
 		s.tools[i].RequiredScope = scopeByTool[s.tools[i].Name]
@@ -1945,6 +1971,11 @@ func toolScopeAssignments() map[string]string {
 		"mint_gateway_token": auth.ScopeGatewayMint,
 		// #2378: reading the coding tool's egress allowlist.
 		"code_egress_policy": auth.ScopeCodeEgressRead,
+		// #3511: changes what is installed in a box, scoped like other box writes.
+		"apply_box_skill_sets": auth.ScopeContainersWrite,
+		// #3548: writes into a box user's home; ssh:write is the daemon's own
+		// gate on WriteBoxFile (same access as StartBoxRun).
+		"put_file": auth.ScopeSSHWrite,
 
 		"tracker_route_list":   auth.ScopeTrackerAdmin,
 		"tracker_create_issue": auth.ScopeTrackerWrite,
@@ -1952,7 +1983,7 @@ func toolScopeAssignments() map[string]string {
 		"code_runs":            auth.ScopeSSHWrite,
 		"code_logs":            auth.ScopeSSHWrite,
 		"code_pending":         auth.ScopeSSHWrite,
-		"code_answer":          auth.ScopeSSHWrite,
+		"code_answer":          auth.ScopeCodeAnswer, // #3191: the daemon also needs ssh:write
 		"code_stop":            auth.ScopeCodeWrite,
 
 		// container lifecycle
@@ -1992,9 +2023,13 @@ func toolScopeAssignments() map[string]string {
 		// routes / network exposure
 		"list_routes": auth.ScopeRoutesRead,
 		// network guards (#2353): read-only security posture.
-		"network_guard_status": auth.ScopeSecurityRead,
-		"expose_port":          auth.ScopeRoutesWrite,
-		"delete_route":         auth.ScopeRoutesWrite,
+		"network_guard_status":        auth.ScopeSecurityRead,
+		"network_tenant_capabilities": auth.ScopeContainersRead,
+		"list_network_policies":       auth.ScopeNetworkPolicyRead,
+		"get_network_policy":          auth.ScopeNetworkPolicyRead,
+		"patch_tenant_access":         auth.ScopeNetworkPolicyWrite,
+		"expose_port":                 auth.ScopeRoutesWrite,
+		"delete_route":                auth.ScopeRoutesWrite,
 		// collaborators (#1145) — container access control, scoped like any
 		// other container write/read (the RPCs themselves gate on
 		// AuthorizeTenant, same as create/delete container).
@@ -2021,10 +2056,13 @@ func toolScopeAssignments() map[string]string {
 		// database backups
 		"create_backup":  auth.ScopeBackupsWrite,
 		"restore_backup": auth.ScopeBackupsWrite,
-		// A restore test writes (creates and drops a scratch database in
-		// the target container), so it needs the write scope even though
-		// it never mutates the backup itself.
-		"verify_backup": auth.ScopeBackupsWrite,
+		// whole-box restore (#3358): creates or replaces a box from a backup.
+		"restore_box_backup": auth.ScopeBackupsWrite,
+		// A restore test creates and drops a scratch database in an isolated
+		// target container. Only backups:verify authorizes it after the
+		// v0.120.1 deprecation window; backups:write grants no verify access
+		// (#3219).
+		"verify_backup": auth.ScopeBackupsVerify,
 		"list_backups":  auth.ScopeBackupsRead,
 		// KMS envelope-encryption administration (admin-only)
 		"kms_status":              auth.ScopeKMSAdmin,
@@ -2097,9 +2135,57 @@ func toolScopeAssignments() map[string]string {
 // Tool handlers
 
 func handleCreateContainer(client API, args map[string]interface{}) (string, error) {
+	if value, exists := args["network_tenant"]; exists {
+		if _, ok := value.(string); !ok {
+			return "", fmt.Errorf("network_tenant must be a string")
+		}
+	}
 	username, ok := args["username"].(string)
 	if !ok || username == "" {
 		return "", fmt.Errorf("username is required")
+	}
+
+	// MCP JSON numbers are float64, but birth idle-stop accepts only
+	// integral non-negative minutes within protobuf int32 bounds. Do not
+	// truncate fractional values into an unintended policy.
+	var idleStopMinutes int32
+	if raw, present := args["idle_stop_minutes"]; present {
+		const maxMinutes = 2147483647
+		switch value := raw.(type) {
+		case float64:
+			if value < 0 || value > maxMinutes || value != float64(int64(value)) {
+				return "", fmt.Errorf("idle_stop_minutes must be a non-negative whole number of minutes")
+			}
+			idleStopMinutes = int32(value)
+		case int:
+			if value < 0 || value > maxMinutes {
+				return "", fmt.Errorf("idle_stop_minutes must be in [0, %d]", maxMinutes)
+			}
+			idleStopMinutes = int32(value)
+		case int32:
+			if value < 0 {
+				return "", fmt.Errorf("idle_stop_minutes must not be negative")
+			}
+			idleStopMinutes = value
+		case int64:
+			if value < 0 || value > maxMinutes {
+				return "", fmt.Errorf("idle_stop_minutes must be in [0, %d]", maxMinutes)
+			}
+			idleStopMinutes = int32(value)
+		default:
+			return "", fmt.Errorf("idle_stop_minutes must be an integer")
+		}
+	}
+	disableAutoSleep := false
+	if raw, present := args["disable_auto_sleep"]; present {
+		var ok bool
+		disableAutoSleep, ok = raw.(bool)
+		if !ok {
+			return "", fmt.Errorf("disable_auto_sleep must be a boolean")
+		}
+	}
+	if idleStopMinutes > 0 && disableAutoSleep {
+		return "", fmt.Errorf("idle_stop_minutes and disable_auto_sleep=true are contradictory")
 	}
 
 	// The REST shim takes the enum by name; UNSPECIFIED is simply not sent.
@@ -2122,7 +2208,8 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 	}
 
 	req := CreateContainerRequest{
-		Username: username,
+		NetworkTenant: getStringArg(args, "network_tenant", ""),
+		Username:      username,
 		Resources: &ResourceLimits{
 			CPU:    getStringArg(args, "cpu", "4"),
 			Memory: getStringArg(args, "memory", "4GB"),
@@ -2130,7 +2217,8 @@ func handleCreateContainer(client API, args map[string]interface{}) (string, err
 		},
 		Image:            getStringArg(args, "image", "images:ubuntu/24.04"),
 		EnablePodman:     getBoolArg(args, "enable_podman", true),
-		DisableAutoSleep: getBoolArg(args, "disable_auto_sleep", false),
+		DisableAutoSleep: disableAutoSleep,
+		IdleStopMinutes:  idleStopMinutes,
 		GPU:              getStringArg(args, "gpu", ""),
 		GPUs:             getStringSliceArg(args, "gpus"),
 		Monitoring:       getBoolArg(args, "monitoring", false),
@@ -2307,6 +2395,9 @@ func handleListContainers(client API, args map[string]interface{}) (string, erro
 	for _, container := range resp.Containers {
 		result += fmt.Sprintf("📦 %s\n", container.Name)
 		result += fmt.Sprintf("   Username: %s\n", container.Username)
+		if container.NetworkTenant != "" {
+			result += fmt.Sprintf("   Network Tenant: %s (%s)\n", container.NetworkTenant, container.NetworkTenantSource)
+		}
 		result += fmt.Sprintf("   State: %s\n", container.State)
 		// Show WHERE the box actually runs. A wrong/typo'd backend_id silently
 		// falls back to the default pool, so surfacing the resolved backend is
@@ -3205,6 +3296,9 @@ type deployRecipeArgs struct {
 	GPU            string                 `json:"gpu"`
 	Parameters     map[string]interface{} `json:"parameters"`
 	GuardrailInput json.RawMessage        `json:"guardrail_input"`
+	// SSHKeys are passed through as-is (#3514); the daemon validates them.
+	// Unlike create_container, omitting them generates no ephemeral key.
+	SSHKeys []string `json:"ssh_keys"`
 }
 
 // handleDeployRecipe validates the optional gate input before calling the
@@ -3238,6 +3332,7 @@ func handleDeployRecipe(client API, args map[string]interface{}) (string, error)
 		GPU:            input.GPU,
 		Parameters:     params,
 		GuardrailInput: gate,
+		SSHKeys:        input.SSHKeys,
 	})
 	if err != nil {
 		return "", err
@@ -3409,10 +3504,46 @@ func handleListCrews(client API, _ map[string]interface{}) (string, error) {
 	return b.String(), nil
 }
 
+// getModelOverridesArg reads the optional model_overrides object (skill id ->
+// model id) off the JSON-RPC arguments, the same shape `crew run --model
+// <skill-id>=<model-id>` builds. Absent or empty yields nil (nothing sent); a
+// non-object, a non-string value, or an empty skill or model id is an error
+// naming the argument. The ids are otherwise passed through as is.
+func getModelOverridesArg(args map[string]interface{}) (map[string]string, error) {
+	raw, ok := args["model_overrides"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	obj, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("model_overrides must be an object of skill id to model id, got %T", raw)
+	}
+	if len(obj) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(obj))
+	for skillID, v := range obj {
+		model, isStr := v.(string)
+		if !isStr {
+			return nil, fmt.Errorf("model_overrides[%q] must be a string model id, got %T", skillID, v)
+		}
+		if skillID == "" || model == "" {
+			return nil, fmt.Errorf("model_overrides needs a non-empty skill id and model id (got %q=%q)", skillID, model)
+		}
+		out[skillID] = model
+	}
+	return out, nil
+}
+
 func handleRunCrew(client API, args map[string]interface{}) (string, error) {
+	modelOverrides, err := getModelOverridesArg(args)
+	if err != nil {
+		return "", err
+	}
 	resp, err := client.RunCrew(RunCrewRequest{
-		CrewID:    getStringArg(args, "crew_id", ""),
-		InputJSON: getStringArg(args, "input_json", ""),
+		CrewID:         getStringArg(args, "crew_id", ""),
+		InputJSON:      getStringArg(args, "input_json", ""),
+		ModelOverrides: modelOverrides,
 	})
 	if err != nil {
 		return "", err

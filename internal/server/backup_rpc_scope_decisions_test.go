@@ -1,8 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/footprintai/containarium/internal/auth"
@@ -48,7 +51,11 @@ var backupRPCDecisions = map[string]backupRPCDecision{
 		_, err := s.RestoreBackup(ctx, &pb.RestoreBackupRequest{Id: bobBackupID})
 		return err
 	}},
-	"VerifyBackup": {auth.ScopeBackupsWrite, func(ctx context.Context, s *BackupServer) error {
+	"RestoreBoxBackup": {auth.ScopeBackupsWrite, func(ctx context.Context, s *BackupServer) error {
+		_, err := s.RestoreBoxBackup(ctx, &pb.RestoreBoxBackupRequest{Id: bobBackupID})
+		return err
+	}},
+	"VerifyBackup": {auth.ScopeBackupsVerify, func(ctx context.Context, s *BackupServer) error {
 		_, err := s.VerifyBackup(ctx, &pb.VerifyBackupRequest{Id: bobBackupID, TargetUsername: "alice"})
 		return err
 	}},
@@ -75,6 +82,8 @@ func callBackupRPC(ctx context.Context, s *BackupServer, name string) error {
 		_, err = s.GetBackup(ctx, &pb.GetBackupRequest{Id: "alice-app-20261003T010000Z"})
 	case "RestoreBackup":
 		_, err = s.RestoreBackup(ctx, &pb.RestoreBackupRequest{Id: "alice-app-20261003T010000Z"})
+	case "RestoreBoxBackup":
+		_, err = s.RestoreBoxBackup(ctx, &pb.RestoreBoxBackupRequest{Id: "alice-app-20261003T010000Z"})
 	case "VerifyBackup":
 		_, err = s.VerifyBackup(ctx, &pb.VerifyBackupRequest{Id: "alice-app-20261003T010000Z", TargetUsername: "alice"})
 	case "DeleteBackup":
@@ -122,9 +131,11 @@ func TestBackupRPCScopeDecisions_Enforced(t *testing.T) {
 	for name, d := range backupRPCDecisions {
 		t.Run(name, func(t *testing.T) {
 			// A token holding every other scope but the required one is denied.
-			other := []string{auth.ScopeBackupsRead}
-			if d.scope == auth.ScopeBackupsRead {
-				other = []string{auth.ScopeBackupsWrite, "containers:read", "secrets:read"}
+			other := []string{"containers:read", "secrets:read"}
+			for _, scope := range []string{auth.ScopeBackupsRead, auth.ScopeBackupsWrite, auth.ScopeBackupsVerify} {
+				if scope != d.scope {
+					other = append(other, scope)
+				}
 			}
 			wrong := auth.ContextWithTestSubjectScopes(context.Background(), "alice", []string{"user"}, other)
 			if c := status.Code(callBackupRPC(wrong, bs, name)); c != codes.PermissionDenied {
@@ -134,9 +145,108 @@ func TestBackupRPCScopeDecisions_Enforced(t *testing.T) {
 				return
 			}
 			// With the right scope, another tenant's data is still refused.
-			if c := status.Code(d.crossTenant(verifierCtx("alice"), bs)); c != codes.PermissionDenied {
+			right := auth.ContextWithTestSubjectScopes(context.Background(), "alice", []string{"user"}, []string{d.scope})
+			if c := status.Code(d.crossTenant(right, bs)); c != codes.PermissionDenied {
 				t.Fatalf("cross-tenant: code = %v, want PermissionDenied", c)
 			}
 		})
+	}
+}
+
+// TestBackupRPCScopeDecisions_VerifyScopeRefusedOnWriteRPCs is the reason
+// backups:verify exists: a token holding it (and backups:read) can verify its
+// own tenant's backups but is refused every RPC that creates, restores,
+// deletes or prunes. Granting it any of those RPCs makes this test fail.
+func TestBackupRPCScopeDecisions_VerifyScopeRefusedOnWriteRPCs(t *testing.T) {
+	_, bs := verifierServer(t)
+	ctx := verifierCtx("alice")
+	for _, name := range []string{"CreateBackup", "CreateBackup/BOX", "RestoreBackup", "RestoreBoxBackup", "DeleteBackup", "PruneBackups"} {
+		t.Run(name+" refused", func(t *testing.T) {
+			if c := status.Code(callBackupRPC(ctx, bs, name)); c != codes.PermissionDenied {
+				t.Fatalf("verify-only token on %s: code = %v, want PermissionDenied", name, c)
+			}
+		})
+	}
+	for _, name := range []string{"ListBackups", "GetBackup", "VerifyBackup"} {
+		t.Run(name+" allowed", func(t *testing.T) {
+			if c := status.Code(callBackupRPC(ctx, bs, name)); c == codes.PermissionDenied || c == codes.Unauthenticated {
+				t.Fatalf("verify-only token on %s: code = %v, want it to pass the scope gate", name, c)
+			}
+		})
+	}
+}
+
+// The v0.120.1 deprecation window has ended (#3219). A write-only token is
+// refused with re-mint instructions; the ordinary wildcard, unscoped-token
+// and strict-mode rules are unchanged.
+func TestBackupRPCScopeDecisions_VerifyRequiresVerifyScope(t *testing.T) {
+	prevStrict := auth.StrictScopesEnabled()
+	t.Cleanup(func() { auth.SetStrictScopes(prevStrict) })
+	for _, tc := range []struct {
+		name   string
+		scopes []string // nil = a token with no scopes claim
+		strict bool
+		want   codes.Code
+	}{
+		{"legacy write only", []string{auth.ScopeBackupsWrite}, false, codes.PermissionDenied},
+		{"legacy read and write", []string{auth.ScopeBackupsRead, auth.ScopeBackupsWrite}, false, codes.PermissionDenied},
+		{"read only", []string{auth.ScopeBackupsRead}, false, codes.PermissionDenied},
+		{"empty scopes", []string{}, false, codes.PermissionDenied},
+		{"verify only", []string{auth.ScopeBackupsVerify}, false, codes.OK},
+		{"read and verify", []string{auth.ScopeBackupsRead, auth.ScopeBackupsVerify}, false, codes.OK},
+		{"both scopes", []string{auth.ScopeBackupsWrite, auth.ScopeBackupsVerify}, false, codes.OK},
+		{"wildcard", []string{auth.ScopeWildcard}, false, codes.OK},
+		{"no scopes claim", nil, false, codes.OK},
+		{"no scopes claim strict", nil, true, codes.PermissionDenied},
+		{"verify strict", []string{auth.ScopeBackupsVerify}, true, codes.OK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth.SetStrictScopes(tc.strict)
+			_, bs := verifierServer(t)
+			ctx := auth.ContextWithTestSubjectScopes(context.Background(), "alice", []string{"user"}, tc.scopes)
+			resp, err := bs.VerifyBackup(ctx, &pb.VerifyBackupRequest{Id: "alice-app-20261003T010000Z", TargetUsername: "alice"})
+			if got := status.Code(err); got != tc.want {
+				t.Fatalf("VerifyBackup code = %v (%v), want %v", got, err, tc.want)
+			}
+			if tc.want == codes.PermissionDenied {
+				for _, want := range []string{auth.ScopeBackupsVerify, "containarium token generate", "--scopes backups:read,backups:verify"} {
+					if !strings.Contains(status.Convert(err).Message(), want) {
+						t.Errorf("denial %q must include %q", err, want)
+					}
+				}
+			} else if resp.Verification.GetResult() != pb.VerificationResult_VERIFICATION_RESULT_PASSED {
+				t.Fatalf("verification failed: %+v", resp.Verification)
+			}
+		})
+	}
+}
+
+// Reject legacy tokens before input validation or backup lookup, without
+// logging caller-controlled fields through the removed deprecation path.
+func TestBackupRPCScopeDecisions_VerifyLegacyRefusedBeforeRequestProcessing(t *testing.T) {
+	for _, id := range []string{"", "alice-app-20261003T010000Z", "x\n[backup] DEPRECATED: forged user=\"root\""} {
+		t.Run(id, func(t *testing.T) {
+			_, bs := verifierServer(t)
+			var buf bytes.Buffer
+			prevOut := log.Writer()
+			log.SetOutput(&buf)
+			t.Cleanup(func() { log.SetOutput(prevOut) })
+			ctx := auth.ContextWithTestSubjectScopes(context.Background(), "alice", []string{"user"},
+				[]string{auth.ScopeBackupsRead, auth.ScopeBackupsWrite})
+			_, err := bs.VerifyBackup(ctx, &pb.VerifyBackupRequest{Id: id, TargetUsername: "alice"})
+			if got := status.Code(err); got != codes.PermissionDenied {
+				t.Errorf("VerifyBackup code = %v (%v), want PermissionDenied before processing the id", got, err)
+			}
+			if strings.Contains(buf.String(), "DEPRECATED:") {
+				t.Errorf("removed deprecation path logged caller input: %q", buf.String())
+			}
+		})
+	}
+}
+
+func TestBackupRPCScopeDecisions_VerifyUnauthenticated(t *testing.T) {
+	_, err := (&BackupServer{}).VerifyBackup(context.Background(), &pb.VerifyBackupRequest{})
+	if got := status.Code(err); got != codes.Unauthenticated {
+		t.Fatalf("VerifyBackup code = %v (%v), want Unauthenticated", got, err)
 	}
 }

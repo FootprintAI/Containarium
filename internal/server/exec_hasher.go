@@ -136,7 +136,7 @@ func (h *execHasher) process(ev threatdetect.ExecEvent) {
 		// 100th so an operator relying on sha256 entries can see hashing
 		// is not happening.
 		if n := h.failed.Add(1); n == 1 || n%100 == 0 {
-			log.Printf("[exec-hasher] pid %d (%s): %v (%d failed so far)", ev.PID, ev.Container, err, n)
+			log.Printf("[exec-hasher] pid %d (%q): %v (%d failed so far)", ev.PID, ev.Container, err, n)
 		}
 		return
 	}

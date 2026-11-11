@@ -34,7 +34,7 @@ func TestGuardrailPolicyProvider_FollowsDurableInstall(t *testing.T) {
 	}
 
 	durable := guardrailpolicy.NewMemoryStore() // stands in for the Postgres store
-	if _, err := durable.Set(context.Background(), gpRequest(0, gpSigner(1)).GetPolicy(), []*pb.GuardrailTrustedSigner{gpSigner(1)}, "admin"); err != nil {
+	if _, err := durable.Set(context.Background(), gpRequest(0, gpSigner(1)), "admin"); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	if err := s.InstallDurableStore(func() (guardrailpolicy.Store, error) { return durable, nil }); err != nil {

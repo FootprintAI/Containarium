@@ -72,6 +72,60 @@ then prints the server's `Message:` (if any) and how to follow the run with
 `containarium crew logs <run-id>`. With neither an artifact nor a run id it
 prints `(no artifact returned)`.
 
+### The skill's box: created once, then reused
+
+The first run of a skill deploys its box (`agent-<skill-id>-container`) from
+the skill's recipe, which runs the recipe's `post_start` to prepare it. Every
+later run, and every crew run that includes the skill, reuses that box: it is
+started if stopped, and `post_start` is not run again.
+
+That reuse only applies to a box whose `post_start` completed. The deploy sets
+the Incus config key `user.containarium.post_start_pending` on the box before
+`post_start` runs and removes it when `post_start` succeeds. The key stays on
+the box when `post_start` fails or the daemon stops while it runs. A run that
+finds the key on the box:
+
+1. runs `post_start` again, with the parameters a skill's box is deployed
+   with;
+2. on success removes the key and goes on with the run (later runs skip
+   `post_start` again);
+3. on failure fails with `FailedPrecondition`, naming the box and the
+   `post_start` exit status. The box is **kept** so you can inspect it
+   (`containarium connect agent-<skill-id>-container`). Delete it to have the
+   next run deploy a fresh one.
+
+A guardrail-gated recipe is not re-run on an existing box, because its dataset
+is verified only as part of a deploy; the run fails the same way and the box
+has to be deleted. The daemon never deletes the box itself.
+
+Only one `post_start` runs in a box at a time. A skill or crew run that reaches
+the box while another run is still preparing it (its first deploy, or a re-run)
+waits for that to finish, then reads the key again: it goes on if the box is now
+prepared, and re-runs `post_start` if the key is still there. That includes two
+first runs of one skill: the second waits for the first one's deploy and then
+reuses its box. A waiting run stops waiting when its own request is cancelled or
+times out (`Canceled` / `DeadlineExceeded`). A direct `recipe deploy` of a name
+that is still being prepared does not wait: it fails at once with
+`FailedPrecondition` ("already being prepared"); retry it once the other deploy
+has finished.
+
+A box without the key is reused as before, without running `post_start`. That
+includes a box whose `post_start` failed **on a daemon from before the key
+existed**: it carries no key and is still reused silently, so delete it to have the next run deploy a
+fresh one. If the daemon cannot write the key at deploy time, the deploy goes on
+and the failure is reported: in the error of a `post_start` that then fails, and
+as a warning in an async deploy's message. Such a box is unmarked, so a later
+run would reuse it; delete it if its `post_start` did not complete. To check a
+box by hand: `incus config get agent-<skill-id>-container
+user.containarium.post_start_pending` prints `true` while it is not prepared.
+
+Write a skill recipe's `post_start` so it is safe to run again on the same box.
+A key that stays on the box (for example when removing it fails) makes every
+later run re-run `post_start`, so steps like `podman run --name <fixed-name>` or
+a `git clone` into a fixed path fail on each re-run until the box is deleted.
+Guard them (`podman rm -f <name>` first, `git clone` only when the directory is
+missing).
+
 ### Scopes
 
 The operator/agent token that drives the AgentSkillService needs:

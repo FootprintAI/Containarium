@@ -193,12 +193,15 @@ install_apt_dependencies() {
         exit 1
     fi
 
-    # `apt-get install ./path/*.deb` installs from local files and resolves
-    # local-only deps without contacting the network. --no-download
-    # makes any unmet dep fail loudly instead of trying to fetch it.
-    log_info "Running: apt-get install --no-download --yes ./apt/*.deb"
-    apt-get install --no-download --yes "${debs[@]}" || \
-        log_warn "apt-get install exited non-zero; checking critical commands below"
+    # With --no-download apt only uses archives already in its cache. Local
+    # file arguments alone do not populate that cache: on a fresh host apt
+    # handed dpkg a bare filename and failed (#3258). Use the verified bundle
+    # itself as the archive cache, keeping downloads disabled.
+    log_info "Running: apt-get install --no-download --yes (archive cache: $APT_DIR)"
+    if ! apt-get -o "Dir::Cache::archives=$APT_DIR" install --no-download --yes "${debs[@]}"; then
+        log_error "Failed to install bundled .deb packages; stopping offline installation"
+        exit 1
+    fi
 
     # Verify the critical pieces landed.
     local missing=()

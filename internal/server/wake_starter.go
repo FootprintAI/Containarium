@@ -3,8 +3,11 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
+	"net"
+	"strconv"
+	"time"
 
+	"github.com/footprintai/containarium/pkg/core/box"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -33,45 +36,103 @@ func NewWakeStarter(cs *ContainerServer, readyTimeoutSeconds int32) *WakeStarter
 	return &WakeStarter{cs: cs, readyTimeoutS: readyTimeoutSeconds}
 }
 
-// WakeForRequest implements wake.WakeStarter. Returns:
-//   - ready=true when StartContainer reports the container is up and
-//     its primary port is dial-ready.
-//   - ready=false (no err) on probe timeout — the wake proxy responds
-//     503 Retry-After: 5 in this case.
-//   - err on a hard failure of the Start call itself.
-//
-// containerIP / port are read from the post-Start container info so the
-// wake proxy can build a reverse-proxy target. We don't rely on the
-// route store here — the route's TargetIP may be stale during a fresh
-// start cycle, but `manager.Get` reads the live Incus state.
-func (s *WakeStarter) WakeForRequest(ctx context.Context, username string) (bool, string, int, error) {
+// wakeTargetPortKey is an internal context hint for the triggering HTTP
+// route. Other StartContainer callers retain the generic first-route probe.
+type wakeTargetPortKey struct{}
+
+// WakeForRequest starts the Box and probes only the authorized triggering
+// route. Already-running Boxes need the explicit probe because their
+// StartContainer fast path intentionally skips generic readiness.
+func (s *WakeStarter) WakeForRequest(ctx context.Context, username string, targetPort int) (bool, string, int, error) {
 	if s == nil || s.cs == nil {
 		return false, "", 0, fmt.Errorf("wake starter not configured")
 	}
-	resp, err := s.cs.StartContainer(ctx, &pb.StartContainerRequest{
+	if targetPort <= 0 {
+		return false, "", 0, nil
+	}
+	started := time.Now()
+	startCtx := context.WithValue(ctx, wakeTargetPortKey{}, targetPort)
+	resp, err := s.cs.StartContainer(startCtx, &pb.StartContainerRequest{
 		Username:            username,
 		WaitForReady:        true,
 		ReadyTimeoutSeconds: s.readyTimeoutS,
 	})
 	if err != nil {
-		return false, "", 0, fmt.Errorf("start: %w", err)
+		return false, "", targetPort, fmt.Errorf("start: %w", err)
 	}
-	ready := resp != nil && !resp.ReadyTimedOut
-
-	// Pull the IP from the live Incus state. The container.Manager
-	// is the canonical place — it's what StartContainer queried for
-	// the response we already have, but the pb.Container shape
-	// doesn't expose IPAddress directly in all proto versions, so
-	// we re-fetch.
-	var ip string
-	if info, ierr := s.cs.GetManager().Get(username); ierr == nil && info != nil {
-		ip = info.IPAddress
-	} else if ierr != nil {
-		log.Printf("[wake] post-start container.Get(%s): %v", username, ierr)
+	if resp == nil || resp.ReadyTimedOut {
+		return false, "", targetPort, nil
 	}
 
-	// Port is the route's TargetPort — we don't have it here, but
-	// the wake proxy falls back to route.TargetPort when the
-	// starter doesn't report one.
-	return ready, ip, 0, nil
+	remaining := time.Duration(s.readyTimeoutS)*time.Second - time.Since(started)
+	if remaining <= 0 {
+		return false, "", targetPort, nil
+	}
+	readIP := func() string {
+		info, err := s.cs.boxes().Get(ctx, box.BoxRef{Tenant: username})
+		if err != nil || info == nil {
+			return ""
+		}
+		return info.IPAddress
+	}
+	ip, ready := awaitWakeEndpoint(ctx, remaining, targetPort, readIP)
+	return ready, ip, targetPort, nil
+}
+
+// awaitWakeEndpoint only returns ready when the live Box's own current IP
+// accepts TCP on the already-authorized route port. No route Host or client
+// address is trusted for the readiness check. A lack of IP, a timeout or a
+// cancelled wake is NOT a successful warmup.
+func awaitWakeEndpoint(ctx context.Context, budget time.Duration, port int, readIP func() string) (string, bool) {
+	return awaitWakeEndpointWithDial(ctx, budget, port, readIP, func(ctx context.Context, addr string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	})
+}
+
+// awaitWakeEndpointWithDial allows tests to hold an in-flight TCP probe
+// until cancellation. Production always uses net.Dialer.DialContext.
+func awaitWakeEndpointWithDial(ctx context.Context, budget time.Duration, port int, readIP func() string, dial func(context.Context, string) (net.Conn, error)) (string, bool) {
+	if budget <= 0 || port <= 0 {
+		return "", false
+	}
+	deadline := time.Now().Add(budget)
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", false
+		}
+		ip := readIP()
+		if ip != "" {
+			dialTimeout := 200 * time.Millisecond
+			if rem := time.Until(deadline); rem < dialTimeout {
+				dialTimeout = rem
+			}
+			if dialTimeout > 0 {
+				probeCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+				conn, err := dial(probeCtx, net.JoinHostPort(ip, strconv.Itoa(port)))
+				cancel()
+				if err == nil {
+					_ = conn.Close()
+					if ctx.Err() == nil {
+						return ip, true
+					}
+					return "", false
+				}
+			}
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return "", false
+		}
+		wait := 100 * time.Millisecond
+		if remaining < wait {
+			wait = remaining
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", false
+		case <-timer.C:
+		}
+	}
 }

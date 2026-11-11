@@ -206,9 +206,10 @@ func TestStartBoxRun_IdentityFollowsTheRecordedLevel(t *testing.T) {
 			var rootCalls []string
 			var userCalls []call
 			s := &ContainerServer{
-				boxRunLogDir:       t.TempDir(),
-				boxRunCollaborator: func(owner, subject string) (bool, error) { return false, nil },
-				boxRunToolAccess:   func(ctx context.Context, username string) (string, error) { return tc.level, nil },
+				boxRunLogDir:          t.TempDir(),
+				boxRunCollaborator:    func(owner, subject string) (bool, error) { return false, nil },
+				boxRunToolAccess:      func(ctx context.Context, username string) (string, error) { return tc.level, nil },
+				boxRunEnsureToolchain: func(string) error { return nil }, // mounted host release
 				boxRunExec: func(box, script string) (string, error) {
 					mu.Lock()
 					defer mu.Unlock()
@@ -291,9 +292,10 @@ func signInProbeScript(t *testing.T) string {
 func signInRun(t *testing.T, probeOut string, probeErr error) (spawned bool, user string, err error) {
 	t.Helper()
 	s := &ContainerServer{
-		boxRunLogDir:       t.TempDir(),
-		boxRunCollaborator: func(owner, subject string) (bool, error) { return false, nil },
-		boxRunToolAccess:   func(ctx context.Context, username string) (string, error) { return "build_tools", nil },
+		boxRunLogDir:          t.TempDir(),
+		boxRunCollaborator:    func(owner, subject string) (bool, error) { return false, nil },
+		boxRunToolAccess:      func(ctx context.Context, username string) (string, error) { return "build_tools", nil },
+		boxRunEnsureToolchain: func(string) error { return nil }, // mounted host release
 		boxRunExec: func(box, script string) (string, error) {
 			if strings.Contains(script, "useradd") {
 				return "/home/ctn-run\n", nil

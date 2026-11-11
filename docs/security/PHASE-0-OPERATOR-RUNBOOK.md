@@ -126,6 +126,29 @@ at a time so a single bad config doesn't blackhole the fleet.
 3. Daemon logs show `[peer-pki] bootstrap complete` after the
    sentinel is up and reachable on `:8889`.
 
+### Refusing the plain-HTTP fallback (`--require-peer-mtls`)
+
+By default a daemon whose peer-PKI bootstrap fails (or is skipped) keeps
+running and carries peer calls over plain HTTP, logging one
+`[peer-pki] peer mTLS not enabled` notice. To make that an error instead,
+start the daemon with `--require-peer-mtls` (or
+`CONTAINARIUM_REQUIRE_PEER_MTLS=1`): `Start` then fails when peer calls
+exist but mTLS is not active. A standalone daemon (no sentinel, no peers)
+is unaffected. Off by default.
+
+### Other plaintext fallbacks (warn-only, #3517)
+
+- **CLI / REST client:** a `--server` value with no scheme still defaults to
+  `http://`; when the host is not loopback a warning is printed to stderr.
+  Set `CONTAINARIUM_ALLOW_PLAINTEXT_FALLBACK=1` to acknowledge and silence it.
+- **Web UI:** the same fallback logs a browser-console warning once per
+  endpoint. Acknowledge with
+  `localStorage.setItem('containarium.allowPlaintextFallback', '1')`.
+- **Cloud actuation client:** a non-loopback `http://` control plane logs a
+  `[cloud] WARNING` line at start and enroll; use `https://`.
+
+Loopback endpoints (`localhost`, `127.0.0.0/8`, `::1`) never warn.
+
 ### Step C: Retire the rollout fallbacks
 
 Once 100% of nodes are on the new env, drop the rollout-friendly
@@ -242,6 +265,14 @@ gcloud compute ssh spot-vm -- 'sudo journalctl -u containarium | grep peer-pki |
 # Expect: [peer-pki] received leaf cert for "...", expires ... (in ...)
 #         [peer-pki] bootstrap complete; N peer client(s) upgraded to HTTPS
 #         [peer-pki] renewal watcher started; next cert expires ...
+
+# With peer mTLS off (or no peer CA on the sentinel) the daemon logs one notice instead:
+#         [peer-pki] peer mTLS not enabled: peer-to-peer calls use plain HTTP (...)
+# This is a supported setup, not a fault. The state is also visible as the
+# `peer_transport` field of the system-info response (`PEER_TRANSPORT_HTTP` or
+# `PEER_TRANSPORT_MTLS`; unset on a daemon with no sentinel URL and no peers) and as the
+# `containarium.peer.mtls.enabled` gauge (1 = peer mTLS, 0 = plain HTTP).
+# These describe the daemon-to-peer calls only, not any other transport.
 
 # Confirm cert files exist on the daemon (if PersistPeerPKI is in use):
 gcloud compute ssh spot-vm -- 'sudo ls -la /etc/containarium/'

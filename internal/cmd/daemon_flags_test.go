@@ -3,49 +3,37 @@
 package cmd
 
 import (
+	"io"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/spf13/pflag"
 )
 
-// #2188: --dns-passthrough-host is validated at boot so a typo fails visibly.
-// That only works if every argument the operator typed reaches the validator —
-// including an explicit blank — and if a comma is not silently treated as a
-// separator. pflag's StringSlice drops a blank value and splits on commas;
-// StringArray keeps each occurrence exactly as given.
-func TestDNSPassthroughHostFlag_KeepsEveryArgumentAsTyped(t *testing.T) {
-	f := daemonCmd.Flags().Lookup("dns-passthrough-host")
-	if f == nil {
-		t.Fatal("flag --dns-passthrough-host is not registered")
-	}
-	sv, ok := f.Value.(pflag.SliceValue)
-	if !ok {
-		t.Fatalf("flag value %T is not a slice value", f.Value)
-	}
-	reset := func() { _ = sv.Replace(nil); f.Changed = false; dnsPassthroughHosts = nil }
-	t.Cleanup(reset)
-
-	cases := []struct {
+// #2735 (slice D of #2263): the compatibility release has shipped. The
+// removed bridge DNS flags must now fail parsing rather than remain no-ops.
+func TestBridgeDNSFlagsRemoved(t *testing.T) {
+	for _, tc := range []struct {
 		name string
-		args []string
-		want []string
+		arg  string
 	}{
-		{"unset", nil, nil},
-		{"one host", []string{"--dns-passthrough-host=api.example.com"}, []string{"api.example.com"}},
-		{"repeated", []string{"--dns-passthrough-host=a.example.com", "--dns-passthrough-host=b.example.com"}, []string{"a.example.com", "b.example.com"}},
-		{"an explicit blank reaches validation", []string{"--dns-passthrough-host="}, []string{""}},
-		{"a blank among others reaches validation", []string{"--dns-passthrough-host=a.example.com", "--dns-passthrough-host="}, []string{"a.example.com", ""}},
-		{"a comma is not a separator", []string{"--dns-passthrough-host=a.example.com,b.example.com"}, []string{"a.example.com,b.example.com"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			reset()
-			if err := daemonCmd.Flags().Parse(tc.args); err != nil {
-				t.Fatalf("parse %q: %v", tc.args, err)
+		{"bridge-dns-reconcile", "--bridge-dns-reconcile=false"},
+		{"bridge-dns-create", "--bridge-dns-create"},
+		{"dns-passthrough-host", "--dns-passthrough-host=api.example.com"},
+		{"dns-passthrough-host", "--dns-passthrough-host="},
+	} {
+		t.Run(tc.arg, func(t *testing.T) {
+			if daemonCmd.Flags().Lookup(tc.name) != nil {
+				t.Errorf("removed flag --%s is still registered", tc.name)
 			}
-			if !reflect.DeepEqual(dnsPassthroughHosts, tc.want) {
-				t.Fatalf("hosts = %q; want %q", dnsPassthroughHosts, tc.want)
+
+			fs := pflag.NewFlagSet("daemon", pflag.ContinueOnError)
+			fs.SetOutput(io.Discard)
+			fs.AddFlagSet(daemonCmd.Flags())
+			err := fs.Parse([]string{tc.arg})
+			if err == nil || !strings.Contains(err.Error(), "unknown flag: --"+tc.name) {
+				t.Errorf("parse %q: got %v, want unknown flag: --%s", tc.arg, err, tc.name)
 			}
 		})
 	}

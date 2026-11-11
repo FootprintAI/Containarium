@@ -3,13 +3,18 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -200,9 +205,9 @@ func printTableFormat(containers []incus.ContainerInfo, running, stopped int, wi
 
 		if withLabels {
 			labelStr := formatLabels(c.Labels)
-			fmt.Printf("%-25s %-12s %-3s %-3s %-20s %-15s %s\n", c.Name, c.State, iso, mon, ip, resources, labelStr)
+			fmt.Printf("%-25s %-12s %-3s %-3s %-20s %-15s %s\n", escapeControl(c.Name), c.State, iso, mon, ip, resources, labelStr)
 		} else {
-			fmt.Printf("%-25s %-12s %-3s %-3s %-20s %-15s\n", c.Name, c.State, iso, mon, ip, resources)
+			fmt.Printf("%-25s %-12s %-3s %-3s %-20s %-15s\n", escapeControl(c.Name), c.State, iso, mon, ip, resources)
 		}
 	}
 
@@ -217,7 +222,7 @@ func formatLabels(labels map[string]string) string {
 	}
 	var parts []string
 	for k, v := range labels {
-		parts = append(parts, fmt.Sprintf("%s=%s", k, v))
+		parts = append(parts, escapeControl(k)+"="+escapeControl(v))
 	}
 	return strings.Join(parts, ",")
 }
@@ -260,26 +265,30 @@ func printJSONFormat(containers []incus.ContainerInfo) error {
 }
 
 func printYAMLFormat(containers []incus.ContainerInfo) {
-	fmt.Println("containers:")
+	writeYAMLFormat(os.Stdout, containers)
+}
+
+func writeYAMLFormat(w io.Writer, containers []incus.ContainerInfo) {
+	fmt.Fprintln(w, "containers:")
 	for _, c := range containers {
-		fmt.Printf("  - name: %s\n", c.Name)
-		fmt.Printf("    state: %s\n", c.State)
-		fmt.Printf("    ip_address: %s\n", c.IPAddress)
-		fmt.Printf("    monitoring_enabled: %t\n", c.MonitoringEnabled)
+		fmt.Fprintf(w, "  - name: %s\n", yamlScalar(c.Name))
+		fmt.Fprintf(w, "    state: %s\n", yamlScalar(c.State))
+		fmt.Fprintf(w, "    ip_address: %s\n", yamlScalar(c.IPAddress))
+		fmt.Fprintf(w, "    monitoring_enabled: %t\n", c.MonitoringEnabled)
 		if c.CPU != "" {
-			fmt.Printf("    cpu: %s\n", c.CPU)
+			fmt.Fprintf(w, "    cpu: %s\n", yamlScalar(c.CPU))
 		}
 		if c.Memory != "" {
-			fmt.Printf("    memory: %s\n", c.Memory)
+			fmt.Fprintf(w, "    memory: %s\n", yamlScalar(c.Memory))
 		}
 		if len(c.Labels) > 0 {
-			fmt.Printf("    labels:\n")
+			fmt.Fprintf(w, "    labels:\n")
 			for k, v := range c.Labels {
-				fmt.Printf("      %s: %s\n", k, v)
+				fmt.Fprintf(w, "      %s: %s\n", yamlScalar(k), yamlScalar(v))
 			}
 		}
 	}
-	fmt.Printf("total_count: %d\n", len(containers))
+	fmt.Fprintf(w, "total_count: %d\n", len(containers))
 }
 
 // groupContainersByLabel groups containers by a specific label key
@@ -327,7 +336,7 @@ func printGroupedTableFormat(containers []incus.ContainerInfo, labelKey string, 
 		groupContainers := groups[groupValue]
 
 		// Print group header
-		fmt.Printf("\n=== %s: %s (%d containers) ===\n", labelKey, groupValue, len(groupContainers))
+		fmt.Printf("\n=== %s: %s (%d containers) ===\n", escapeControl(labelKey), escapeControl(groupValue), len(groupContainers))
 
 		// Print table header
 		if withLabels {
@@ -352,9 +361,9 @@ func printGroupedTableFormat(containers []incus.ContainerInfo, labelKey string, 
 
 			if withLabels {
 				labelStr := formatLabels(c.Labels)
-				fmt.Printf("%-25s %-12s %-3s %-20s %-15s %s\n", c.Name, c.State, iso, ip, resources, labelStr)
+				fmt.Printf("%-25s %-12s %-3s %-20s %-15s %s\n", escapeControl(c.Name), c.State, iso, ip, resources, labelStr)
 			} else {
-				fmt.Printf("%-25s %-12s %-3s %-20s %-15s\n", c.Name, c.State, iso, ip, resources)
+				fmt.Printf("%-25s %-12s %-3s %-20s %-15s\n", escapeControl(c.Name), c.State, iso, ip, resources)
 			}
 
 			totalCount++
@@ -398,35 +407,39 @@ func printGroupedJSONFormat(containers []incus.ContainerInfo, labelKey string) e
 }
 
 func printGroupedYAMLFormat(containers []incus.ContainerInfo, labelKey string) {
+	writeGroupedYAMLFormat(os.Stdout, containers, labelKey)
+}
+
+func writeGroupedYAMLFormat(w io.Writer, containers []incus.ContainerInfo, labelKey string) {
 	groups := groupContainersByLabel(containers, labelKey)
 	sortedKeys := getSortedGroupKeys(groups)
 
-	fmt.Printf("group_by: %s\n", labelKey)
-	fmt.Println("groups:")
+	fmt.Fprintf(w, "group_by: %s\n", yamlScalar(labelKey))
+	fmt.Fprintln(w, "groups:")
 
 	for _, groupValue := range sortedKeys {
 		groupContainers := groups[groupValue]
-		fmt.Printf("  %s:\n", groupValue)
+		fmt.Fprintf(w, "  %s:\n", yamlScalar(groupValue))
 		for _, c := range groupContainers {
-			fmt.Printf("    - name: %s\n", c.Name)
-			fmt.Printf("      state: %s\n", c.State)
-			fmt.Printf("      ip_address: %s\n", c.IPAddress)
+			fmt.Fprintf(w, "    - name: %s\n", yamlScalar(c.Name))
+			fmt.Fprintf(w, "      state: %s\n", yamlScalar(c.State))
+			fmt.Fprintf(w, "      ip_address: %s\n", yamlScalar(c.IPAddress))
 			if c.CPU != "" {
-				fmt.Printf("      cpu: %s\n", c.CPU)
+				fmt.Fprintf(w, "      cpu: %s\n", yamlScalar(c.CPU))
 			}
 			if c.Memory != "" {
-				fmt.Printf("      memory: %s\n", c.Memory)
+				fmt.Fprintf(w, "      memory: %s\n", yamlScalar(c.Memory))
 			}
 			if len(c.Labels) > 0 {
-				fmt.Printf("      labels:\n")
+				fmt.Fprintf(w, "      labels:\n")
 				for k, v := range c.Labels {
-					fmt.Printf("        %s: %s\n", k, v)
+					fmt.Fprintf(w, "        %s: %s\n", yamlScalar(k), yamlScalar(v))
 				}
 			}
 		}
 	}
-	fmt.Printf("group_count: %d\n", len(groups))
-	fmt.Printf("total_count: %d\n", len(containers))
+	fmt.Fprintf(w, "group_count: %d\n", len(groups))
+	fmt.Fprintf(w, "total_count: %d\n", len(containers))
 }
 
 // listRemote lists containers from remote gRPC server
@@ -449,4 +462,26 @@ func listRemoteHTTP() ([]incus.ContainerInfo, error) {
 	defer func() { _ = httpClient.Close() }()
 
 	return httpClient.ListContainers()
+}
+
+// yamlScalar renders s for a hand-written YAML line. Ordinary values are
+// returned unchanged so existing output does not move. A value holding a
+// control character (ESC, CR, LF, ...) is emitted by the yaml encoder as a
+// double-quoted scalar, where the bytes become \x1b / \r / \n escapes: no raw
+// control byte reaches the terminal and parsing the output returns the
+// original value (#3454).
+func yamlScalar(s string) string {
+	if !strings.ContainsFunc(s, isYAMLControl) {
+		return s
+	}
+	n := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s, Style: yaml.DoubleQuotedStyle}
+	out, err := yaml.Marshal(n)
+	if err != nil {
+		return strconv.QuoteToASCII(s)
+	}
+	return strings.TrimRight(string(out), "\n")
+}
+
+func isYAMLControl(r rune) bool {
+	return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
 }

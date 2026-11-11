@@ -23,6 +23,9 @@ func (s *NetworkServer) SetGuards(core *coreguard.Reconciler, tenant *tenantguar
 // GetNetworkGuardStatus reports both guards' last-pass snapshots. Admin only:
 // the entries name every tenant container on the host.
 func (s *NetworkServer) GetNetworkGuardStatus(ctx context.Context, _ *pb.GetNetworkGuardStatusRequest) (*pb.NetworkGuardStatus, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -84,8 +87,10 @@ func tenantGuardStatusToProto(st tenantguard.Status) *pb.GuardStatus {
 		LastError:      st.LastError,
 		StaleSince:     rfc3339OrEmpty(st.StaleSince),
 		Subjects:       safecast.I32(st.Tenants),
-		Unresolved:     append([]string(nil), st.Unresolved...),
-		Unmanaged:      append([]string(nil), st.Unmanaged...),
+
+		IsolationDegraded: st.IsolationDegraded,
+		Unresolved:        append([]string(nil), st.Unresolved...),
+		Unmanaged:         append([]string(nil), st.Unmanaged...),
 	}
 	for _, e := range st.Entries {
 		out.Entries = append(out.Entries, &pb.GuardEntry{

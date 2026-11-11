@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/internal/credentials"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -61,6 +62,15 @@ type API interface {
 	ListBackups(username string) (*ListBackupsResponse, error)
 	RestoreBackup(req RestoreBackupRequest) (*RestoreBackupResponse, error)
 	VerifyBackup(req VerifyBackupRequest) (*VerifyBackupResponse, error)
+	// Whole-box restore (#3358), through the CLI's shared function.
+	RestoreBoxBackup(p client.BoxRestoreParams) (*pb.RestoreBoxBackupResponse, error)
+	// Whole-box backup (#3504), through the CLI's shared function.
+	CreateBoxBackup(p client.BoxBackupParams) (*pb.CreateBackupResponse, error)
+
+	// Re-apply a box's SDLC skill sets (#3511), through the CLI's shared function.
+	ApplyBoxSkillSets(box string, skillSets []string, release string) (*pb.ApplyBoxSkillSetsResponse, error)
+	// Write one file into a box (#3548), through the CLI's shared function.
+	PutBoxFile(p client.BoxFileParams) (*pb.WriteBoxFileResponse, error)
 
 	// Secrets / KMS.
 	SetSecret(username, name, value string) (*SecretResponse, error)

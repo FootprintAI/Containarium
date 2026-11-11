@@ -23,6 +23,54 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// RecipePortRole labels what a recipe port is for.
+type RecipePortRole int32
+
+const (
+	RecipePortRole_RECIPE_PORT_ROLE_UNSPECIFIED RecipePortRole = 0
+	// The port is fronted by the recipe's in-box authentication proxy.
+	RecipePortRole_RECIPE_PORT_ROLE_AUTH_PROXY RecipePortRole = 1
+)
+
+// Enum value maps for RecipePortRole.
+var (
+	RecipePortRole_name = map[int32]string{
+		0: "RECIPE_PORT_ROLE_UNSPECIFIED",
+		1: "RECIPE_PORT_ROLE_AUTH_PROXY",
+	}
+	RecipePortRole_value = map[string]int32{
+		"RECIPE_PORT_ROLE_UNSPECIFIED": 0,
+		"RECIPE_PORT_ROLE_AUTH_PROXY":  1,
+	}
+)
+
+func (x RecipePortRole) Enum() *RecipePortRole {
+	p := new(RecipePortRole)
+	*p = x
+	return p
+}
+
+func (x RecipePortRole) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RecipePortRole) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_recipe_proto_enumTypes[0].Descriptor()
+}
+
+func (RecipePortRole) Type() protoreflect.EnumType {
+	return &file_containarium_v1_recipe_proto_enumTypes[0]
+}
+
+func (x RecipePortRole) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RecipePortRole.Descriptor instead.
+func (RecipePortRole) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_recipe_proto_rawDescGZIP(), []int{0}
+}
+
 // RecipeResources holds default resource limits for a recipe's container.
 type RecipeResources struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -107,7 +155,15 @@ type RecipePort struct {
 	// when zero. Ignored for HTTP/GRPC. Passthrough binds a host-wide port,
 	// so a deploy whose external_port is already claimed by a different
 	// container fails loudly rather than silently stealing it.
-	ExternalPort  int32 `protobuf:"varint,4,opt,name=external_port,json=externalPort,proto3" json:"external_port,omitempty"`
+	ExternalPort int32 `protobuf:"varint,4,opt,name=external_port,json=externalPort,proto3" json:"external_port,omitempty"`
+	// What this port is for. ROLE_UNSPECIFIED (the default) leaves routing
+	// exactly as it is today. RECIPE_PORT_ROLE_AUTH_PROXY marks the port that
+	// sits behind the recipe's own in-box authentication proxy, so a consumer
+	// can pick the gated entry point deterministically instead of guessing by
+	// position. At most one port per recipe may carry it, and it must be
+	// HTTP-routed (not TCP/UDP passthrough). Metadata only: it does not change
+	// how the daemon exposes the port. See #3464.
+	Role          RecipePortRole `protobuf:"varint,5,opt,name=role,proto3,enum=containarium.v1.RecipePortRole" json:"role,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -168,6 +224,13 @@ func (x *RecipePort) GetExternalPort() int32 {
 		return x.ExternalPort
 	}
 	return 0
+}
+
+func (x *RecipePort) GetRole() RecipePortRole {
+	if x != nil {
+		return x.Role
+	}
+	return RecipePortRole_RECIPE_PORT_ROLE_UNSPECIFIED
 }
 
 // RecipeVolume is a named persistent volume mounted into the app container.
@@ -351,6 +414,9 @@ type Recipe struct {
 	// Shell commands run inside the container after it is up (e.g. the
 	// `podman run ...` that starts the app, plus model warm-up). Same trust
 	// level as a stack's post_install: these ship in-tree and are reviewed.
+	// Besides CONTAINARIUM_PARAM_<NAME>, they see CONTAINARIUM_RELEASE: the
+	// deploying daemon's own release tag (e.g. "v0.129.0"), empty when the
+	// daemon build is not a release. No parameter sets it.
 	PostStart []string `protobuf:"bytes,11,rep,name=post_start,json=postStart,proto3" json:"post_start,omitempty"`
 	// When non-empty, the daemon brokers this recipe's model calls through the
 	// managed model-gateway for the named provider (e.g. "gemini-openai"): it
@@ -820,8 +886,15 @@ type DeployRecipeRequest struct {
 	// Required for such a recipe (absent is FAILED_PRECONDITION); ignored for
 	// an ungated one. A gated recipe cannot be deployed async.
 	GuardrailInput *GuardrailGateInput `protobuf:"bytes,10,opt,name=guardrail_input,json=guardrailInput,proto3" json:"guardrail_input,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// SSH public keys to authorize (optional, can be added later).
+	// Forwarded unchanged to the inner CreateContainer; same validation and
+	// limits (at most 32 keys, each at most 8 KiB, each a well-formed OpenSSH
+	// public key). An invalid or over-bound key refuses the whole deploy with
+	// INVALID_ARGUMENT before any container is created. Empty keeps the
+	// key-less behaviour: add keys later with AddSSHKey / SetSSHKeys.
+	SshKeys       []string `protobuf:"bytes,11,rep,name=ssh_keys,json=sshKeys,proto3" json:"ssh_keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DeployRecipeRequest) Reset() {
@@ -920,6 +993,13 @@ func (x *DeployRecipeRequest) GetAsync() bool {
 func (x *DeployRecipeRequest) GetGuardrailInput() *GuardrailGateInput {
 	if x != nil {
 		return x.GuardrailInput
+	}
+	return nil
+}
+
+func (x *DeployRecipeRequest) GetSshKeys() []string {
+	if x != nil {
+		return x.SshKeys
 	}
 	return nil
 }
@@ -1040,10 +1120,15 @@ func (x *GetWorkspaceAccessRequest) GetName() string {
 // iframe to sign the user into the in-box workspace proxy without a prompt.
 type GetWorkspaceAccessResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The in-box auth proxy's per-box session token.
+	// The in-box login token: minted single-use per call where the box's login
+	// helper provides one (librechat, slides-agent), else the box's static
+	// per-box token.
 	Token string `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
-	// Ready-to-embed bootstrap URL (https://<workspace-domain>/__ws_login?t=...);
-	// loading it sets the session cookie and redirects to the workspace UI.
+	// Ready-to-embed bootstrap URL. For a slides-agent box it is
+	// https://<workspace-domain>/__ws_login#t=... (the token in the URL
+	// fragment, which the proxy's bootstrap page posts; a token sent in the
+	// query is refused); otherwise https://<workspace-domain>/__ws_login?t=....
+	// Loading it sets the session cookie and redirects to the workspace UI.
 	Url           string `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1101,13 +1186,14 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\x0fRecipeResources\x12\x10\n" +
 	"\x03cpu\x18\x01 \x01(\tR\x03cpu\x12\x16\n" +
 	"\x06memory\x18\x02 \x01(\tR\x06memory\x12\x12\n" +
-	"\x04disk\x18\x03 \x01(\tR\x04disk\"\xb2\x01\n" +
+	"\x04disk\x18\x03 \x01(\tR\x04disk\"\xe7\x01\n" +
 	"\n" +
 	"RecipePort\x12%\n" +
 	"\x0econtainer_port\x18\x01 \x01(\x05R\rcontainerPort\x12\x1c\n" +
 	"\tsubdomain\x18\x02 \x01(\tR\tsubdomain\x12:\n" +
 	"\bprotocol\x18\x03 \x01(\x0e2\x1e.containarium.v1.RouteProtocolR\bprotocol\x12#\n" +
-	"\rexternal_port\x18\x04 \x01(\x05R\fexternalPort\"6\n" +
+	"\rexternal_port\x18\x04 \x01(\x05R\fexternalPort\x123\n" +
+	"\x04role\x18\x05 \x01(\x0e2\x1f.containarium.v1.RecipePortRoleR\x04role\"6\n" +
 	"\fRecipeVolume\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\"\xa3\x01\n" +
@@ -1152,7 +1238,7 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\x10GetRecipeRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"D\n" +
 	"\x11GetRecipeResponse\x12/\n" +
-	"\x06recipe\x18\x01 \x01(\v2\x17.containarium.v1.RecipeR\x06recipe\"\xda\x04\n" +
+	"\x06recipe\x18\x01 \x01(\v2\x17.containarium.v1.RecipeR\x06recipe\"\xf5\x04\n" +
 	"\x13DeployRecipeRequest\x12\x1b\n" +
 	"\trecipe_id\x18\x01 \x01(\tR\brecipeId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x10\n" +
@@ -1167,7 +1253,8 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\x06labels\x18\b \x03(\v20.containarium.v1.DeployRecipeRequest.LabelsEntryR\x06labels\x12\x14\n" +
 	"\x05async\x18\t \x01(\bR\x05async\x12L\n" +
 	"\x0fguardrail_input\x18\n" +
-	" \x01(\v2#.containarium.v1.GuardrailGateInputR\x0eguardrailInput\x1a=\n" +
+	" \x01(\v2#.containarium.v1.GuardrailGateInputR\x0eguardrailInput\x12\x19\n" +
+	"\bssh_keys\x18\v \x03(\tR\asshKeys\x1a=\n" +
 	"\x0fParametersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a9\n" +
@@ -1182,7 +1269,10 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"D\n" +
 	"\x1aGetWorkspaceAccessResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x10\n" +
-	"\x03url\x18\x02 \x01(\tR\x03url2\xda\b\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url*S\n" +
+	"\x0eRecipePortRole\x12 \n" +
+	"\x1cRECIPE_PORT_ROLE_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bRECIPE_PORT_ROLE_AUTH_PROXY\x10\x012\xda\b\n" +
 	"\rRecipeService\x12\xd1\x02\n" +
 	"\x12GetWorkspaceAccess\x12*.containarium.v1.GetWorkspaceAccessRequest\x1a+.containarium.v1.GetWorkspaceAccessResponse\"\xe1\x01\x92A\xb2\x01\n" +
 	"\aRecipes\x12\x18Get workspace access URL\x1a\x8c\x01Returns a zero-click bootstrap URL for an agent-workspace box, embeddable in the console to authenticate the in-box workspace UI seamlessly.\x82\xd3\xe4\x93\x02%\x12#/v1/recipes/workspace/{name}/access\x12\xd3\x01\n" +
@@ -1206,61 +1296,64 @@ func file_containarium_v1_recipe_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_recipe_proto_rawDescData
 }
 
+var file_containarium_v1_recipe_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_containarium_v1_recipe_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_containarium_v1_recipe_proto_goTypes = []any{
-	(*RecipeResources)(nil),            // 0: containarium.v1.RecipeResources
-	(*RecipePort)(nil),                 // 1: containarium.v1.RecipePort
-	(*RecipeVolume)(nil),               // 2: containarium.v1.RecipeVolume
-	(*RecipeParam)(nil),                // 3: containarium.v1.RecipeParam
-	(*Recipe)(nil),                     // 4: containarium.v1.Recipe
-	(*GuardrailGate)(nil),              // 5: containarium.v1.GuardrailGate
-	(*GuardrailGateInput)(nil),         // 6: containarium.v1.GuardrailGateInput
-	(*ListRecipesRequest)(nil),         // 7: containarium.v1.ListRecipesRequest
-	(*ListRecipesResponse)(nil),        // 8: containarium.v1.ListRecipesResponse
-	(*GetRecipeRequest)(nil),           // 9: containarium.v1.GetRecipeRequest
-	(*GetRecipeResponse)(nil),          // 10: containarium.v1.GetRecipeResponse
-	(*DeployRecipeRequest)(nil),        // 11: containarium.v1.DeployRecipeRequest
-	(*DeployRecipeResponse)(nil),       // 12: containarium.v1.DeployRecipeResponse
-	(*GetWorkspaceAccessRequest)(nil),  // 13: containarium.v1.GetWorkspaceAccessRequest
-	(*GetWorkspaceAccessResponse)(nil), // 14: containarium.v1.GetWorkspaceAccessResponse
-	nil,                                // 15: containarium.v1.Recipe.EnvEntry
-	nil,                                // 16: containarium.v1.DeployRecipeRequest.ParametersEntry
-	nil,                                // 17: containarium.v1.DeployRecipeRequest.LabelsEntry
-	(RouteProtocol)(0),                 // 18: containarium.v1.RouteProtocol
-	(GuardrailKind)(0),                 // 19: containarium.v1.GuardrailKind
-	(*GuardrailAttestation)(nil),       // 20: containarium.v1.GuardrailAttestation
-	(*Container)(nil),                  // 21: containarium.v1.Container
+	(RecipePortRole)(0),                // 0: containarium.v1.RecipePortRole
+	(*RecipeResources)(nil),            // 1: containarium.v1.RecipeResources
+	(*RecipePort)(nil),                 // 2: containarium.v1.RecipePort
+	(*RecipeVolume)(nil),               // 3: containarium.v1.RecipeVolume
+	(*RecipeParam)(nil),                // 4: containarium.v1.RecipeParam
+	(*Recipe)(nil),                     // 5: containarium.v1.Recipe
+	(*GuardrailGate)(nil),              // 6: containarium.v1.GuardrailGate
+	(*GuardrailGateInput)(nil),         // 7: containarium.v1.GuardrailGateInput
+	(*ListRecipesRequest)(nil),         // 8: containarium.v1.ListRecipesRequest
+	(*ListRecipesResponse)(nil),        // 9: containarium.v1.ListRecipesResponse
+	(*GetRecipeRequest)(nil),           // 10: containarium.v1.GetRecipeRequest
+	(*GetRecipeResponse)(nil),          // 11: containarium.v1.GetRecipeResponse
+	(*DeployRecipeRequest)(nil),        // 12: containarium.v1.DeployRecipeRequest
+	(*DeployRecipeResponse)(nil),       // 13: containarium.v1.DeployRecipeResponse
+	(*GetWorkspaceAccessRequest)(nil),  // 14: containarium.v1.GetWorkspaceAccessRequest
+	(*GetWorkspaceAccessResponse)(nil), // 15: containarium.v1.GetWorkspaceAccessResponse
+	nil,                                // 16: containarium.v1.Recipe.EnvEntry
+	nil,                                // 17: containarium.v1.DeployRecipeRequest.ParametersEntry
+	nil,                                // 18: containarium.v1.DeployRecipeRequest.LabelsEntry
+	(RouteProtocol)(0),                 // 19: containarium.v1.RouteProtocol
+	(GuardrailKind)(0),                 // 20: containarium.v1.GuardrailKind
+	(*GuardrailAttestation)(nil),       // 21: containarium.v1.GuardrailAttestation
+	(*Container)(nil),                  // 22: containarium.v1.Container
 }
 var file_containarium_v1_recipe_proto_depIdxs = []int32{
-	18, // 0: containarium.v1.RecipePort.protocol:type_name -> containarium.v1.RouteProtocol
-	0,  // 1: containarium.v1.Recipe.resources:type_name -> containarium.v1.RecipeResources
-	1,  // 2: containarium.v1.Recipe.ports:type_name -> containarium.v1.RecipePort
-	2,  // 3: containarium.v1.Recipe.volumes:type_name -> containarium.v1.RecipeVolume
-	15, // 4: containarium.v1.Recipe.env:type_name -> containarium.v1.Recipe.EnvEntry
-	3,  // 5: containarium.v1.Recipe.parameters:type_name -> containarium.v1.RecipeParam
-	5,  // 6: containarium.v1.Recipe.guardrail_gate:type_name -> containarium.v1.GuardrailGate
-	19, // 7: containarium.v1.GuardrailGate.require_kinds:type_name -> containarium.v1.GuardrailKind
-	20, // 8: containarium.v1.GuardrailGateInput.attestation:type_name -> containarium.v1.GuardrailAttestation
-	4,  // 9: containarium.v1.ListRecipesResponse.recipes:type_name -> containarium.v1.Recipe
-	4,  // 10: containarium.v1.GetRecipeResponse.recipe:type_name -> containarium.v1.Recipe
-	16, // 11: containarium.v1.DeployRecipeRequest.parameters:type_name -> containarium.v1.DeployRecipeRequest.ParametersEntry
-	0,  // 12: containarium.v1.DeployRecipeRequest.resource_overrides:type_name -> containarium.v1.RecipeResources
-	17, // 13: containarium.v1.DeployRecipeRequest.labels:type_name -> containarium.v1.DeployRecipeRequest.LabelsEntry
-	6,  // 14: containarium.v1.DeployRecipeRequest.guardrail_input:type_name -> containarium.v1.GuardrailGateInput
-	21, // 15: containarium.v1.DeployRecipeResponse.container:type_name -> containarium.v1.Container
-	13, // 16: containarium.v1.RecipeService.GetWorkspaceAccess:input_type -> containarium.v1.GetWorkspaceAccessRequest
-	7,  // 17: containarium.v1.RecipeService.ListRecipes:input_type -> containarium.v1.ListRecipesRequest
-	9,  // 18: containarium.v1.RecipeService.GetRecipe:input_type -> containarium.v1.GetRecipeRequest
-	11, // 19: containarium.v1.RecipeService.DeployRecipe:input_type -> containarium.v1.DeployRecipeRequest
-	14, // 20: containarium.v1.RecipeService.GetWorkspaceAccess:output_type -> containarium.v1.GetWorkspaceAccessResponse
-	8,  // 21: containarium.v1.RecipeService.ListRecipes:output_type -> containarium.v1.ListRecipesResponse
-	10, // 22: containarium.v1.RecipeService.GetRecipe:output_type -> containarium.v1.GetRecipeResponse
-	12, // 23: containarium.v1.RecipeService.DeployRecipe:output_type -> containarium.v1.DeployRecipeResponse
-	20, // [20:24] is the sub-list for method output_type
-	16, // [16:20] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	19, // 0: containarium.v1.RecipePort.protocol:type_name -> containarium.v1.RouteProtocol
+	0,  // 1: containarium.v1.RecipePort.role:type_name -> containarium.v1.RecipePortRole
+	1,  // 2: containarium.v1.Recipe.resources:type_name -> containarium.v1.RecipeResources
+	2,  // 3: containarium.v1.Recipe.ports:type_name -> containarium.v1.RecipePort
+	3,  // 4: containarium.v1.Recipe.volumes:type_name -> containarium.v1.RecipeVolume
+	16, // 5: containarium.v1.Recipe.env:type_name -> containarium.v1.Recipe.EnvEntry
+	4,  // 6: containarium.v1.Recipe.parameters:type_name -> containarium.v1.RecipeParam
+	6,  // 7: containarium.v1.Recipe.guardrail_gate:type_name -> containarium.v1.GuardrailGate
+	20, // 8: containarium.v1.GuardrailGate.require_kinds:type_name -> containarium.v1.GuardrailKind
+	21, // 9: containarium.v1.GuardrailGateInput.attestation:type_name -> containarium.v1.GuardrailAttestation
+	5,  // 10: containarium.v1.ListRecipesResponse.recipes:type_name -> containarium.v1.Recipe
+	5,  // 11: containarium.v1.GetRecipeResponse.recipe:type_name -> containarium.v1.Recipe
+	17, // 12: containarium.v1.DeployRecipeRequest.parameters:type_name -> containarium.v1.DeployRecipeRequest.ParametersEntry
+	1,  // 13: containarium.v1.DeployRecipeRequest.resource_overrides:type_name -> containarium.v1.RecipeResources
+	18, // 14: containarium.v1.DeployRecipeRequest.labels:type_name -> containarium.v1.DeployRecipeRequest.LabelsEntry
+	7,  // 15: containarium.v1.DeployRecipeRequest.guardrail_input:type_name -> containarium.v1.GuardrailGateInput
+	22, // 16: containarium.v1.DeployRecipeResponse.container:type_name -> containarium.v1.Container
+	14, // 17: containarium.v1.RecipeService.GetWorkspaceAccess:input_type -> containarium.v1.GetWorkspaceAccessRequest
+	8,  // 18: containarium.v1.RecipeService.ListRecipes:input_type -> containarium.v1.ListRecipesRequest
+	10, // 19: containarium.v1.RecipeService.GetRecipe:input_type -> containarium.v1.GetRecipeRequest
+	12, // 20: containarium.v1.RecipeService.DeployRecipe:input_type -> containarium.v1.DeployRecipeRequest
+	15, // 21: containarium.v1.RecipeService.GetWorkspaceAccess:output_type -> containarium.v1.GetWorkspaceAccessResponse
+	9,  // 22: containarium.v1.RecipeService.ListRecipes:output_type -> containarium.v1.ListRecipesResponse
+	11, // 23: containarium.v1.RecipeService.GetRecipe:output_type -> containarium.v1.GetRecipeResponse
+	13, // 24: containarium.v1.RecipeService.DeployRecipe:output_type -> containarium.v1.DeployRecipeResponse
+	21, // [21:25] is the sub-list for method output_type
+	17, // [17:21] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_recipe_proto_init() }
@@ -1276,13 +1369,14 @@ func file_containarium_v1_recipe_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_recipe_proto_rawDesc), len(file_containarium_v1_recipe_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_containarium_v1_recipe_proto_goTypes,
 		DependencyIndexes: file_containarium_v1_recipe_proto_depIdxs,
+		EnumInfos:         file_containarium_v1_recipe_proto_enumTypes,
 		MessageInfos:      file_containarium_v1_recipe_proto_msgTypes,
 	}.Build()
 	File_containarium_v1_recipe_proto = out.File

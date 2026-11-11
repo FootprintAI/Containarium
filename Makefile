@@ -227,10 +227,10 @@ build-agent-runtime: ## Build the in-box agent-runtime loop (Node/TS sibling pac
 	@cd agent-runtime && npm ci && npm run build
 	@echo "==> agent-runtime built: agent-runtime/dist/"
 
-bundle-agent-runtime: build-agent-runtime ## Package agent-runtime as a release tarball (dist + manifests; `npm ci --omit=dev` runs in-box)
+bundle-agent-runtime: build-agent-runtime ## Package agent-runtime as a release tarball (dist + box helpers + manifests; `npm ci --omit=dev` runs in-box)
 	@echo "==> Packaging agent-runtime bundle..."
 	@mkdir -p $(BUILD_DIR)
-	@tar -czf $(BUILD_DIR)/agent-runtime-bundle.tar.gz -C agent-runtime dist package.json package-lock.json
+	@tar -czf $(BUILD_DIR)/agent-runtime-bundle.tar.gz -C agent-runtime dist helpers package.json package-lock.json
 	@scripts/verify-agent-runtime-bundle.sh $(BUILD_DIR)/agent-runtime-bundle.tar.gz
 	@echo "==> agent-runtime bundle: $(BUILD_DIR)/agent-runtime-bundle.tar.gz (publish alongside agent-box-linux-amd64; scripts/install-agent-runtime.sh consumes both)"
 
@@ -241,13 +241,15 @@ bundle-sdlc-skills: ## Package the pinned SDLC role skills (pkg/core/sdlcskills/
 build-agent-box-linux: ## Build agent-box for Linux (the typical install target — agent-box runs INSIDE LXC containers)
 	@echo "==> Building agent-box for Linux..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64 cmd/agent-box/main.go
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64 cmd/agent-box/main.go
+	@./scripts/test-agent-box-static.sh $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64
 	@echo "==> agent-box built: $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64"
 
 build-agent-box-all: ## Build agent-box for all platforms
 	@echo "==> Building agent-box for all platforms..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64 cmd/agent-box/main.go
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64 cmd/agent-box/main.go
+	@./scripts/test-agent-box-static.sh $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64
 	@GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-darwin-amd64 cmd/agent-box/main.go
 	@GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-darwin-arm64 cmd/agent-box/main.go
 	@echo "==> agent-box binaries built in $(BUILD_DIR)/"

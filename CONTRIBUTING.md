@@ -88,6 +88,7 @@ tool download, name the exact version and where it comes from.
 | Dependency licences | `licenses.yml` | Go modules linked into shipped programs, web UI and `agent-runtime` npm packages, and that `NOTICE` is complete. Runs when `go.mod`, `go.sum`, a `package*.json` or the licence scripts change. |
 | Static analysis, known vulnerabilities, dependency scan | `security.yml` | `gosec`, `govulncheck`, `Trivy`. See [`SECURITY.md`](SECURITY.md#automated-scanning). |
 | Lint | `golangci-lint.yml` | `golangci-lint` on Go code. |
+| Tenant strings in logs and CLI tables | `proxyproto-e2e.yml` (`Unit + default e2e`) | `internal/logverbcheck` fails when a log call or an `internal/cmd` table row prints a tenant-controlled value (box, user, label, project, process, SSH login, model, ...) with `%s` or `%v`. Log it with `%q`; wrap a table cell in `escapeControl`. The field table and the allowlist (one reason per entry) live in that package. Run `go test ./internal/logverbcheck/`. |
 | Proto lint and compatibility | `proto.yml` | `buf` lint and breaking-change checks. |
 | Workflow lint and action pins | `workflow-lint.yml` | `actionlint`; every `uses:` must be a full 40-hex commit SHA with the version as a trailing comment (`scripts/ci/check-action-pins.sh`; local `./` actions are exempt); and `zizmor` (`scripts/ci/check-workflow-security.sh`) fails on `pull_request_target`, `${{ }}` event data expanded inside a `run:` block (pass it through `env:` instead) and over-broad `permissions:` (grant write scopes per job, not per workflow). A justified exception is a per-finding entry with a reason in `.github/zizmor.yml`. Dependabot bumps the SHA and the comment. |
 | Dependency updates | `.github/dependabot.yml` | Weekly Go module and GitHub Actions update PRs. They are reviewed like any other PR. |
@@ -124,3 +125,12 @@ epic. Until each ships, do not assume the check exists:
 - Add a `CHANGELOG.md` entry under `## [Unreleased]` (never inside a
   released section).
 - Fill in the pull request template checklist.
+
+## Merging: the merge queue
+
+`main` uses a GitHub merge queue. You do not need to rebase or "update branch"
+before merging. Once your PR is approved and its required checks are green,
+choose **Merge when ready** (or `gh pr merge --auto --squash`). The queue tests
+your PR on top of the latest `main` and the PRs ahead of it, then squash-merges
+it. If that combined build fails, the PR is removed from the queue; fix it and
+re-queue.

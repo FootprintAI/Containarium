@@ -65,6 +65,15 @@ func (f *fakeRecipeBoxes) Exec(_ string, command []string) error {
 	return nil
 }
 
+// ExecWithExitCode records a post_start run like Exec and reports exit 0.
+func (f *fakeRecipeBoxes) ExecWithExitCode(name string, command []string) (string, string, int, error) {
+	return "", "", 0, f.Exec(name, command)
+}
+
+func (f *fakeRecipeBoxes) ExecWithOutput(string, []string) (string, string, error) {
+	return "", "", errors.New("fakeRecipeBoxes: ExecWithOutput not modelled")
+}
+
 func (f *fakeRecipeBoxes) PushFile(_ string, path string, content io.ReadSeeker, mode string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -85,6 +94,12 @@ func (f *fakeRecipeBoxes) PushFile(_ string, path string, content io.ReadSeeker,
 }
 
 func (f *fakeRecipeBoxes) Get(string) (*incus.ContainerInfo, error) { return nil, errors.New("fake") }
+
+// SetConfig and UnsetConfig accept every write and record nothing in events,
+// so the event sequences other tests assert are unchanged by the post_start
+// marker (#3546). postStartBoxes models the marker itself.
+func (f *fakeRecipeBoxes) SetConfig(string, string, string) error { return nil }
+func (f *fakeRecipeBoxes) UnsetConfig(string, string) error       { return nil }
 
 // fakePolicyProvider serves a fixed policy or error.
 type fakePolicyProvider struct {

@@ -9,6 +9,12 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
+// RunUser is the unprivileged OS user platform-started runs execute as on a box
+// with a recorded tool-access level (#2944, slice 1b). One name shared by the
+// daemon's run path and the gateway's terminal route (#3275), so the sign-in
+// terminal can never open as a different user than the one the run is refused on.
+const RunUser = "ctn-run"
+
 // ConfigValue maps the enum to its stored value. ok is false for UNSPECIFIED
 // (which means "clear the key") and for any value this build does not know.
 func ConfigValue(a pb.BoxToolAccess) (value string, ok bool) {

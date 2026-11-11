@@ -5,8 +5,9 @@
 #   1. a compiled dist/engines/<name>.js for EVERY engine in src/engines/<name>.ts
 #      (so an engine can't silently drop from a release — e.g. gemini was missing
 #      from v0.33.0 because that tag predated the engine; this fails the build if
-#      tsc/packaging ever skips one), and
-#   2. each runtime SDK as a package.json *dependency* (not devDependency), so the
+#      tsc/packaging ever skips one),
+#   2. the box helpers under helpers/ (agent-python, agent-test), executable, and
+#   3. each runtime SDK as a package.json *dependency* (not devDependency), so the
 #      box's `npm ci --omit=dev` actually installs it.
 #
 # Run by `make bundle-agent-runtime` after packaging, and in the release workflow.
@@ -18,6 +19,8 @@ BUNDLE="${1:?usage: verify-agent-runtime-bundle.sh <bundle.tar.gz> [src-engines-
 SRC_ENGINES_DIR="${2:-agent-runtime/src/engines}"
 # Runtime SDKs the engines import; each must be a (non-dev) dependency.
 REQUIRED_DEPS=(@anthropic-ai/claude-agent-sdk @openai/codex-sdk @google/genai @modelcontextprotocol/sdk)
+# Box helpers install-agent-runtime.sh puts on PATH.
+REQUIRED_HELPERS=(agent-python agent-test)
 
 [ -f "$BUNDLE" ] || { echo "verify-bundle: no such bundle: $BUNDLE" >&2; exit 2; }
 [ -d "$SRC_ENGINES_DIR" ] || { echo "verify-bundle: no src engines dir: $SRC_ENGINES_DIR" >&2; exit 2; }
@@ -50,7 +53,17 @@ if [ ! -f "$tmp/dist/credential-state-cli.js" ] || [ ! -f "$tmp/dist/credential-
   fail=1
 fi
 
-# 2. Every runtime SDK is a (non-dev) dependency, so `npm ci --omit=dev` keeps it.
+# The box helpers install-agent-runtime.sh puts on PATH (#3491): a bundle
+# without agent-python would leave a toolchains=python box failing at post_start,
+# and one without agent-test leaves skills no way to report a test run.
+for helper in "${REQUIRED_HELPERS[@]}"; do
+  if [ ! -x "$tmp/helpers/$helper" ]; then
+    echo "MISSING HELPER: bundle has no executable helpers/$helper" >&2
+    fail=1
+  fi
+done
+
+# 3. Every runtime SDK is a (non-dev) dependency, so `npm ci --omit=dev` keeps it.
 for dep in "${REQUIRED_DEPS[@]}"; do
   if ! node -e 'const p=require(process.argv[1]); process.exit(((p.dependencies)||{})[process.argv[2]]?0:1)' \
        "$tmp/package.json" "$dep" 2>/dev/null; then
@@ -60,7 +73,7 @@ for dep in "${REQUIRED_DEPS[@]}"; do
 done
 
 if [ "$fail" -ne 0 ]; then
-  echo "verify-bundle: FAILED — the agent-runtime bundle is missing an engine or a runtime dep" >&2
+  echo "verify-bundle: FAILED — the agent-runtime bundle is missing an engine, a box helper or a runtime dep" >&2
   exit 1
 fi
 echo "verify-bundle: OK — engines: $(cd "$tmp/dist/engines" && ls *.js | tr '\n' ' ')"

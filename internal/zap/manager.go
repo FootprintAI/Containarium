@@ -25,7 +25,7 @@ var ErrZapNotInstalled = errors.New("ZAP is not installed in the security contai
 // Manager orchestrates periodic ZAP scans using a PostgreSQL job queue
 type Manager struct {
 	store      *Store
-	routeStore *app.RouteStore
+	routeStore app.RouteLister // nil without route persistence; read on every collect (#3332)
 	scanner    *Scanner
 	config     ManagerConfig
 	cancel     context.CancelFunc
@@ -37,7 +37,7 @@ type Manager struct {
 // NewManager creates a new ZAP manager
 func NewManager(
 	store *Store,
-	routeStore *app.RouteStore,
+	routeStore app.RouteLister,
 	config ManagerConfig,
 ) *Manager {
 	if config.Interval == 0 {
@@ -144,7 +144,7 @@ func (m *Manager) enqueueScan(ctx context.Context, trigger, containerName string
 	}
 
 	if containerName != "" {
-		log.Printf("ZAP scan %s started (trigger: %s, scope: %s)", scanRunID, trigger, containerName)
+		log.Printf("ZAP scan %s started (trigger: %s, scope: %q)", scanRunID, trigger, containerName)
 	} else {
 		log.Printf("ZAP scan %s started (trigger: %s)", scanRunID, trigger)
 	}
@@ -175,7 +175,7 @@ func (m *Manager) enqueueScan(ctx context.Context, trigger, containerName string
 	// Enqueue one job per target URL
 	for _, t := range targets {
 		if _, err := m.store.EnqueueScanJob(ctx, scanRunID, t.url, t.containerName); err != nil {
-			log.Printf("ZAP scan %s: failed to enqueue target %s: %v", scanRunID, t.url, err)
+			log.Printf("ZAP scan %s: failed to enqueue target %q: %v", scanRunID, t.url, err)
 		}
 	}
 
@@ -269,7 +269,7 @@ func (m *Manager) worker(ctx context.Context, id int) {
 			continue
 		}
 
-		log.Printf("ZAP worker %d: processing job %d (scan_run=%s, target=%s)",
+		log.Printf("ZAP worker %d: processing job %d (scan_run=%s, target=%q)",
 			id, job.ID, job.ScanRunID, job.TargetURL)
 
 		if err := m.scanTarget(ctx, job); err != nil {

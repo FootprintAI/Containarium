@@ -31,6 +31,12 @@ podman run -d --name ollama --restart=always --device nvidia.com/gpu=all \
 podman exec ollama ollama pull "$CONTAINARIUM_PARAM_MODEL"
 ```
 
+`post_start` runs under `set -euo pipefail`, and a step that exits non-zero
+fails the deploy. When `post_start` fails, the daemon does **not** expose the
+recipe's ports (fail closed): a synchronous deploy returns the error, and an
+asynchronous deploy leaves the box running with no route and logs
+`post_start failed ...; ports were not exposed` in the daemon journal.
+
 The model cache lives on a named Podman volume, so it survives container
 restarts.
 
@@ -75,6 +81,7 @@ Param:       model [string] default="llama3" — Model to pull after the server 
 containarium recipe deploy ollama ol1 \
     --gpu 0 \
     --param model=llama3 \
+    --ssh-key ~/.ssh/id_ed25519.pub \
     --server <gpu-backend>
 ```
 
@@ -84,6 +91,7 @@ containarium recipe deploy ollama ol1 \
 | `ol1` | deployment name → container `ol1-container` |
 | `--gpu 0` | GPU device to pass through (required; `ollama` is a GPU recipe) |
 | `--param model=<name>` | model to pull on first boot (default `llama3`) |
+| `--ssh-key <path>` | optional, repeatable: a public key authorized on the box when it is created, the same way `containarium create --ssh-key` does it |
 | `--server <gpu-backend>` | the daemon managing the GPU backend |
 
 On success the deploy prints the public URL, e.g.
@@ -133,6 +141,10 @@ Agents reach the same code path through the platform MCP server:
   deploy on a specific GPU node, point `--server` at that node's daemon.
 - GPU recipes require an explicit `--gpu`; there is no auto-selection of a GPU
   backend yet.
+- SSH access needs no second call: keys passed with `--ssh-key` (MCP:
+  `ssh_keys`) are authorized when the box is created, and an invalid key
+  refuses the deploy before any box exists. Without them the box has no
+  user keys; set them later with `containarium ssh-keys set <box> --key-file <path>`.
 
 ## Cleanup
 

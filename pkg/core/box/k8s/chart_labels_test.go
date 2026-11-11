@@ -127,6 +127,7 @@ func TestHelmChartPinsSshpiperToAppVersion(t *testing.T) {
 	packaged := filepath.Join(pkgDir, "containarium-k8s-9.8.7.tgz")
 	render := func(chart string, extra ...string) string {
 		args := append([]string{"template", "test-release", chart,
+			"--set", "daemon.jwtSecret=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdead",
 			"--set", "gateway.upstreamKeySecret=sshpiper-upstream-key",
 			"--show-only", "templates/sshpiper-deployment.yaml"}, extra...)
 		out, err := exec.Command(helmPath, args...).CombinedOutput()

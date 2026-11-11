@@ -84,6 +84,23 @@ type ContainerActuator interface {
 	EnsureDeleted(ctx context.Context, localName string) error
 }
 
+// ObservedState is the host-observed assignment state carried in
+// ReportContainerStateRequest.state. The wire field is a string owned by the
+// cloud contract (actuation_service.proto); these are its allowed values.
+type ObservedState string
+
+const (
+	ObservedStateActive   ObservedState = "active"
+	ObservedStateStopped  ObservedState = "stopped"
+	ObservedStateDegraded ObservedState = "degraded"
+)
+
+// ErrContainerDegraded is wrapped by EnsureRunning when a container that is
+// already running cannot be brought to its desired configuration (e.g. its
+// tenant label could not be stamped). The container is left running and the
+// reconciler reports it "degraded" rather than "active".
+var ErrContainerDegraded = errors.New("container degraded")
+
 // HostCheck is one line of the host's `doctor` self-check — mirrors the
 // proto HostCapabilityCheck so callers (the daemon's probe) don't depend on
 // generated types.
@@ -241,6 +258,7 @@ func New(cfg *Config, deps Deps) (*Client, error) {
 // not crash the daemon or stop local containers).
 func (c *Client) Start(ctx context.Context) error {
 	if isRESTControlPlane(c.cfg.ControlPlane) {
+		warnIfPlaintextControlPlane(c.cfg.ControlPlane)
 		// REST transport (#722): no gRPC dial. WatchAssignments (streaming) is
 		// unavailable over REST, so the watch loop is skipped — a BYOC host on a
 		// REST-only control plane is push-driven (the cloud drives it via the
@@ -362,6 +380,7 @@ type EnrollOptions struct {
 func Enroll(ctx context.Context, controlPlane, joinToken string, insecureTLS bool, opts EnrollOptions) (hostID, bearerToken string, err error) {
 	// REST control plane (#722): redeem over grpc-gateway instead of gRPC.
 	if isRESTControlPlane(controlPlane) {
+		warnIfPlaintextControlPlane(controlPlane)
 		return enrollREST(ctx, controlPlane, joinToken, opts)
 	}
 	conn, err := dialControlPlane(controlPlane, insecureTLS)
@@ -739,15 +758,18 @@ func (c *Client) reconcileAssignment(a *cloudv1.Assignment) {
 			SecretEnv: a.GetSecretEnv(), Routes: routes,
 		}); err != nil {
 			log.Printf("[cloud] ensure running %s: %v", name, err)
+			if errors.Is(err, ErrContainerDegraded) {
+				c.report(a.GetContainerId(), ObservedStateDegraded)
+			}
 			return // leave the cloud's observed state stale; next snapshot retries
 		}
-		c.report(a.GetContainerId(), "active")
+		c.report(a.GetContainerId(), ObservedStateActive)
 	case "stopped":
 		if err := c.containers.EnsureStopped(c.ctx, name); err != nil {
 			log.Printf("[cloud] ensure stopped %s: %v", name, err)
 			return
 		}
-		c.report(a.GetContainerId(), "stopped")
+		c.report(a.GetContainerId(), ObservedStateStopped)
 	case "deleted":
 		if err := c.containers.EnsureDeleted(c.ctx, name); err != nil {
 			log.Printf("[cloud] ensure deleted %s: %v", name, err)
@@ -787,7 +809,7 @@ func (c *Client) reconcileTermination(a *cloudv1.Assignment) terminationOutcome 
 		log.Printf("[cloud] WARN terminate-sessions assignment %s: %v; no sessions ended", id, err)
 		outcome = terminationUnmapped
 	} else if err != nil {
-		log.Printf("[cloud] terminate sessions for %s (assignment %s): %v", user, id, err)
+		log.Printf("[cloud] terminate sessions for %q (assignment %s): %v", user, id, err)
 		recordTerminationOutcome(c.ctx, terminationFailed)
 		return terminationFailed
 	}
@@ -801,7 +823,7 @@ func (c *Client) reconcileTermination(a *cloudv1.Assignment) terminationOutcome 
 	}
 	recordTerminationOutcome(c.ctx, outcome)
 	if outcome == terminationEnded {
-		log.Printf("[cloud] terminated sessions for %s (assignment %s)", user, id)
+		log.Printf("[cloud] terminated sessions for %q (assignment %s)", user, id)
 	}
 	return outcome
 }
@@ -815,14 +837,14 @@ func (c *Client) terminationDone(id string) bool {
 // report sends observed container state back to the cloud (best-effort). Part
 // of the pull/reconcile path, so it only runs in gRPC mode (the REST transport
 // runs no watch loop); watchAC is nil otherwise.
-func (c *Client) report(containerID, state string) {
+func (c *Client) report(containerID string, state ObservedState) {
 	if c.watchAC == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.authContext(c.ctx), 10*time.Second)
 	defer cancel()
 	if _, err := c.watchAC.ReportContainerState(ctx, &cloudv1.ReportContainerStateRequest{
-		ContainerId: containerID, State: state,
+		ContainerId: containerID, State: string(state),
 	}); err != nil {
 		log.Printf("[cloud] report state %s=%s: %v", containerID, state, err)
 	}

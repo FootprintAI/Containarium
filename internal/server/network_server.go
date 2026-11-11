@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
@@ -25,21 +26,36 @@ import (
 
 // NetworkServer implements the NetworkService gRPC service
 type NetworkServer struct {
+	atomicTenantAccessReady func() bool
+	nativeTenantLocal       bool
+	nativeTenantReady       func() bool
 	pb.UnimplementedNetworkServiceServer
 	incusClient        *incus.Client
 	proxyManager       *app.ProxyManager
 	passthroughManager *network.PassthroughManager
-	appStore           app.AppStore
-	routeStore         *app.RouteStore          // Source of truth for routes (PostgreSQL)
-	passthroughStore   network.PassthroughStore // Source of truth for passthrough routes (PostgreSQL)
-	containerNetwork   string                   // e.g., "10.100.0.0/24"
-	proxyIP            string                   // e.g., "10.100.0.1"
-	baseDomain         string                   // e.g., "example.com"
-	emitter            *events.Emitter
-	egressMgr          *egressproxy.Manager             // egress-via-client relays, keyed by box (#808)
-	anonGuard          func(containerName string) error // #2200: refuses routes to unclaimed anonymous boxes; nil = no check
-	coreGuard          *coreguard.Reconciler            // #2084: reported by GetNetworkGuardStatus; nil = no incus here
-	tenantGuard        *tenantguard.Reconciler          // #2347: same
+	appStore           appLister
+	// routes is the route store (source of truth, PostgreSQL) read on every
+	// call, so one installed after a degraded start reaches the handlers
+	// (#3331); nil when route persistence is not configured at all.
+	routes           *liveRouteStore
+	containerNetwork string // e.g., "10.100.0.0/24"
+	proxyIP          string // e.g., "10.100.0.1"
+	baseDomain       string // e.g., "example.com"
+	emitter          *events.Emitter
+	egressMgr        *egressproxy.Manager             // egress-via-client relays, keyed by box (#808)
+	anonGuard        func(containerName string) error // #2200: refuses routes to unclaimed anonymous boxes; nil = no check
+	coreGuard        *coreguard.Reconciler            // #2084: reported by GetNetworkGuardStatus; nil = no incus here
+	tenantGuard      *tenantguard.Reconciler          // #2347: same
+
+	// passthroughStore is the source of truth for passthrough routes
+	// (PostgreSQL), read through currentPassthroughStore: it can be installed
+	// while serving (#3333). passthroughRequired is set when Postgres is
+	// configured; the RPCs then refuse while the store is absent.
+	passthroughStore    storeSlot[network.PassthroughStore]
+	passthroughRequired atomic.Bool
+	// passthroughRules overrides passthroughManager as the no-Postgres
+	// write path; tests only.
+	passthroughRules passthroughRuleWriter
 }
 
 // resolveFullDomain determines the full domain from a user-provided domain string.
@@ -58,8 +74,26 @@ func resolveFullDomain(domain, baseDomain string) string {
 	return domain
 }
 
+// appLister is the app-store read GetRoutes needs to filter routes by
+// tenant. *app.Store and the late-install view (liveAppLister) satisfy it.
+type appLister interface {
+	List(ctx context.Context, username string, stateFilter pb.AppState) ([]*pb.App, error)
+}
+
+// routeStoreNow returns the route store, or: (nil, nil) when route
+// persistence is not configured on this daemon, so the handlers keep the
+// direct-to-Caddy fallback; UNAVAILABLE while the store is configured but
+// not installed yet (#3331, decision Q13 on #3335), so no route is applied
+// in Caddy that the sync job would remove once the store installs.
+func (s *NetworkServer) routeStoreNow() (*app.RouteStore, error) {
+	if s.routes == nil {
+		return nil, nil
+	}
+	return s.routes.current()
+}
+
 // NewNetworkServer creates a new network server
-func NewNetworkServer(incusClient *incus.Client, proxyManager *app.ProxyManager, appStore app.AppStore, containerNetwork, proxyIP string) *NetworkServer {
+func NewNetworkServer(incusClient *incus.Client, proxyManager *app.ProxyManager, appStore appLister, containerNetwork, proxyIP string) *NetworkServer {
 	return &NetworkServer{
 		incusClient:        incusClient,
 		proxyManager:       proxyManager,
@@ -89,8 +123,12 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 		req.Username = subject
 	}
 	// If RouteStore is available, use it as source of truth
-	if s.routeStore != nil {
-		routes, err := s.routeStore.List(ctx, false) // include disabled routes so UI can show toggle state
+	routeStore, err := s.routeStoreNow()
+	if err != nil {
+		return nil, err
+	}
+	if routeStore != nil {
+		routes, err := routeStore.List(ctx, false) // include disabled routes so UI can show toggle state
 		if err != nil {
 			return nil, fmt.Errorf("failed to list routes: %w", err)
 		}
@@ -179,6 +217,9 @@ func (s *NetworkServer) GetRoutes(ctx context.Context, req *pb.GetRoutesRequest)
 	for _, route := range routes {
 		// Optionally filter by username
 		if req.Username != "" {
+			if s.appStore == nil {
+				continue // no app store to attribute the route to: not this tenant's
+			}
 			// Get app to check username
 			apps, err := s.appStore.List(ctx, req.Username, pb.AppState_APP_STATE_UNSPECIFIED)
 			if err != nil {
@@ -271,7 +312,11 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 	}
 
 	// If RouteStore is available, save to PostgreSQL (source of truth)
-	if s.routeStore != nil {
+	routeStore, err := s.routeStoreNow()
+	if err != nil {
+		return nil, err
+	}
+	if routeStore != nil {
 		creator, _, _ := auth.SubjectFromGRPCContext(ctx)
 		routeRecord := &app.RouteRecord{
 			Subdomain:     subdomain,
@@ -284,7 +329,7 @@ func (s *NetworkServer) AddRoute(ctx context.Context, req *pb.AddRouteRequest) (
 			CreatedBy:     creator,
 		}
 
-		if err := s.routeStore.Save(ctx, routeRecord); err != nil {
+		if err := routeStore.Save(ctx, routeRecord); err != nil {
 			if errors.Is(err, app.ErrRouteOwnershipConflict) {
 				return nil, status.Errorf(codes.AlreadyExists, "%v", err)
 			}
@@ -352,14 +397,19 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 		protocol = "tls_passthrough"
 	}
 
+	routeStore, err := s.routeStoreNow()
+	if err != nil {
+		return nil, err
+	}
+
 	// Handle enable/disable toggle
 	if req.Active != nil {
 		active := *req.Active
 
-		if s.routeStore != nil {
-			if err := s.routeStore.SetActive(ctx, fullDomain, active); err != nil {
+		if routeStore != nil {
+			if err := routeStore.SetActive(ctx, fullDomain, active); err != nil {
 				// Try with original domain
-				if err := s.routeStore.SetActive(ctx, req.Domain, active); err != nil {
+				if err := routeStore.SetActive(ctx, req.Domain, active); err != nil {
 					if active {
 						return nil, fmt.Errorf("failed to enable route: %w", err)
 					}
@@ -400,7 +450,7 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 	}
 
 	// If RouteStore is available, update in PostgreSQL (source of truth)
-	if s.routeStore != nil {
+	if routeStore != nil {
 		creator, _, _ := auth.SubjectFromGRPCContext(ctx)
 		routeRecord := &app.RouteRecord{
 			Subdomain:     subdomain,
@@ -413,7 +463,7 @@ func (s *NetworkServer) UpdateRoute(ctx context.Context, req *pb.UpdateRouteRequ
 			CreatedBy:     creator,
 		}
 
-		if err := s.routeStore.Save(ctx, routeRecord); err != nil {
+		if err := routeStore.Save(ctx, routeRecord); err != nil {
 			if errors.Is(err, app.ErrRouteOwnershipConflict) {
 				return nil, status.Errorf(codes.AlreadyExists, "%v", err)
 			}
@@ -461,12 +511,16 @@ func (s *NetworkServer) DeleteRoute(ctx context.Context, req *pb.DeleteRouteRequ
 	fullDomain := resolveFullDomain(req.Domain, s.baseDomain)
 
 	// If RouteStore is available, delete from PostgreSQL (source of truth)
-	if s.routeStore != nil {
+	routeStore, err := s.routeStoreNow()
+	if err != nil {
+		return nil, err
+	}
+	if routeStore != nil {
 		// Try both the provided domain and the full domain
-		err := s.routeStore.Delete(ctx, fullDomain)
+		err := routeStore.Delete(ctx, fullDomain)
 		if err != nil && err == app.ErrRouteNotFound {
 			// Try with original domain in case it was already the full domain
-			err = s.routeStore.Delete(ctx, req.Domain)
+			err = routeStore.Delete(ctx, req.Domain)
 		}
 		if err != nil && err != app.ErrRouteNotFound {
 			return nil, fmt.Errorf("failed to delete route: %w", err)
@@ -491,7 +545,14 @@ func (s *NetworkServer) DeleteRoute(ctx context.Context, req *pb.DeleteRouteRequ
 // ListPassthroughRoutes lists all TCP/UDP passthrough routes.
 // Admin-only — passthrough routes are cluster-wide infrastructure.
 func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListPassthroughRoutesRequest) (*pb.ListPassthroughRoutesResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+		return nil, err
+	}
+	store, err := s.currentPassthroughStore()
+	if err != nil {
 		return nil, err
 	}
 	// Build IP -> container name map for lookups
@@ -508,8 +569,8 @@ func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListP
 	}
 
 	// If PassthroughStore is available, use it as source of truth
-	if s.passthroughStore != nil {
-		records, err := s.passthroughStore.List(ctx, false) // include disabled routes so UI can show toggle state
+	if store != nil {
+		records, err := store.List(ctx, false) // include disabled routes so UI can show toggle state
 		if err != nil {
 			return nil, fmt.Errorf("failed to list passthrough routes: %w", err)
 		}
@@ -543,8 +604,8 @@ func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListP
 		}, nil
 	}
 
-	// Fallback to iptables (legacy)
-	routes, err := s.passthroughManager.ListRoutes()
+	// No Postgres configured: list the host's rules (legacy)
+	routes, err := s.rules().ListRoutes()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list passthrough routes: %w", err)
 	}
@@ -582,6 +643,9 @@ func (s *NetworkServer) ListPassthroughRoutes(ctx context.Context, req *pb.ListP
 // Admin-only — passthrough binds a host-wide port (iptables/nftables),
 // outside any tenant's scope.
 func (s *NetworkServer) AddPassthroughRoute(ctx context.Context, req *pb.AddPassthroughRouteRequest) (*pb.AddPassthroughRouteResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -602,12 +666,17 @@ func (s *NetworkServer) AddPassthroughRoute(ctx context.Context, req *pb.AddPass
 		protocol = "udp"
 	}
 
+	store, err := s.currentPassthroughStore()
+	if err != nil {
+		return nil, err
+	}
+
 	if err := s.guardAnon(s.containerNameForIP(req.ContainerName, req.TargetIp)); err != nil {
 		return nil, err
 	}
 
 	// If PassthroughStore is available, save to PostgreSQL (source of truth)
-	if s.passthroughStore != nil {
+	if store != nil {
 		record := &network.PassthroughRecord{
 			ExternalPort:  int(req.ExternalPort),
 			TargetIP:      req.TargetIp,
@@ -618,12 +687,12 @@ func (s *NetworkServer) AddPassthroughRoute(ctx context.Context, req *pb.AddPass
 			Active:        true,
 		}
 
-		if err := s.passthroughStore.Save(ctx, record); err != nil {
+		if err := store.Save(ctx, record); err != nil {
 			return nil, fmt.Errorf("failed to save passthrough route: %w", err)
 		}
 	} else {
-		// Fallback: directly add to iptables (legacy behavior)
-		if err := s.passthroughManager.AddRoute(int(req.ExternalPort), req.TargetIp, int(req.TargetPort), protocol); err != nil {
+		// No Postgres configured: directly add to iptables (legacy behavior)
+		if err := s.rules().AddRoute(int(req.ExternalPort), req.TargetIp, int(req.TargetPort), protocol); err != nil {
 			return nil, fmt.Errorf("failed to add passthrough route: %w", err)
 		}
 	}
@@ -647,6 +716,9 @@ func (s *NetworkServer) AddPassthroughRoute(ctx context.Context, req *pb.AddPass
 // DeletePassthroughRoute removes a TCP/UDP passthrough route.
 // Admin-only.
 func (s *NetworkServer) DeletePassthroughRoute(ctx context.Context, req *pb.DeletePassthroughRouteRequest) (*pb.DeletePassthroughRouteResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -661,15 +733,20 @@ func (s *NetworkServer) DeletePassthroughRoute(ctx context.Context, req *pb.Dele
 		protocol = "udp"
 	}
 
+	store, err := s.currentPassthroughStore()
+	if err != nil {
+		return nil, err
+	}
+
 	// If PassthroughStore is available, delete from PostgreSQL (source of truth)
-	if s.passthroughStore != nil {
-		err := s.passthroughStore.Delete(ctx, int(req.ExternalPort), protocol)
+	if store != nil {
+		err := store.Delete(ctx, int(req.ExternalPort), protocol)
 		if err != nil && err != network.ErrPassthroughNotFound {
 			return nil, fmt.Errorf("failed to delete passthrough route: %w", err)
 		}
 	} else {
-		// Fallback: directly remove from iptables (legacy behavior)
-		if err := s.passthroughManager.RemoveRoute(int(req.ExternalPort), protocol); err != nil {
+		// No Postgres configured: directly remove from iptables (legacy behavior)
+		if err := s.rules().RemoveRoute(int(req.ExternalPort), protocol); err != nil {
 			return nil, fmt.Errorf("failed to remove passthrough route: %w", err)
 		}
 	}
@@ -682,6 +759,9 @@ func (s *NetworkServer) DeletePassthroughRoute(ctx context.Context, req *pb.Dele
 // UpdatePassthroughRoute updates an existing TCP/UDP passthrough route.
 // Admin-only.
 func (s *NetworkServer) UpdatePassthroughRoute(ctx context.Context, req *pb.UpdatePassthroughRouteRequest) (*pb.UpdatePassthroughRouteResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -700,20 +780,25 @@ func (s *NetworkServer) UpdatePassthroughRoute(ctx context.Context, req *pb.Upda
 		protocol = "udp"
 	}
 
+	store, err := s.currentPassthroughStore()
+	if err != nil {
+		return nil, err
+	}
+
 	// Handle enable/disable toggle
 	if req.Active != nil {
 		active := *req.Active
 
-		if s.passthroughStore != nil {
-			if err := s.passthroughStore.SetActive(ctx, int(req.ExternalPort), protocol, active); err != nil {
+		if store != nil {
+			if err := store.SetActive(ctx, int(req.ExternalPort), protocol, active); err != nil {
 				if active {
 					return nil, fmt.Errorf("failed to enable passthrough route: %w", err)
 				}
 				return nil, fmt.Errorf("failed to disable passthrough route: %w", err)
 			}
 		} else if !active {
-			// Fallback: directly remove from iptables (disable only)
-			if err := s.passthroughManager.RemoveRoute(int(req.ExternalPort), protocol); err != nil {
+			// No Postgres configured: directly remove from iptables (disable only)
+			if err := s.rules().RemoveRoute(int(req.ExternalPort), protocol); err != nil {
 				return nil, fmt.Errorf("failed to disable passthrough route: %w", err)
 			}
 		}
@@ -745,7 +830,7 @@ func (s *NetworkServer) UpdatePassthroughRoute(ctx context.Context, req *pb.Upda
 		return nil, fmt.Errorf("target_port must be between 1 and 65535")
 	}
 
-	if s.passthroughStore != nil {
+	if store != nil {
 		record := &network.PassthroughRecord{
 			ExternalPort:  int(req.ExternalPort),
 			TargetIP:      req.TargetIp,
@@ -756,15 +841,15 @@ func (s *NetworkServer) UpdatePassthroughRoute(ctx context.Context, req *pb.Upda
 			Active:        true,
 		}
 
-		if err := s.passthroughStore.Save(ctx, record); err != nil {
+		if err := store.Save(ctx, record); err != nil {
 			return nil, fmt.Errorf("failed to update passthrough route: %w", err)
 		}
 	} else {
-		// Fallback: directly update iptables (legacy behavior)
+		// No Postgres configured: directly update iptables (legacy behavior)
 		// Remove existing route first (ignore errors if it doesn't exist)
-		_ = s.passthroughManager.RemoveRoute(int(req.ExternalPort), protocol)
+		_ = s.rules().RemoveRoute(int(req.ExternalPort), protocol)
 
-		if err := s.passthroughManager.AddRoute(int(req.ExternalPort), req.TargetIp, int(req.TargetPort), protocol); err != nil {
+		if err := s.rules().AddRoute(int(req.ExternalPort), req.TargetIp, int(req.TargetPort), protocol); err != nil {
 			return nil, fmt.Errorf("failed to update passthrough route: %w", err)
 		}
 	}
@@ -787,6 +872,9 @@ func (s *NetworkServer) UpdatePassthroughRoute(ctx context.Context, req *pb.Upda
 // (from existing routes). Admin-only — the full list of domains
 // across all tenants is operator-scope.
 func (s *NetworkServer) ListDNSRecords(ctx context.Context, req *pb.ListDNSRecordsRequest) (*pb.ListDNSRecordsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -816,6 +904,9 @@ func (s *NetworkServer) ListDNSRecords(ctx context.Context, req *pb.ListDNSRecor
 
 // GetContainerACL gets firewall rules for a DevBox container
 func (s *NetworkServer) GetContainerACL(ctx context.Context, req *pb.GetContainerACLRequest) (*pb.GetContainerACLResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesRead); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
@@ -886,6 +977,9 @@ func (s *NetworkServer) GetContainerACL(ctx context.Context, req *pb.GetContaine
 
 // UpdateContainerACL updates firewall rules for a DevBox container
 func (s *NetworkServer) UpdateContainerACL(ctx context.Context, req *pb.UpdateContainerACLRequest) (*pb.UpdateContainerACLResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
@@ -942,6 +1036,9 @@ func (s *NetworkServer) UpdateContainerACL(ctx context.Context, req *pb.UpdateCo
 // GetNetworkTopology returns network visualization data.
 // Admin-only — the full topology lists every tenant container.
 func (s *NetworkServer) GetNetworkTopology(ctx context.Context, req *pb.GetNetworkTopologyRequest) (*pb.GetNetworkTopologyResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeRoutesRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -1295,7 +1392,7 @@ func (s *NetworkServer) StartEgressProxy(ctx context.Context, req *pb.StartEgres
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start egress relay: %v", err)
 	}
-	log.Printf("[egress-via-client] box %s (%s) -> relay %s -> host-loopback:%d", name, info.IPAddress, addr, req.GetUpstreamPort())
+	log.Printf("[egress-via-client] box %q (%s) -> relay %s -> host-loopback:%d", name, info.IPAddress, addr, req.GetUpstreamPort())
 	return &pb.StartEgressProxyResponse{SocksAddress: addr}, nil
 }
 

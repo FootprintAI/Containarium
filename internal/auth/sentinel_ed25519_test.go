@@ -106,10 +106,18 @@ func TestVerifyRequest_Ed25519_Tampering(t *testing.T) {
 	}
 
 	// Garbage signature → reject.
+	// A signed request now carries v1 and v2; strip v2 so this exercises the
+	// v1 path, then corrupt v2 on its own (a present v2 must always verify).
 	bad := newSignedReq(t, priv, "GET", "/authorized-keys")
+	bad.Header.Del(SentinelHeaderSignatureV2)
 	bad.Header.Set(SentinelHeaderSignature, sentinelEd25519SigPrefix+"!!notbase64")
 	if err := v.VerifyRequest(bad, time.Now()); err == nil {
-		t.Error("malformed ed25519 signature accepted")
+		t.Error("malformed ed25519 v1 signature accepted")
+	}
+	badV2 := newSignedReq(t, priv, "GET", "/authorized-keys")
+	badV2.Header.Set(SentinelHeaderSignatureV2, sentinelEd25519SigPrefix+"!!notbase64")
+	if err := v.VerifyRequest(badV2, time.Now()); err == nil {
+		t.Error("malformed ed25519 v2 signature accepted")
 	}
 }
 

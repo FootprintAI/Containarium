@@ -334,7 +334,7 @@ type ReportContainerStateRequest struct {
 	// host can't tell whether the container exists on another host).
 	ContainerId string `protobuf:"bytes,1,opt,name=container_id,json=containerId,proto3" json:"container_id,omitempty"`
 	// Observed state. Must match one of the AssignmentState* values
-	// (pending / active / stopping / stopped). Empty rejected with
+	// (pending / active / stopping / stopped / degraded). Empty rejected with
 	// InvalidArgument; values outside the enum also InvalidArgument.
 	State string `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
 	// When the host observed this state. Optional — defaults to the
@@ -494,7 +494,7 @@ type Assignment struct {
 	// when calling ReportContainerState.
 	ContainerId string `protobuf:"bytes,2,opt,name=container_id,json=containerId,proto3" json:"container_id,omitempty"`
 	// Host-observed state — what ReportContainerState last wrote
-	// (pending / active / stopping / stopped). Echoed back to the
+	// (pending / active / stopping / stopped / degraded). Echoed back to the
 	// host so a freshly-connected daemon can see what the cloud
 	// currently believes.
 	State string `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"`

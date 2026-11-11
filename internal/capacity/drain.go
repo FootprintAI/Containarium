@@ -201,14 +201,14 @@ func (d *Drainer) Drain(ctx context.Context, candidates []DrainCandidate, window
 			if !forced {
 				if ferr := d.stopWithBudget(ctx, c.Username, true, forceStopBudget); ferr != nil {
 					res.Failed[c.ContainerName] = ferr.Error()
-					log.Printf("[drain] force-stop %s failed: %v", c.ContainerName, ferr)
+					log.Printf("[drain] force-stop %q failed: %v", c.ContainerName, ferr)
 					continue
 				}
 				res.ForceStopped = append(res.ForceStopped, c.ContainerName)
 				continue
 			}
 			res.Failed[c.ContainerName] = err.Error()
-			log.Printf("[drain] force-stop %s failed: %v", c.ContainerName, err)
+			log.Printf("[drain] force-stop %q failed: %v", c.ContainerName, err)
 			continue
 		}
 

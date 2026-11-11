@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/footprintai/containarium/internal/limitio"
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
 	incus "github.com/lxc/incus/v7/client"
@@ -187,6 +188,7 @@ type Backend interface {
 	UnfreezeContainer(name string) error
 	UnsetConfig(containerName, key string) error
 	SetDeviceSize(containerName, deviceName, size string) error
+	EnsureToolchainVolume(containerName, root string) error
 	UpdateContainerConfig(name, key, value string) error
 	GetRawInstance(name string) (map[string]string, string, error)
 	ResolveGPUInputToPCI(input string) (string, error)
@@ -239,6 +241,9 @@ type Backend interface {
 	// creates a new, stopped instance on pool from such a tarball.
 	ExportInstance(name string) (io.ReadCloser, error)
 	ImportInstance(name, pool string, r io.Reader, opts ImportOptions) error
+	// RenameInstance renames a stopped instance; a whole-box restore uses
+	// it to move a fully imported box onto its target name (#3357).
+	RenameInstance(name, newName string) error
 }
 
 // DiskDevice represents a disk device configuration
@@ -433,6 +438,9 @@ func resolveGPUByIndex(input string, idx int, gpus []GPUInfo) (string, error) {
 
 // ContainerConfig holds configuration for creating a container
 type ContainerConfig struct {
+	// ManagedToolchainRoot is the installed host toolchain directory, if any.
+	ManagedToolchainRoot string
+
 	Name                   string
 	Image                  string
 	CPU                    string
@@ -490,7 +498,7 @@ const ContainerNameSuffix = "-container"
 // the explicit tenant label (TenantLabelKey) wins; then the cloud_org_id
 // attribution label; then the <tenant>-container naming convention. ""
 // when none yields a tenant — the container is then left unmanaged and
-// reported, never guessed.
+// reported, never guessed. Account and shared-domain identities stay distinct.
 func ResolveTenant(tenantLabel, cloudOrgID, containerName string) string {
 	if t := strings.TrimSpace(tenantLabel); t != "" {
 		return t
@@ -547,16 +555,17 @@ type ContainerInfo struct {
 	// container IP in direct mode, the sentinel's public host when routed
 	// through one. Empty when the daemon doesn't report it (local Incus,
 	// older daemons) — callers then fall back to IPAddress.
-	SSHHost      string
-	CPU          string
-	Memory       string
-	Disk         string
-	GPU          string   // First GPU device info, for display/back-compat (e.g., PCI address or GPU ID); empty if none
-	GPUs         []string // All attached GPU devices (PCI address or ID per entry), sorted for stable output
-	InstanceType string   // "container" or "virtual-machine"
-	Labels       map[string]string
-	Role         Role   // Core container role (e.g., RolePostgres, RoleCaddy), empty for user containers
-	Tenant       string // Explicit owning tenant (user.containarium.tenant); empty falls back to the name convention
+	SSHHost             string
+	CPU                 string
+	Memory              string
+	Disk                string
+	GPU                 string   // First GPU device info, for display/back-compat (e.g., PCI address or GPU ID); empty if none
+	GPUs                []string // All attached GPU devices (PCI address or ID per entry), sorted for stable output
+	InstanceType        string   // "container" or "virtual-machine"
+	Labels              map[string]string
+	Role                Role                // Core container role (e.g., RolePostgres, RoleCaddy), empty for user containers
+	NetworkTenantSource NetworkTenantSource // Populated by remote API clients.
+	Tenant              string              // Explicit owning tenant (user.containarium.tenant); empty falls back to the name convention
 	// Managed is true when the instance carries any user.containarium.* config
 	// key, i.e. Containarium created or adopted it. An instance made directly
 	// with `incus launch` has none.
@@ -629,6 +638,12 @@ type ContainerInfo struct {
 	// ToolAccessBuildTools, ToolAccessFullSudo). Empty = none recorded, and
 	// those runs keep today's behaviour.
 	ToolAccess string
+
+	// PostStartPending mirrors user.containarium.post_start_pending (#3546):
+	// true while the recipe post_start of a recipe-deployed box has not
+	// completed (it failed, or the daemon stopped while it ran). False when
+	// the key is absent, which covers every box made before the key existed.
+	PostStartPending bool
 
 	// Image is a human-readable description of the image the container was
 	// launched from (Incus's auto-populated image.description config key,
@@ -719,6 +734,24 @@ const DeletePolicyProtected = "protected"
 // recorded: those runs keep today's behaviour. Operators can set it directly
 // (`incus config set <box> user.containarium.tool_access build_tools`).
 const ToolAccessKey = "user.containarium.tool_access"
+
+// PostStartPendingKey is the Incus config key a recipe deploy sets on a box
+// before its post_start runs and removes once post_start succeeds (#3546).
+// A box that still carries it was never fully prepared: its post_start
+// failed, or the daemon stopped while it ran. A skill or crew run that finds
+// it on the box it would reuse runs post_start again instead of skipping it.
+// The value is PostStartPendingValue; absent means prepared (or a box made
+// before the key existed).
+const PostStartPendingKey = "user.containarium.post_start_pending"
+
+// PostStartPendingValue is the value PostStartPendingKey is set to.
+const PostStartPendingValue = "true"
+
+// postStartPendingFromConfig reads PostStartPendingKey. Only the exact value
+// PostStartPendingValue counts as pending.
+func postStartPendingFromConfig(cfg map[string]string) bool {
+	return cfg[PostStartPendingKey] == PostStartPendingValue
+}
 
 // The recorded tool-access values. A stable string contract, like
 // DeletePolicyProtected; the proto enum BoxToolAccess is the typed API.
@@ -831,6 +864,10 @@ type ContainerMetrics struct {
 type ServerInfo struct {
 	Version       string
 	KernelVersion string
+	// Memory totals reported by the daemon. A zero total means unreported
+	// (local mode or an older daemon), so the CLI omits the memory block.
+	TotalMemoryBytes     int64
+	AvailableMemoryBytes int64
 	// CPUBudget is the daemon's tenant / core / physical CPU breakdown and
 	// admission-gate posture (#2284). Nil when the source did not report
 	// one — local Incus mode, or a daemon that predates the field.
@@ -1066,13 +1103,16 @@ func (c *Client) CreateContainer(config ContainerConfig) error {
 	}
 
 	// Create the container
+	if config.ManagedToolchainRoot != "" {
+		req.Devices["toolchains"] = toolchainDevice(config.ManagedToolchainRoot)
+	}
 	op, err := c.server.CreateInstance(req)
 	if err != nil {
 		return fmt.Errorf("failed to create container: %w", err)
 	}
 
-	// Wait for operation to complete
-	if err := op.Wait(); err != nil {
+	// Long class: creating may pull and unpack an image (#3470).
+	if err := waitOp(context.Background(), op, longOpTimeout); err != nil {
 		return fmt.Errorf("failed to create container (operation failed): %w", err)
 	}
 
@@ -1091,7 +1131,7 @@ func (c *Client) StartContainer(name string) error {
 		return fmt.Errorf("failed to start container: %w", err)
 	}
 
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, opTimeout); err != nil {
 		return fmt.Errorf("failed to start container (operation failed): %w", err)
 	}
 
@@ -1111,7 +1151,7 @@ func (c *Client) StopContainer(name string, force bool) error {
 		return fmt.Errorf("failed to stop container: %w", err)
 	}
 
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, opTimeout); err != nil {
 		return fmt.Errorf("failed to stop container (operation failed): %w", err)
 	}
 
@@ -1135,7 +1175,7 @@ func (c *Client) updateState(name, action string) error {
 	if err != nil {
 		return fmt.Errorf("failed to %s container: %w", action, err)
 	}
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, opTimeout); err != nil {
 		return fmt.Errorf("failed to %s container (operation failed): %w", action, err)
 	}
 	return nil
@@ -1156,7 +1196,7 @@ func (c *Client) DeleteContainer(name string) error {
 		return fmt.Errorf("failed to delete container: %w", err)
 	}
 
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, opTimeout); err != nil {
 		return fmt.Errorf("failed to delete container (operation failed): %w", err)
 	}
 
@@ -1320,6 +1360,7 @@ func containerInfoFromInstance(inst *api.Instance) ContainerInfo {
 			DeleteAfterStoppedSeconds: parseDeleteAfterStoppedSeconds(inst.Config),
 			DeletePolicy:              inst.Config[DeletePolicyKey],
 			ToolAccess:                inst.Config[ToolAccessKey],
+			PostStartPending:          postStartPendingFromConfig(inst.Config),
 			Stack:                     inst.Config[StackKey],
 			PodmanEnabled:             podmanEnabledFromConfig(inst.Config),
 			Image:                     imageDescriptionFromConfig(inst.Config),
@@ -1383,6 +1424,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 
 	info := &ContainerInfo{
 		Name:                 inst.Name,
+		InstanceType:         inst.Type,
 		State:                inst.Status,
 		CreatedAt:            inst.CreatedAt,
 		Labels:               extractLabelsFromConfig(inst.Config),
@@ -1396,6 +1438,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		TTLExpiresAt:         parseTTLExpiresAt(inst.Config),
 		DeletePolicy:         inst.Config[DeletePolicyKey],
 		ToolAccess:           inst.Config[ToolAccessKey],
+		PostStartPending:     postStartPendingFromConfig(inst.Config),
 		Stack:                inst.Config[StackKey],
 		PodmanEnabled:        podmanEnabledFromConfig(inst.Config),
 		Image:                imageDescriptionFromConfig(inst.Config),
@@ -1559,8 +1602,9 @@ func stateWithRetry(what string, attempt func() (*api.InstanceState, string, err
 	return state, etag, err
 }
 
-// Exec executes a command inside a container. Unbounded wait — see
-// ExecWithTimeout for a caller that needs a deadline instead.
+// Exec executes a command inside a container. The wait is bounded only by
+// ExecOperationTimeout (#3470) — see ExecWithTimeout for a caller that needs
+// a tighter deadline.
 func (c *Client) Exec(containerName string, command []string) error {
 	req := api.InstanceExecPost{
 		Command:     command,
@@ -1572,7 +1616,7 @@ func (c *Client) Exec(containerName string, command []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to execute command: %w", err)
 		}
-		if err := op.Wait(); err != nil {
+		if err := waitOp(context.Background(), op, execOpTimeout); err != nil {
 			return fmt.Errorf("command execution failed: %w", err)
 		}
 		return nil
@@ -1748,23 +1792,18 @@ func (c *Client) GetContainerIP(containerName string) (string, error) {
 	return info.IPAddress, nil
 }
 
-// FindCaddyContainerIP looks for a Caddy container and returns its IP address
-// It searches for containers with "caddy" in the name (case-insensitive)
+// FindCaddyContainerIP returns the IP address of the running core Caddy
+// container. The core Caddy is identified by its role label, or for a
+// pre-label core container by its exact core name (see FindContainerByRole),
+// never by a "caddy" substring: a tenant can name their own container
+// anything, and a substring match would let it stand in for the core Caddy
+// (#3371).
 func (c *Client) FindCaddyContainerIP() (string, error) {
-	containers, err := c.ListContainers()
-	if err != nil {
-		return "", fmt.Errorf("failed to list containers: %w", err)
+	info, err := c.FindContainerByRole(RoleCaddy)
+	if err != nil || info.IPAddress == "" {
+		return "", fmt.Errorf("no running Caddy container found")
 	}
-
-	// Look for containers with "caddy" in the name
-	for _, container := range containers {
-		nameLower := strings.ToLower(container.Name)
-		if strings.Contains(nameLower, "caddy") && container.IPAddress != "" {
-			return container.IPAddress, nil
-		}
-	}
-
-	return "", fmt.Errorf("no running Caddy container found")
+	return info.IPAddress, nil
 }
 
 // FindContainerByRole finds a running container with the given role label.
@@ -1801,7 +1840,9 @@ func (c *Client) FindContainerByRole(role Role) (*ContainerInfo, error) {
 				return &containers[i], nil
 			}
 		case RoleCaddy:
-			if ct.Name == "containarium-core-caddy" || strings.Contains(strings.ToLower(ct.Name), "caddy") {
+			// Exact name only: a substring match would accept a tenant
+			// container whose name merely contains "caddy" (#3371).
+			if ct.Name == "containarium-core-caddy" {
 				return &containers[i], nil
 			}
 		case RoleVictoriaMetrics:
@@ -1829,7 +1870,7 @@ func (c *Client) UpdateContainerConfig(name, key, value string) error {
 	if err != nil {
 		return fmt.Errorf("failed to update container config: %w", err)
 	}
-	return op.Wait()
+	return waitOp(context.Background(), op, opTimeout)
 }
 
 // GetRawInstance returns the raw config map for a container.
@@ -1920,6 +1961,58 @@ type SystemResources struct {
 	GPUs []GPUInfo
 }
 
+// StoragePoolSource is the slice of the Incus API the pool sum needs;
+// incus.InstanceServer satisfies it and tests fake it.
+type StoragePoolSource interface {
+	GetStoragePools() ([]api.StoragePool, error)
+	GetStoragePoolResources(name string) (*api.ResourcesStoragePool, error)
+}
+
+// PoolTotals is the summed capacity of the Incus storage pools that hold
+// container workloads. Pools is how many pools contributed to the sums.
+type PoolTotals struct {
+	TotalBytes int64
+	UsedBytes  int64
+	Pools      int
+}
+
+// SumStoragePools sums Space.Total and Space.Used over every storage pool.
+// A pool whose resources cannot be read is skipped; an error is returned
+// only when the pool list itself cannot be read. It is the single source for
+// both the capability profile (`backends profile`) and the cloud host status
+// probe, so the two cannot disagree (#3449).
+func SumStoragePools(src StoragePoolSource) (PoolTotals, error) {
+	var t PoolTotals
+	pools, err := src.GetStoragePools()
+	if err != nil {
+		return t, fmt.Errorf("failed to list storage pools: %w", err)
+	}
+	for _, pool := range pools {
+		pr, err := src.GetStoragePoolResources(pool.Name)
+		if err != nil {
+			continue
+		}
+		t.TotalBytes += safecast.I64FromU64(pr.Space.Total)
+		t.UsedBytes += safecast.I64FromU64(pr.Space.Used)
+		t.Pools++
+	}
+	return t, nil
+}
+
+// StoragePoolTotals sums this daemon's storage pools (see SumStoragePools).
+func (c *Client) StoragePoolTotals() (PoolTotals, error) {
+	return SumStoragePools(c.server)
+}
+
+// applyPoolTotals records the pool sum on res; on a list error the disk
+// figures stay zero, as before.
+func applyPoolTotals(res *SystemResources, src StoragePoolSource) {
+	if t, err := SumStoragePools(src); err == nil {
+		res.TotalDiskBytes = t.TotalBytes
+		res.UsedDiskBytes = t.UsedBytes
+	}
+}
+
 // GetSystemResources gets system resource information from Incus
 func (c *Client) GetSystemResources() (*SystemResources, error) {
 	if c.socketPath == "" {
@@ -1952,17 +2045,8 @@ func (c *Client) fetchSystemResources() (*SystemResources, error) {
 		}
 	}
 
-	// Get storage pool info for disk usage
-	pools, err := c.server.GetStoragePools()
-	if err == nil {
-		for _, pool := range pools {
-			poolResources, err := c.server.GetStoragePoolResources(pool.Name)
-			if err == nil {
-				res.TotalDiskBytes += safecast.I64FromU64(poolResources.Space.Total)
-				res.UsedDiskBytes += safecast.I64FromU64(poolResources.Space.Used)
-			}
-		}
-	}
+	// Storage pool capacity (the same sum the host status probe reports).
+	applyPoolTotals(res, c.server)
 
 	// Get CPU load averages from /proc/loadavg
 	load1, load5, load15, err := getCPULoadAvg()
@@ -2061,7 +2145,7 @@ func (c *Client) UnsetEnv(containerName, key string) error {
 	if err != nil {
 		return fmt.Errorf("failed to update container config: %w", err)
 	}
-	return op.Wait()
+	return waitOp(context.Background(), op, opTimeout)
 }
 
 // GetContainerImageFingerprint returns the Incus-computed
@@ -2109,7 +2193,7 @@ func (c *Client) PublishImage(containerName, alias string, properties map[string
 	if err != nil {
 		return "", fmt.Errorf("publish image from %s: %w", containerName, err)
 	}
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, longOpTimeout); err != nil {
 		return "", fmt.Errorf("publish image from %s: %w", containerName, err)
 	}
 	fingerprint, _ := op.Get().Metadata["fingerprint"].(string)
@@ -2133,7 +2217,7 @@ func (c *Client) PublishImage(containerName, alias string, properties map[string
 	// image behind (disk cost), never a broken alias.
 	if oldFingerprint != "" && oldFingerprint != fingerprint {
 		if delOp, derr := c.server.DeleteImage(oldFingerprint); derr == nil {
-			_ = delOp.Wait()
+			_ = waitOp(context.Background(), delOp, opTimeout)
 		}
 	}
 	return fingerprint, nil
@@ -2198,7 +2282,7 @@ func (c *Client) SetCPULimit(containerName, cpu string) error {
 	if err != nil {
 		return fmt.Errorf("failed to update container config: %w", err)
 	}
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, opTimeout); err != nil {
 		return fmt.Errorf("failed to wait for config update: %w", err)
 	}
 	return nil
@@ -2222,7 +2306,7 @@ func (c *Client) SetCPUConfig(containerName, count, allowance string) error {
 	if err != nil {
 		return fmt.Errorf("failed to update container config: %w", err)
 	}
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, opTimeout); err != nil {
 		return fmt.Errorf("failed to wait for config update: %w", err)
 	}
 	return nil
@@ -2245,7 +2329,7 @@ func (c *Client) SetConfig(containerName, key, value string) error {
 	}
 
 	// Wait for the operation to complete
-	err = op.Wait()
+	err = waitOp(context.Background(), op, opTimeout)
 	if err != nil {
 		return fmt.Errorf("failed to wait for config update: %w", err)
 	}
@@ -2273,7 +2357,7 @@ func (c *Client) UnsetConfig(containerName, key string) error {
 	if err != nil {
 		return fmt.Errorf("failed to update container config: %w", err)
 	}
-	if err := op.Wait(); err != nil {
+	if err := waitOp(context.Background(), op, opTimeout); err != nil {
 		return fmt.Errorf("failed to wait for config update: %w", err)
 	}
 	return nil
@@ -2313,7 +2397,7 @@ func (c *Client) SetDeviceSize(containerName, deviceName, size string) error {
 	}
 
 	// Wait for the operation to complete
-	err = op.Wait()
+	err = waitOp(context.Background(), op, opTimeout)
 	if err != nil {
 		return fmt.Errorf("failed to wait for device update: %w", err)
 	}
@@ -2872,13 +2956,21 @@ const maxSymlinkHops = 10
 // path string where the caller expects file bytes. k3s's join token
 // at server/node-token is exactly such a symlink, which is how
 // workers were pushed a "token" with no CA hash (#1446).
+//
+// The read is capped at limitio.MaxFileReadBytes (#3469): a larger file
+// returns an error matching limitio.ErrTooLarge instead of being buffered
+// whole. Use ReadFileStream for transfers that may be larger.
 func (c *Client) ReadFile(containerName, filePath string) ([]byte, error) {
 	r, err := c.ReadFileStream(containerName, filePath)
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
-	return io.ReadAll(r)
+	data, err := limitio.ReadAll(r, limitio.MaxFileReadBytes)
+	if errors.Is(err, limitio.ErrTooLarge) {
+		return data, fmt.Errorf("failed to read file %s: %w", filePath, err)
+	}
+	return data, err
 }
 
 // ReadFileStream follows bounded symlink targets and transfers ownership
@@ -2926,9 +3018,15 @@ func (c *Client) ReadFileStream(containerName, filePath string) (io.ReadCloser, 
 	}
 }
 
-// ExecWithOutput executes a command inside a container and returns stdout/stderr
+// ExecWithOutput executes a command inside a container and returns stdout/stderr.
+//
+// Each stream is capped at limitio.MaxExecOutputBytes (#3469). Output past the
+// cap is drained and dropped, so the command still runs to completion, and
+// the call then returns the kept prefix with an error matching
+// limitio.ErrTooLarge (joined with the command's own error, if any).
 func (c *Client) ExecWithOutput(containerName string, command []string) (string, string, error) {
-	var stdout, stderr bytes.Buffer
+	stdout := limitio.NewBuffer(limitio.MaxExecOutputBytes)
+	stderr := limitio.NewBuffer(limitio.MaxExecOutputBytes)
 
 	req := api.InstanceExecPost{
 		Command:     command,
@@ -2943,13 +3041,13 @@ func (c *Client) ExecWithOutput(containerName string, command []string) (string,
 		// output replaces (not appends to) a failed attempt's partial output.
 		stdout.Reset()
 		stderr.Reset()
-		args := &incus.InstanceExecArgs{Stdout: &stdout, Stderr: &stderr}
+		args := &incus.InstanceExecArgs{Stdout: stdout, Stderr: stderr}
 
 		op, err := c.server.ExecInstance(containerName, req, args)
 		if err != nil {
 			return fmt.Errorf("failed to execute command: %w", err)
 		}
-		if err := op.Wait(); err != nil {
+		if err := waitOp(context.Background(), op, execOpTimeout); err != nil {
 			return fmt.Errorf("command execution failed: %w", err)
 		}
 		// A non-zero exit is a genuine command failure, not the transient
@@ -2962,7 +3060,24 @@ func (c *Client) ExecWithOutput(containerName string, command []string) (string,
 		}
 		return nil
 	})
+	if capErr := execOutputErr(stdout, stderr); capErr != nil {
+		err = errors.Join(err, capErr)
+	}
 	return stdout.String(), stderr.String(), err
+}
+
+// execOutputErr reports which captured exec stream, if any, hit its cap. Nil
+// when neither did, so callers join it only on truncation and an under-cap
+// error is returned unwrapped, exactly as before.
+func execOutputErr(stdout, stderr *limitio.Buffer) error {
+	var errs []error
+	if err := stdout.Err(); err != nil {
+		errs = append(errs, fmt.Errorf("exec stdout: %w", err))
+	}
+	if err := stderr.Err(); err != nil {
+		errs = append(errs, fmt.Errorf("exec stderr: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 // ExecWithExitCode is ExecWithOutput's sibling that reports a non-zero exit
@@ -2977,8 +3092,12 @@ func (c *Client) ExecWithOutput(containerName string, command []string) (string,
 // stops the retry loop after one attempt, exactly as the folded-error
 // version did — just without inventing an error value only to immediately
 // discard its meaning into an int.
+//
+// Output is capped per stream exactly as in ExecWithOutput (#3469); over the
+// cap, err matches limitio.ErrTooLarge and exitCode is still reported.
 func (c *Client) ExecWithExitCode(containerName string, command []string) (stdout, stderr string, exitCode int, err error) {
-	var stdoutBuf, stderrBuf bytes.Buffer
+	stdoutBuf := limitio.NewBuffer(limitio.MaxExecOutputBytes)
+	stderrBuf := limitio.NewBuffer(limitio.MaxExecOutputBytes)
 
 	req := api.InstanceExecPost{
 		Command:     command,
@@ -2990,13 +3109,13 @@ func (c *Client) ExecWithExitCode(containerName string, command []string) (stdou
 		stdoutBuf.Reset()
 		stderrBuf.Reset()
 		exitCode = 0
-		args := &incus.InstanceExecArgs{Stdout: &stdoutBuf, Stderr: &stderrBuf}
+		args := &incus.InstanceExecArgs{Stdout: stdoutBuf, Stderr: stderrBuf}
 
 		op, opErr := c.server.ExecInstance(containerName, req, args)
 		if opErr != nil {
 			return fmt.Errorf("failed to execute command: %w", opErr)
 		}
-		if opErr := op.Wait(); opErr != nil {
+		if opErr := waitOp(context.Background(), op, execOpTimeout); opErr != nil {
 			return fmt.Errorf("command execution failed: %w", opErr)
 		}
 		if opMeta := op.Get(); opMeta.Metadata != nil {
@@ -3006,6 +3125,9 @@ func (c *Client) ExecWithExitCode(containerName string, command []string) (stdou
 		}
 		return nil
 	})
+	if capErr := execOutputErr(stdoutBuf, stderrBuf); capErr != nil {
+		err = errors.Join(err, capErr)
+	}
 	return stdoutBuf.String(), stderrBuf.String(), exitCode, err
 }
 
@@ -3025,7 +3147,7 @@ dnf clean all 2>/dev/null
 journalctl --vacuum-size=50M 2>/dev/null
 `
 	if _, _, err := c.ExecWithOutput(containerName, []string{"/bin/bash", "-c", cleanupScript}); err != nil {
-		log.Printf("[incus] CleanupDisk %s: best-effort cleanup script error (ignored): %v", containerName, err)
+		log.Printf("[incus] CleanupDisk %q: best-effort cleanup script error (ignored): %v", containerName, err)
 	}
 
 	// Get disk usage after cleanup
@@ -3145,7 +3267,7 @@ func (c *Client) SetLabels(containerName string, labels map[string]string) error
 		return fmt.Errorf("failed to update container labels: %w", err)
 	}
 
-	return op.Wait()
+	return waitOp(context.Background(), op, opTimeout)
 }
 
 // AddLabel adds or updates a single label on a container
@@ -3162,7 +3284,7 @@ func (c *Client) AddLabel(containerName, key, value string) error {
 		return fmt.Errorf("failed to add label: %w", err)
 	}
 
-	return op.Wait()
+	return waitOp(context.Background(), op, opTimeout)
 }
 
 // RemoveLabel removes a single label from a container
@@ -3179,7 +3301,7 @@ func (c *Client) RemoveLabel(containerName, key string) error {
 		return fmt.Errorf("failed to remove label: %w", err)
 	}
 
-	return op.Wait()
+	return waitOp(context.Background(), op, opTimeout)
 }
 
 // MatchLabels checks if a container's labels match the given filter

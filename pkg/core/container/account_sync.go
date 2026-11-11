@@ -3,6 +3,8 @@
 package container
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -38,7 +40,24 @@ type OwnerSyncResult struct {
 	// container holds three keys coming back with one is the #1477 failure, and
 	// it is otherwise invisible until someone's login is refused.
 	KeysRestored map[string]int
+	// RevokedDropped maps username -> how many keys in the box were skipped
+	// because the registry marks them revoked (#3395).
+	RevokedDropped map[string]int
+	// AllRevoked is the usernames whose every box key is revoked: no account
+	// is restored for them. Not a failure; the keys are meant to be dead.
+	AllRevoked []string
+	// FilterErr is the first error the KeyFilter returned (e.g. the key
+	// registry is unreachable). Those boxes are in Failed and get no account.
+	FilterErr error
 }
+
+// KeyFilter drops keys that must not seed a host account, returning the kept
+// keys and how many were dropped. A non-nil error means the filter could not
+// decide (the registry is down); the caller must then restore nothing.
+//
+// It is injected rather than imported because the registry lives in
+// internal/sshauthz, which already imports this package.
+type KeyFilter func(ctx context.Context, keys []string) (kept []string, dropped int, err error)
 
 // OwnerSyncOptions configures a sync pass.
 //
@@ -56,6 +75,11 @@ type OwnerSyncOptions struct {
 	// every container on the host — which is the destructive-sounding default
 	// an operator should be told about, hence the flag (#1478).
 	OnlyUser string
+	// KeyFilter is REQUIRED: it removes keys the ssh_keys registry marks
+	// revoked before an account is seeded from the box's authorized_keys
+	// (#3395; revoking never edits the box's own file). A nil filter makes
+	// SyncOwnerAccounts fail closed with an error.
+	KeyFilter KeyFilter
 }
 
 // SyncOwnerAccounts restores host jump-server accounts for every persisted
@@ -70,7 +94,10 @@ type OwnerSyncOptions struct {
 //
 // Options are described on OwnerSyncOptions.
 func (m *Manager) SyncOwnerAccounts(opts OwnerSyncOptions) (OwnerSyncResult, error) {
-	res := OwnerSyncResult{KeysRestored: map[string]int{}}
+	res := OwnerSyncResult{KeysRestored: map[string]int{}, RevokedDropped: map[string]int{}}
+	if opts.KeyFilter == nil {
+		return res, errors.New("owner account sync needs a revocation KeyFilter; refusing to seed accounts from unfiltered box keys")
+	}
 
 	containers, err := m.List()
 	if err != nil {
@@ -106,6 +133,24 @@ func (m *Manager) SyncOwnerAccounts(opts OwnerSyncOptions) (OwnerSyncResult, err
 			continue
 		}
 
+		// Drop keys revoked since they were written into the box. Fail closed:
+		// a filter error means no account for this box, never an unfiltered one.
+		sshKeys, dropped, ferr := opts.KeyFilter(context.Background(), sshKeys)
+		if ferr != nil {
+			if res.FilterErr == nil {
+				res.FilterErr = ferr
+			}
+			res.Failed = append(res.Failed, username)
+			continue
+		}
+		if dropped > 0 {
+			res.RevokedDropped[username] = dropped
+		}
+		if len(sshKeys) == 0 {
+			res.AllRevoked = append(res.AllRevoked, username)
+			continue
+		}
+
 		if opts.DryRun {
 			res.Restored = append(res.Restored, username)
 			res.KeysRestored[username] = len(sshKeys)
@@ -116,14 +161,14 @@ func (m *Manager) SyncOwnerAccounts(opts OwnerSyncOptions) (OwnerSyncResult, err
 		// the same shape the create path (manager.go) and the collaborator
 		// path use. Recovery previously stopped at the seed, which is what
 		// made it revoke every other key on the box (#1477).
-		if err := CreateJumpServerAccount(username, sshKeys[0], opts.Verbose); err != nil {
+		if err := createJumpServerAccountFn(username, sshKeys[0], opts.Verbose); err != nil {
 			res.Failed = append(res.Failed, username)
 			continue
 		}
 		installed := 1
 		authorizedAll := true
 		for _, k := range sshKeys[1:] {
-			if err := AddAuthorizedKey(username, k); err != nil {
+			if err := addAuthorizedKeyFn(username, k); err != nil {
 				// The account exists and at least one key works, so this is
 				// NOT a failed restore — but it is a partial one, and saying
 				// so is the entire point of the fix. Report it and keep going

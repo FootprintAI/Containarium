@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/footprintai/containarium/internal/safecast"
 	"github.com/footprintai/containarium/pkg/core/container"
@@ -44,6 +45,11 @@ func newAutoSleepTestServer(t *testing.T, seed map[string]*incus.ContainerInfo) 
 			if key == incus.AutoSleepEnabledKey {
 				c.AutoSleepEnabled = value == "true"
 			}
+			if key == incus.LastStartedAtKey {
+				if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+					c.LastStartedAt = parsed
+				}
+			}
 			if key == incus.IdleThresholdMinutesKey {
 				if n, err := strconv.Atoi(value); err == nil {
 					c.IdleThresholdMinutes = safecast.I32(n)
@@ -57,7 +63,7 @@ func newAutoSleepTestServer(t *testing.T, seed map[string]*incus.ContainerInfo) 
 }
 
 // TestToggleAutoSleep_EnableSetsFlagsAndThreshold — happy path: both
-// the flag and an explicit threshold land in two SetConfig calls.
+// the flag and an explicit threshold land after arming the last-start clock.
 func TestToggleAutoSleep_EnableSetsFlagsAndThreshold(t *testing.T) {
 	s, calls, _ := newAutoSleepTestServer(t, map[string]*incus.ContainerInfo{
 		"alice-container": {Name: "alice-container", State: "Running"},
@@ -73,14 +79,20 @@ func TestToggleAutoSleep_EnableSetsFlagsAndThreshold(t *testing.T) {
 	if !resp.AutoSleepEnabled || resp.IdleThresholdMinutes != 30 {
 		t.Errorf("response = %+v, want enabled=true, threshold=30", resp)
 	}
-	if len(*calls) != 2 {
-		t.Fatalf("expected 2 SetConfig calls, got %d: %+v", len(*calls), *calls)
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 SetConfig calls including clock, got %d: %+v", len(*calls), *calls)
+	}
+	if (*calls)[0].key != incus.LastStartedAtKey {
+		t.Fatalf("first SetConfig key = %s, want %s", (*calls)[0].key, incus.LastStartedAtKey)
+	}
+	if _, err := time.Parse(time.RFC3339, (*calls)[0].value); err != nil {
+		t.Fatalf("bad auto-sleep birth timestamp: %v", err)
 	}
 	wantPairs := map[string]string{
 		incus.AutoSleepEnabledKey:     "true",
 		incus.IdleThresholdMinutesKey: "30",
 	}
-	for _, c := range *calls {
+	for _, c := range (*calls)[1:] {
 		if c.name != "alice-container" {
 			t.Errorf("SetConfig name = %q, want alice-container", c.name)
 		}
@@ -95,6 +107,28 @@ func TestToggleAutoSleep_EnableSetsFlagsAndThreshold(t *testing.T) {
 	}
 	if len(wantPairs) != 0 {
 		t.Errorf("missing SetConfig calls for: %v", wantPairs)
+	}
+}
+
+func TestToggleAutoSleep_ClockFailureCannotEnableUnverifiableSleep(t *testing.T) {
+	s, calls, mock := newAutoSleepTestServer(t, map[string]*incus.ContainerInfo{
+		"alice-container": {Name: "alice-container", State: "Running"},
+	})
+	mock.SetConfigFunc = func(name, key, value string) error {
+		*calls = append(*calls, setConfigCall{name: name, key: key, value: value})
+		if key != incus.LastStartedAtKey {
+			t.Fatalf("opt-in was written despite failing clock initialization: %s", key)
+		}
+		return errors.New("clock write refused")
+	}
+	_, err := s.ToggleAutoSleep(testCtx(), &pb.ToggleAutoSleepRequest{
+		Username: "alice", Enabled: true, IdleThresholdMinutes: 1,
+	})
+	if err == nil {
+		t.Fatal("expected failure on missing durable clock")
+	}
+	if len(*calls) != 1 || (*calls)[0].key != incus.LastStartedAtKey {
+		t.Fatalf("wrong writes after failed clock: %+v", *calls)
 	}
 }
 
@@ -262,5 +296,44 @@ func TestToggleAutoSleep_NegativeThresholdClampsToDefault(t *testing.T) {
 	}
 	if resp.IdleThresholdMinutes != incus.DefaultIdleThresholdMinutes {
 		t.Errorf("threshold = %d, want default %d", resp.IdleThresholdMinutes, incus.DefaultIdleThresholdMinutes)
+	}
+}
+
+func TestToggleAutoSleep_ReenablePreservesClock(t *testing.T) {
+	old := time.Now().UTC().Add(-2 * time.Hour)
+	s, calls, _ := newAutoSleepTestServer(t, map[string]*incus.ContainerInfo{
+		"alice-container": {
+			Name: "alice-container", State: "Running", AutoSleepEnabled: true,
+			IdleThresholdMinutes: 15, LastStartedAt: old,
+		},
+	})
+	_, err := s.ToggleAutoSleep(testCtx(), &pb.ToggleAutoSleepRequest{
+		Username: "alice", Enabled: true, IdleThresholdMinutes: 30,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range *calls {
+		if call.key == incus.LastStartedAtKey {
+			t.Fatal("updating an enabled policy must not reset its start clock")
+		}
+	}
+}
+
+func TestToggleAutoSleep_LegacyEnabledWithoutClockGetsRepaired(t *testing.T) {
+	s, calls, _ := newAutoSleepTestServer(t, map[string]*incus.ContainerInfo{
+		"alice-container": {
+			Name: "alice-container", State: "Running", AutoSleepEnabled: true,
+			IdleThresholdMinutes: 15,
+		},
+	})
+	_, err := s.ToggleAutoSleep(testCtx(), &pb.ToggleAutoSleepRequest{
+		Username: "alice", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) == 0 || (*calls)[0].key != incus.LastStartedAtKey {
+		t.Fatalf("legacy opt-in without a start clock should be repaired: %+v", *calls)
 	}
 }

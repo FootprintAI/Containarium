@@ -6,6 +6,10 @@ on:
   # No `branches:` filter — a base filter leaves stacked PRs with no checks
   # at all, which looks the same as checks not having started (#1215).
   pull_request:
+  # Merge queue: the queue tests the PR merged onto main (plus PRs ahead of it)
+  # and needs this required check to report on that ref. Release-only fast path
+  # does NOT apply there (release-only-diff decides false for any other event).
+  merge_group:
 
 permissions:
   contents: read
@@ -50,7 +54,7 @@ jobs:
       - name: Set up Go
         uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           cache-name: unit-race
 
       - name: Windows client cross-compile guard
@@ -117,7 +121,8 @@ jobs:
     needs: changes
     # !cancelled(): a failed detector leaves the output empty and this job
     # RUNS. Without it the job would skip, and a skipped required check passes.
-    if: ${{ !cancelled() && needs.changes.outputs.release-only != 'true' }}
+    # Long tier: not run on PR pushes; runs in the merge queue and on push to main.
+    if: ${{ !cancelled() && needs.changes.outputs.release-only != 'true' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -126,7 +131,7 @@ jobs:
       - name: Set up Go
         uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           cache-name: shared
 
       - name: Cache built caddy binary

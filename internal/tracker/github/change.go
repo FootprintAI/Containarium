@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/footprintai/containarium/internal/tracker"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -53,6 +55,36 @@ func (a *Adapter) OpenChange(ctx context.Context, conn tracker.Conn, req tracker
 		URL:       pr.HTMLURL,
 		Branch:    req.HeadBranch,
 	}, nil
+}
+
+// FindOpenChange returns the open pull request whose head is headBranch
+// in conn.Project itself (#3288): GET /repos/{owner}/{repo}/pulls with
+// head=<owner>:<branch> and state=open. A pull request from a fork's
+// same-named branch is not a match.
+func (a *Adapter) FindOpenChange(ctx context.Context, conn tracker.Conn, headBranch string) (tracker.Change, bool, error) {
+	owner, _, _ := strings.Cut(conn.Project, "/")
+	q := url.Values{}
+	q.Set("head", owner+":"+headBranch)
+	q.Set("state", "open")
+	var pulls []ghPull
+	if err := a.get(ctx, fmt.Sprintf("%s/repos/%s/pulls?%s", apiBase(conn.BaseURL), conn.Project, q.Encode()), conn.Credential, &pulls); err != nil {
+		return tracker.Change{}, false, err
+	}
+	for _, pr := range pulls {
+		if pr.Head.Ref != headBranch || pr.Head.Repo == nil || !strings.EqualFold(pr.Head.Repo.FullName, conn.Project) {
+			continue
+		}
+		return tracker.Change{
+			Number: pr.Number,
+			State:  pullStateToTracker(pr),
+			// The caller has just pushed a new head commit; no CI has
+			// reported on it yet, as for a freshly opened change.
+			CIVerdict: pb.TrackerCiVerdict_TRACKER_CI_VERDICT_NONE,
+			URL:       pr.HTMLURL,
+			Branch:    pr.Head.Ref,
+		}, true, nil
+	}
+	return tracker.Change{}, false, nil
 }
 
 // ghRepo mirrors the subset of GET /repos/{owner}/{repo} DefaultBranch needs.

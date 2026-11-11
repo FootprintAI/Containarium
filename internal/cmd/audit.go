@@ -289,7 +289,7 @@ func runAuditQuery(cmd *cobra.Command, args []string) error {
 		for _, r := range rows {
 			fmt.Printf("%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
 				r.Timestamp.UTC().Format(time.RFC3339),
-				r.Username, r.Action, r.ResourceType, r.ResourceID, r.StatusCode,
+				escapeControl(r.Username), r.Action, r.ResourceType, r.ResourceID, r.StatusCode,
 				sanitizeDetailForCLI(r.Detail),
 			)
 		}
@@ -301,23 +301,29 @@ func runAuditQuery(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	fmt.Printf("\n%d row(s) shown of %d total matching\n\n", len(rows), total)
-	fmt.Printf("%-22s  %-14s  %-22s  %-32s  %4s  %s\n",
+	printAuditTable(os.Stdout, rows)
+	return nil
+}
+
+// printAuditTable renders the `audit query` table. Username and the
+// resource id are tenant-supplied (#3453).
+func printAuditTable(w io.Writer, rows []audit.AuditEntry) {
+	fmt.Fprintf(w, "%-22s  %-14s  %-22s  %-32s  %4s  %s\n",
 		"TIMESTAMP", "USERNAME", "ACTION", "RESOURCE", "CODE", "DETAIL")
 	for _, r := range rows {
 		resource := r.ResourceType
 		if r.ResourceID != "" {
 			resource = r.ResourceType + ":" + r.ResourceID
 		}
-		fmt.Printf("%-22s  %-14s  %-22s  %-32s  %4d  %s\n",
+		fmt.Fprintf(w, "%-22s  %-14s  %-22s  %-32s  %4d  %s\n",
 			r.Timestamp.UTC().Format("2006-01-02T15:04:05Z"),
-			truncateAudit(r.Username, 14),
+			truncateAudit(escapeControl(r.Username), 14),
 			truncateAudit(r.Action, 22),
-			truncateAudit(resource, 32),
+			truncateAudit(escapeControl(resource), 32),
 			r.StatusCode,
 			truncateAudit(sanitizeDetailForCLI(r.Detail), 80),
 		)
 	}
-	return nil
 }
 
 func runAuditVerify(cmd *cobra.Command, args []string) error {
@@ -634,14 +640,16 @@ func findingLine(f audit.BucketAnchorFinding) string {
 
 // sanitizeDetailForCLI strips newlines from the detail
 // column so each row stays on its own line in the table
-// output. The audit redactor already scrubs secrets at
-// insert time (Phase 4.4), so we don't need to scrub
-// again — just normalize whitespace for display.
+// output, and escapes every other control character (ESC,
+// DEL, C1) so a tenant-influenced detail cannot drive the
+// operator's terminal (#3343). The audit redactor already
+// scrubs secrets at insert time (Phase 4.4), so we don't
+// need to scrub again.
 func sanitizeDetailForCLI(s string) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.ReplaceAll(s, "\t", " ")
-	return s
+	return escapeControl(s)
 }
 
 func truncateAudit(s string, n int) string {

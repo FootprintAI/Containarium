@@ -102,7 +102,7 @@ func (s *ContainerServer) EndUserSessions(ctx context.Context, username, orgID s
 			resp.TerminatedSessions++
 		}
 	}
-	log.Printf("[ssh-sessions] terminated sessions for %s: %d account(s) with live processes across %d box(es)",
+	log.Printf("[ssh-sessions] terminated sessions for %q: %d account(s) with live processes across %d box(es)",
 		username, resp.TerminatedSessions, resp.BoxesTouched)
 	if listErr != nil {
 		return resp, status.Error(codes.Unavailable, listErr.Error())
@@ -120,8 +120,8 @@ func (s *ContainerServer) collaboratorAccessor() collaboratorAccess {
 	if s.collabAccess != nil {
 		return s.collabAccess
 	}
-	if s.collaboratorManager != nil {
-		return s.collaboratorManager
+	if cm := s.loadCollaboratorManager(); cm != nil {
+		return cm
 	}
 	return nil
 }

@@ -163,7 +163,7 @@ func (s *Store) GatewayProviderKeyStatus(ctx context.Context, keyOwner, provider
 	// Same refusal as KeyFor: a row that is not broker-only did not come from
 	// SetGatewayProviderKey, so do not describe it as this owner's gateway key.
 	if meta.Delivery != DeliveryBroker {
-		log.Printf("secrets: gateway key %s/%s has delivery %q, want %q; reporting it as unset", username, name, meta.Delivery, DeliveryBroker)
+		log.Printf("secrets: gateway key %q/%s has delivery %q, want %q; reporting it as unset", username, name, meta.Delivery, DeliveryBroker)
 		return GatewayKeyStatus{}, nil
 	}
 	return GatewayKeyStatus{
@@ -205,14 +205,14 @@ func (s *Store) KeyFor(ctx context.Context, keyOwner, provider string) (string, 
 	meta, value, err := s.getRaw(ctx, username, name)
 	if err != nil {
 		if !errors.Is(err, ErrNotFound) {
-			log.Printf("secrets: gateway key lookup failed for %s/%s: %v", username, name, err)
+			log.Printf("secrets: gateway key lookup failed for %q/%s: %v", username, name, err)
 		}
 		return "", false
 	}
 	// A row that is not broker-only did not come from SetGatewayProviderKey.
 	// Refuse it rather than spend a key whose custody rules are unknown.
 	if meta.Delivery != DeliveryBroker {
-		log.Printf("secrets: gateway key %s/%s has delivery %q, want %q; refusing to use it", username, name, meta.Delivery, DeliveryBroker)
+		log.Printf("secrets: gateway key %q/%s has delivery %q, want %q; refusing to use it", username, name, meta.Delivery, DeliveryBroker)
 		return "", false
 	}
 	return value, true

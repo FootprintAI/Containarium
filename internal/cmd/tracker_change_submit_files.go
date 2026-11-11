@@ -18,8 +18,10 @@ var trackerChangeSubmitFilesCmd = &cobra.Command{
 	Long: `Sends whole files to the daemon, which fetches the base branch from the
 connection's remote on the host with the broker credential, commits the
 files on top of it, pushes the head branch (never forced) and opens a
-change request referencing issue. Needs tracker:write on the tenant, not
-a run-scoped token. Each --file is <repo-path>=<local-file>.
+change request referencing issue. If the head branch already exists, the
+commit goes on top of its tip; if it already has an open change request,
+that one is returned instead of opening another. Needs tracker:write on
+the tenant, not a run-scoped token. Each --file is <repo-path>=<local-file>.
 
 Example:
   containarium tracker change submit-files alice default 42 \

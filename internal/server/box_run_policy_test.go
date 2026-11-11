@@ -90,7 +90,8 @@ func TestBoxRunPolicy_CommandFlagsRoundTripThroughAShell(t *testing.T) {
 		t.Fatalf("flags do not parse as shell: %v\n%s", err, out)
 	}
 	got := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-	want := append([]string{"--restricted", "--tools", strings.Join(p.Tools, ","), "--allowedTools"}, p.Allowed...)
+	want := append([]string{"--restricted", "--tools", strings.Join(p.Tools, ","), "--disallowedTools"}, p.Denied...)
+	want = append(append(want, "--allowedTools"), p.Allowed...)
 	if len(got) != len(want) {
 		t.Fatalf("token count = %d, want %d\n%v", len(got), len(want), got)
 	}
@@ -138,9 +139,10 @@ func runWithLevel(t *testing.T, level, engineJSON string) policyRun {
 	var r policyRun
 	runHome := "/srv/" + boxRunUnprivilegedUser
 	s := &ContainerServer{
-		boxRunLogDir:       t.TempDir(),
-		boxRunCollaborator: func(owner, subject string) (bool, error) { return false, nil },
-		boxRunToolAccess:   func(ctx context.Context, username string) (string, error) { return level, nil },
+		boxRunLogDir:          t.TempDir(),
+		boxRunCollaborator:    func(owner, subject string) (bool, error) { return false, nil },
+		boxRunToolAccess:      func(ctx context.Context, username string) (string, error) { return level, nil },
+		boxRunEnsureToolchain: func(string) error { return nil }, // mounted host release
 		boxRunExec: func(box, script string) (string, error) {
 			mu.Lock()
 			defer mu.Unlock()

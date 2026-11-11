@@ -105,7 +105,7 @@ func (s *ContainerServer) RollbackContainerSnapshot(ctx context.Context, req *pb
 	if len(doomed) > 0 {
 		msg += fmt.Sprintf(". Destroyed %d newer snapshot(s): %s", len(doomed), strings.Join(doomed, ", "))
 	}
-	log.Printf("[snapshot] rollback %s -> %s (stopped=%v destroyed=%v)",
+	log.Printf("[snapshot] rollback %q -> %q (stopped=%v destroyed=%v)",
 		req.GetUsername(), snapshot, stopped, doomed)
 
 	return &pb.RollbackContainerSnapshotResponse{

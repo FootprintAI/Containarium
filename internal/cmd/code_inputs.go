@@ -59,7 +59,15 @@ prints how it was closed, and exits non-zero; so does an answer the run has
 not reported taking within a few seconds. That report comes from the run's
 journal, which the agent can write, so it is not proof the tool call ran.
 
-Answers through the daemon API (--server).`,
+Answers through the daemon API (--server). The token needs the code:answer
+scope as well as ssh:write; the wildcard scope and a token with no scopes do
+not count. No credential the platform puts on a box carries code:answer, so
+keep the token that does off the box: an operator mints it on the daemon host
+with 'containarium token generate --secret-file <file> --username <you>
+--scopes ssh:write,code:answer' and you pass it with --token or
+CONTAINARIUM_TOKEN.
+Do not run 'containarium login' inside the box the agent runs in: the
+credentials it writes there are readable by the agent.`,
 	Args: cobra.ExactArgs(3),
 	RunE: runCodeAnswer,
 }

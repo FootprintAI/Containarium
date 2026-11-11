@@ -1091,6 +1091,51 @@ func local_request_ContainerService_SetContainerAttribution_0(ctx context.Contex
 	return msg, metadata, err
 }
 
+func request_ContainerService_SetCodingAgent_0(ctx context.Context, marshaler runtime.Marshaler, client ContainerServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq SetCodingAgentRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["username"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "username")
+	}
+	protoReq.Username, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "username", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.SetCodingAgent(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_ContainerService_SetCodingAgent_0(ctx context.Context, marshaler runtime.Marshaler, server ContainerServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq SetCodingAgentRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["username"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "username")
+	}
+	protoReq.Username, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "username", err)
+	}
+	msg, err := server.SetCodingAgent(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 func request_ContainerService_AddSSHKey_0(ctx context.Context, marshaler runtime.Marshaler, client ContainerServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq AddSSHKeyRequest
@@ -1281,6 +1326,45 @@ func local_request_ContainerService_StartBoxRun_0(ctx context.Context, marshaler
 	return msg, metadata, err
 }
 
+func request_ContainerService_GetBoxRunUserStatus_0(ctx context.Context, marshaler runtime.Marshaler, client ContainerServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetBoxRunUserStatusRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["username"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "username")
+	}
+	protoReq.Username, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "username", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.GetBoxRunUserStatus(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_ContainerService_GetBoxRunUserStatus_0(ctx context.Context, marshaler runtime.Marshaler, server ContainerServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetBoxRunUserStatusRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["username"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "username")
+	}
+	protoReq.Username, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "username", err)
+	}
+	msg, err := server.GetBoxRunUserStatus(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 func request_ContainerService_ListBoxRuns_0(ctx context.Context, marshaler runtime.Marshaler, client ContainerServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq ListBoxRunsRequest
@@ -1450,6 +1534,182 @@ func local_request_ContainerService_StopBoxRun_0(ctx context.Context, marshaler 
 	return msg, metadata, err
 }
 
+func request_ContainerService_WriteBoxFile_0(ctx context.Context, marshaler runtime.Marshaler, client ContainerServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq WriteBoxFileRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["username"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "username")
+	}
+	protoReq.Username, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "username", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.WriteBoxFile(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_ContainerService_WriteBoxFile_0(ctx context.Context, marshaler runtime.Marshaler, server ContainerServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq WriteBoxFileRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["username"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "username")
+	}
+	protoReq.Username, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "username", err)
+	}
+	msg, err := server.WriteBoxFile(ctx, &protoReq)
+	return msg, metadata, err
+}
+
+func request_ContainerService_WriteBoxFileStream_0(ctx context.Context, marshaler runtime.Marshaler, client ContainerServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var metadata runtime.ServerMetadata
+	stream, err := client.WriteBoxFileStream(ctx)
+	if err != nil {
+		grpclog.Errorf("Failed to start streaming: %v", err)
+		return nil, metadata, err
+	}
+	dec := marshaler.NewDecoder(req.Body)
+	for {
+		var protoReq WriteBoxFileStreamRequest
+		err = dec.Decode(&protoReq)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			grpclog.Errorf("Failed to decode request: %v", err)
+			return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+		}
+		if err = stream.Send(&protoReq); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			grpclog.Errorf("Failed to send request: %v", err)
+			return nil, metadata, err
+		}
+	}
+	if err := stream.CloseSend(); err != nil {
+		grpclog.Errorf("Failed to terminate client stream: %v", err)
+		return nil, metadata, err
+	}
+	header, err := stream.Header()
+	if err != nil {
+		grpclog.Errorf("Failed to get header from client: %v", err)
+		return nil, metadata, err
+	}
+	metadata.HeaderMD = header
+	msg, err := stream.CloseAndRecv()
+	metadata.TrailerMD = stream.Trailer()
+	return msg, metadata, err
+}
+
+func request_ContainerService_SweepBoxRunCheckouts_0(ctx context.Context, marshaler runtime.Marshaler, client ContainerServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq SweepBoxRunCheckoutsRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["username"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "username")
+	}
+	protoReq.Username, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "username", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.SweepBoxRunCheckouts(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_ContainerService_SweepBoxRunCheckouts_0(ctx context.Context, marshaler runtime.Marshaler, server ContainerServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq SweepBoxRunCheckoutsRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["username"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "username")
+	}
+	protoReq.Username, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "username", err)
+	}
+	msg, err := server.SweepBoxRunCheckouts(ctx, &protoReq)
+	return msg, metadata, err
+}
+
+func request_ContainerService_ApplyBoxSkillSets_0(ctx context.Context, marshaler runtime.Marshaler, client ContainerServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq ApplyBoxSkillSetsRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["username"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "username")
+	}
+	protoReq.Username, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "username", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.ApplyBoxSkillSets(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_ContainerService_ApplyBoxSkillSets_0(ctx context.Context, marshaler runtime.Marshaler, server ContainerServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq ApplyBoxSkillSetsRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["username"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "username")
+	}
+	protoReq.Username, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "username", err)
+	}
+	msg, err := server.ApplyBoxSkillSets(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 func request_ContainerService_GetRunApprovalKey_0(ctx context.Context, marshaler runtime.Marshaler, client ContainerServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq GetRunApprovalKeyRequest
@@ -1541,6 +1801,75 @@ func local_request_ContainerService_ListRunInputs_0(ctx context.Context, marshal
 		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "run_name", err)
 	}
 	msg, err := server.ListRunInputs(ctx, &protoReq)
+	return msg, metadata, err
+}
+
+var filter_ContainerService_ListRunCommandEvents_0 = &utilities.DoubleArray{Encoding: map[string]int{"username": 0, "run_name": 1}, Base: []int{1, 1, 2, 0, 0}, Check: []int{0, 1, 1, 2, 3}}
+
+func request_ContainerService_ListRunCommandEvents_0(ctx context.Context, marshaler runtime.Marshaler, client ContainerServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq ListRunCommandEventsRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["username"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "username")
+	}
+	protoReq.Username, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "username", err)
+	}
+	val, ok = pathParams["run_name"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "run_name")
+	}
+	protoReq.RunName, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "run_name", err)
+	}
+	if err := req.ParseForm(); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_ContainerService_ListRunCommandEvents_0); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.ListRunCommandEvents(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_ContainerService_ListRunCommandEvents_0(ctx context.Context, marshaler runtime.Marshaler, server ContainerServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq ListRunCommandEventsRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["username"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "username")
+	}
+	protoReq.Username, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "username", err)
+	}
+	val, ok = pathParams["run_name"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "run_name")
+	}
+	protoReq.RunName, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "run_name", err)
+	}
+	if err := req.ParseForm(); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_ContainerService_ListRunCommandEvents_0); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	msg, err := server.ListRunCommandEvents(ctx, &protoReq)
 	return msg, metadata, err
 }
 
@@ -3449,6 +3778,26 @@ func RegisterContainerServiceHandlerServer(ctx context.Context, mux *runtime.Ser
 		}
 		forward_ContainerService_SetContainerAttribution_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_ContainerService_SetCodingAgent_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.ContainerService/SetCodingAgent", runtime.WithHTTPPathPattern("/v1/containers/{username}/coding-agent"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_ContainerService_SetCodingAgent_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_SetCodingAgent_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_ContainerService_AddSSHKey_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -3529,6 +3878,26 @@ func RegisterContainerServiceHandlerServer(ctx context.Context, mux *runtime.Ser
 		}
 		forward_ContainerService_StartBoxRun_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodGet, pattern_ContainerService_GetBoxRunUserStatus_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.ContainerService/GetBoxRunUserStatus", runtime.WithHTTPPathPattern("/v1/containers/{username}/run-user/status"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_ContainerService_GetBoxRunUserStatus_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_GetBoxRunUserStatus_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodGet, pattern_ContainerService_ListBoxRuns_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -3589,6 +3958,73 @@ func RegisterContainerServiceHandlerServer(ctx context.Context, mux *runtime.Ser
 		}
 		forward_ContainerService_StopBoxRun_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPut, pattern_ContainerService_WriteBoxFile_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.ContainerService/WriteBoxFile", runtime.WithHTTPPathPattern("/v1/containers/{username}/files"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_ContainerService_WriteBoxFile_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_WriteBoxFile_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+
+	mux.Handle(http.MethodPost, pattern_ContainerService_WriteBoxFileStream_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		err := status.Error(codes.Unimplemented, "streaming calls are not yet supported in the in-process transport")
+		_, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+		return
+	})
+	mux.Handle(http.MethodPost, pattern_ContainerService_SweepBoxRunCheckouts_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.ContainerService/SweepBoxRunCheckouts", runtime.WithHTTPPathPattern("/v1/containers/{username}/code-run-checkouts:sweep"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_ContainerService_SweepBoxRunCheckouts_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_SweepBoxRunCheckouts_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodPost, pattern_ContainerService_ApplyBoxSkillSets_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.ContainerService/ApplyBoxSkillSets", runtime.WithHTTPPathPattern("/v1/containers/{username}/skill-sets:apply"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_ContainerService_ApplyBoxSkillSets_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_ApplyBoxSkillSets_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodGet, pattern_ContainerService_GetRunApprovalKey_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -3628,6 +4064,26 @@ func RegisterContainerServiceHandlerServer(ctx context.Context, mux *runtime.Ser
 			return
 		}
 		forward_ContainerService_ListRunInputs_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodGet, pattern_ContainerService_ListRunCommandEvents_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/containarium.v1.ContainerService/ListRunCommandEvents", runtime.WithHTTPPathPattern("/v1/containers/{username}/code-runs/{run_name}/command-events"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_ContainerService_ListRunCommandEvents_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_ListRunCommandEvents_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
 	mux.Handle(http.MethodPost, pattern_ContainerService_AnswerRunInput_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
@@ -4897,6 +5353,23 @@ func RegisterContainerServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 		}
 		forward_ContainerService_SetContainerAttribution_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_ContainerService_SetCodingAgent_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.ContainerService/SetCodingAgent", runtime.WithHTTPPathPattern("/v1/containers/{username}/coding-agent"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ContainerService_SetCodingAgent_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_SetCodingAgent_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_ContainerService_AddSSHKey_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -4965,6 +5438,23 @@ func RegisterContainerServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 		}
 		forward_ContainerService_StartBoxRun_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodGet, pattern_ContainerService_GetBoxRunUserStatus_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.ContainerService/GetBoxRunUserStatus", runtime.WithHTTPPathPattern("/v1/containers/{username}/run-user/status"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ContainerService_GetBoxRunUserStatus_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_GetBoxRunUserStatus_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodGet, pattern_ContainerService_ListBoxRuns_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -5016,6 +5506,74 @@ func RegisterContainerServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 		}
 		forward_ContainerService_StopBoxRun_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPut, pattern_ContainerService_WriteBoxFile_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.ContainerService/WriteBoxFile", runtime.WithHTTPPathPattern("/v1/containers/{username}/files"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ContainerService_WriteBoxFile_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_WriteBoxFile_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodPost, pattern_ContainerService_WriteBoxFileStream_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.ContainerService/WriteBoxFileStream", runtime.WithHTTPPathPattern("/v1/box-files:stream"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ContainerService_WriteBoxFileStream_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_WriteBoxFileStream_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodPost, pattern_ContainerService_SweepBoxRunCheckouts_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.ContainerService/SweepBoxRunCheckouts", runtime.WithHTTPPathPattern("/v1/containers/{username}/code-run-checkouts:sweep"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ContainerService_SweepBoxRunCheckouts_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_SweepBoxRunCheckouts_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodPost, pattern_ContainerService_ApplyBoxSkillSets_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.ContainerService/ApplyBoxSkillSets", runtime.WithHTTPPathPattern("/v1/containers/{username}/skill-sets:apply"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ContainerService_ApplyBoxSkillSets_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_ApplyBoxSkillSets_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodGet, pattern_ContainerService_GetRunApprovalKey_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -5049,6 +5607,23 @@ func RegisterContainerServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 			return
 		}
 		forward_ContainerService_ListRunInputs_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodGet, pattern_ContainerService_ListRunCommandEvents_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/containarium.v1.ContainerService/ListRunCommandEvents", runtime.WithHTTPPathPattern("/v1/containers/{username}/code-runs/{run_name}/command-events"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_ContainerService_ListRunCommandEvents_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_ContainerService_ListRunCommandEvents_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
 	mux.Handle(http.MethodPost, pattern_ContainerService_AnswerRunInput_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
@@ -5775,15 +6350,22 @@ var (
 	pattern_ContainerService_SetContainerDeletePolicy_0  = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "name", "delete-policy"}, ""))
 	pattern_ContainerService_SetContainerToolAccess_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "name", "tool-access"}, ""))
 	pattern_ContainerService_SetContainerAttribution_0   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "name", "attribution"}, ""))
+	pattern_ContainerService_SetCodingAgent_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "coding-agent"}, ""))
 	pattern_ContainerService_AddSSHKey_0                 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "ssh-keys"}, ""))
 	pattern_ContainerService_SetSSHKeys_0                = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "ssh-keys"}, ""))
 	pattern_ContainerService_RemoveSSHKey_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 1, 0, 4, 1, 5, 4}, []string{"v1", "containers", "username", "ssh-keys", "ssh_public_key"}, ""))
 	pattern_ContainerService_StartBoxRun_0               = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "code-runs"}, ""))
+	pattern_ContainerService_GetBoxRunUserStatus_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 2, 4}, []string{"v1", "containers", "username", "run-user", "status"}, ""))
 	pattern_ContainerService_ListBoxRuns_0               = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "code-runs"}, ""))
 	pattern_ContainerService_TailBoxRunLog_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "containers", "username", "code-runs", "run_name", "log"}, ""))
 	pattern_ContainerService_StopBoxRun_0                = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 1, 0, 4, 1, 5, 4}, []string{"v1", "containers", "username", "code-runs", "run_name"}, "stop"))
+	pattern_ContainerService_WriteBoxFile_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "files"}, ""))
+	pattern_ContainerService_WriteBoxFileStream_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "box-files"}, "stream"))
+	pattern_ContainerService_SweepBoxRunCheckouts_0      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "code-run-checkouts"}, "sweep"))
+	pattern_ContainerService_ApplyBoxSkillSets_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "skill-sets"}, "apply"))
 	pattern_ContainerService_GetRunApprovalKey_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "username", "code-runs"}, "approval-key"))
 	pattern_ContainerService_ListRunInputs_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "containers", "username", "code-runs", "run_name", "inputs"}, ""))
+	pattern_ContainerService_ListRunCommandEvents_0      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "containers", "username", "code-runs", "run_name", "command-events"}, ""))
 	pattern_ContainerService_AnswerRunInput_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 1, 0, 4, 1, 5, 4, 2, 5, 1, 0, 4, 1, 5, 6}, []string{"v1", "containers", "username", "code-runs", "run_name", "inputs", "request_id"}, "answer"))
 	pattern_ContainerService_AddCollaborator_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "containers", "owner_username", "collaborators"}, ""))
 	pattern_ContainerService_RemoveCollaborator_0        = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 1, 0, 4, 1, 5, 4}, []string{"v1", "containers", "owner_username", "collaborators", "collaborator_username"}, ""))
@@ -5852,15 +6434,22 @@ var (
 	forward_ContainerService_SetContainerDeletePolicy_0  = runtime.ForwardResponseMessage
 	forward_ContainerService_SetContainerToolAccess_0    = runtime.ForwardResponseMessage
 	forward_ContainerService_SetContainerAttribution_0   = runtime.ForwardResponseMessage
+	forward_ContainerService_SetCodingAgent_0            = runtime.ForwardResponseMessage
 	forward_ContainerService_AddSSHKey_0                 = runtime.ForwardResponseMessage
 	forward_ContainerService_SetSSHKeys_0                = runtime.ForwardResponseMessage
 	forward_ContainerService_RemoveSSHKey_0              = runtime.ForwardResponseMessage
 	forward_ContainerService_StartBoxRun_0               = runtime.ForwardResponseMessage
+	forward_ContainerService_GetBoxRunUserStatus_0       = runtime.ForwardResponseMessage
 	forward_ContainerService_ListBoxRuns_0               = runtime.ForwardResponseMessage
 	forward_ContainerService_TailBoxRunLog_0             = runtime.ForwardResponseMessage
 	forward_ContainerService_StopBoxRun_0                = runtime.ForwardResponseMessage
+	forward_ContainerService_WriteBoxFile_0              = runtime.ForwardResponseMessage
+	forward_ContainerService_WriteBoxFileStream_0        = runtime.ForwardResponseMessage
+	forward_ContainerService_SweepBoxRunCheckouts_0      = runtime.ForwardResponseMessage
+	forward_ContainerService_ApplyBoxSkillSets_0         = runtime.ForwardResponseMessage
 	forward_ContainerService_GetRunApprovalKey_0         = runtime.ForwardResponseMessage
 	forward_ContainerService_ListRunInputs_0             = runtime.ForwardResponseMessage
+	forward_ContainerService_ListRunCommandEvents_0      = runtime.ForwardResponseMessage
 	forward_ContainerService_AnswerRunInput_0            = runtime.ForwardResponseMessage
 	forward_ContainerService_AddCollaborator_0           = runtime.ForwardResponseMessage
 	forward_ContainerService_RemoveCollaborator_0        = runtime.ForwardResponseMessage

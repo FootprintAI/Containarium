@@ -25,9 +25,16 @@ import (
 // SetTrackerRunStarter wires the launcher the dispatcher starts runs
 // through — in production, trackerRunStarter over the same
 // AgentSkillServer that serves RunAgentSkill. Nil keeps
-// DispatchTrackerIssues returning Unavailable.
+// DispatchTrackerIssues returning Unavailable. Safe while RPCs are
+// served: the tracker store's late install (#3329) wires it.
 func (s *ContainerServer) SetTrackerRunStarter(r tracker.RunStarter) {
-	s.trackerRunStarter = r
+	s.trackerRunStarterRef.store(r)
+}
+
+// loadTrackerRunStarter returns the current run starter, nil until one
+// is wired.
+func (s *ContainerServer) loadTrackerRunStarter() tracker.RunStarter {
+	return s.trackerRunStarterRef.load()
 }
 
 // DispatchTrackerIssues runs one dispatcher tick for a connection.
@@ -54,7 +61,8 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	if req.MaxStarts < 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "max_starts must be 0 (unlimited) or positive, got %d", req.MaxStarts)
 	}
-	if s.trackerRunStarter == nil {
+	runs := s.loadTrackerRunStarter()
+	if runs == nil {
 		return nil, status.Error(codes.Unavailable, "tracker dispatch is not configured on this daemon (no run starter)")
 	}
 	// resolveWriterConn's two halves, split so the connection record
@@ -62,7 +70,7 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	if err := enforceConnectionBinding(ctx, req.Connection); err != nil {
 		return nil, err
 	}
-	record, err := s.trackerStore.Get(ctx, req.Username, req.Connection)
+	record, err := s.loadTrackerStore().Get(ctx, req.Username, req.Connection)
 	if err != nil {
 		return nil, mapTrackerError(err)
 	}
@@ -82,12 +90,12 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	// secrets store, so a rotated or short-lived credential is never
 	// reused stale (#2269).
 	d := &tracker.Dispatcher{
-		Store:            s.trackerStore,
+		Store:            s.loadTrackerStore(),
 		Provider:         provider,
 		Conn:             conn,
-		Credentials:      s.secretsStore,
+		Credentials:      s.loadSecretsStore(), // non-nil: writerConnFor resolved through it, and it is never unset
 		CredentialSecret: record.CredentialSecret,
-		Runs:             s.trackerRunStarter,
+		Runs:             runs,
 		Clock:            tracker.SystemClock,
 		// The run's workspace is the connection's own repository, built
 		// from the connection record like SubmitTrackerChange's push
@@ -100,7 +108,7 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 		// The caller's per-tick budget (#2270); 0 is unlimited.
 		MaxStarts: req.MaxStarts,
 	}
-	if leases, ok := s.trackerRunStarter.(tracker.RunLeases); ok {
+	if leases, ok := runs.(tracker.RunLeases); ok {
 		d.Leases = leases
 	}
 	res, err := d.Tick(ctx, req.Username, req.Connection)
@@ -124,7 +132,7 @@ func (s *ContainerServer) DispatchTrackerIssues(ctx context.Context, req *pb.Dis
 	for i := range res.TimedOut {
 		out.TimedOut = append(out.TimedOut, toProtoTrackerDispatch(&res.TimedOut[i]))
 	}
-	log.Printf("[tracker] dispatch %s/%s: started=%d failed=%d timed_out=%d skipped(approval=%d active=%d unrouted=%d over_depth=%d) left_undispatched=%d",
+	log.Printf("[tracker] dispatch %q/%q: started=%d failed=%d timed_out=%d skipped(approval=%d active=%d unrouted=%d over_depth=%d) left_undispatched=%d",
 		req.Username, req.Connection, len(res.Started), len(res.Failed), len(res.TimedOut),
 		res.SkippedNeedsApproval, res.SkippedActive, res.SkippedUnrouted, res.SkippedOverDepth, res.LeftUndispatched)
 	return out, nil
@@ -136,7 +144,7 @@ func (s *ContainerServer) ListTrackerDispatches(ctx context.Context, req *pb.Lis
 	if err := s.requireTrackerRouteAccess(ctx, req.Username, req.Connection); err != nil {
 		return nil, err
 	}
-	rows, err := s.trackerStore.ListDispatches(ctx, req.Username, req.Connection, req.State)
+	rows, err := s.loadTrackerStore().ListDispatches(ctx, req.Username, req.Connection, req.State)
 	if err != nil {
 		return nil, mapTrackerDispatchError(err)
 	}
@@ -146,7 +154,7 @@ func (s *ContainerServer) ListTrackerDispatches(ctx context.Context, req *pb.Lis
 	}
 	// #2062: show the fan-out slots each run still holds, so a run whose
 	// fan-out looks exhausted shows why.
-	reservations, err := s.trackerStore.ListLineageReservations(ctx, req.Username, req.Connection)
+	reservations, err := s.loadTrackerStore().ListLineageReservations(ctx, req.Username, req.Connection)
 	if err != nil {
 		return nil, mapTrackerDispatchError(err)
 	}
@@ -392,7 +400,7 @@ func (s *AgentSkillServer) finishDispatchedRun(ctx context.Context, run *started
 		// failure (#2513): name the contract the run broke and where the
 		// evidence is, in the log and in the dispatch row's reason.
 		aerr = errors.New("the agent ended without a final message (no artifact); the skill contract requires one final JSON object — see the run journal for the tool calls it made")
-		log.Printf("[agent-skill] run %s: ended with no artifact (exit clean, empty final message)", run.runID)
+		log.Printf("[agent-skill] run %q: ended with no artifact (exit clean, empty final message)", run.runID)
 	}
 	err = aerr
 }
@@ -411,6 +419,6 @@ func logDispatchedRunPanic(runID, step string, recovered any) bool {
 	if recovered == nil {
 		return false
 	}
-	log.Printf("[agent-skill] run %s: %s panicked (value withheld); recovered\n%s", runID, step, debug.Stack())
+	log.Printf("[agent-skill] run %q: %s panicked (value withheld); recovered\n%s", runID, step, debug.Stack())
 	return true
 }

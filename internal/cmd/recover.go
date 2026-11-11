@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/collaborator"
+	"github.com/footprintai/containarium/internal/sshauthz"
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -391,6 +392,19 @@ func syncSSHAccounts() error {
 		return fmt.Errorf("failed to list containers: %w", err)
 	}
 
+	// The ssh_keys registry records revocations; the box's own authorized_keys
+	// does not (revoking only edits the host file and the registry), so keys
+	// read from the box must be filtered through it (#3347).
+	collabStore, storeErr := collaborator.NewStore(context.Background(), getPostgresConnString())
+	var registry sshauthz.KeyLookup
+	if storeErr == nil {
+		defer collabStore.Close()
+		registry, storeErr = sshauthz.NewPGKeyStore(context.Background(), collabStore.Pool(), sshauthz.FileHolders{HomeRoot: "/home"})
+	}
+	if storeErr != nil {
+		fmt.Printf("  Warning: key registry unavailable (%v); owner accounts will NOT be restored, because the box's keys cannot be checked for revocation. Fix the database and re-run.\n", storeErr)
+	}
+
 	var restored, skipped, failed int
 
 	for _, c := range containers {
@@ -418,6 +432,27 @@ func syncSSHAccounts() error {
 			continue
 		}
 
+		// Drop keys revoked since they were written into the box. Fail
+		// closed: no registry answer means no account, never an unfiltered one.
+		if registry == nil {
+			failed++
+			continue
+		}
+		sshKeys, dropped, err := sshauthz.DropRevokedKeys(context.Background(), registry, sshKeys)
+		if err != nil {
+			fmt.Printf("  ! %s: could not check keys for revocation: %v\n", username, err)
+			failed++
+			continue
+		}
+		if dropped > 0 {
+			fmt.Printf("  %s: skipped %d revoked key(s)\n", username, dropped)
+		}
+		if len(sshKeys) == 0 {
+			fmt.Printf("  ! %s: every key in the box is revoked; account not restored\n", username)
+			failed++
+			continue
+		}
+
 		// Seed the account, then authorize the remaining keys.
 		if err := container.CreateJumpServerAccount(username, sshKeys[0], false); err != nil {
 			failed++
@@ -440,11 +475,9 @@ func syncSSHAccounts() error {
 
 	// Also sync collaborator accounts from PostgreSQL
 	fmt.Println("  Syncing collaborator accounts...")
-	collabStore, err := collaborator.NewStore(context.Background(), getPostgresConnString())
-	if err != nil {
-		fmt.Printf("  Warning: Could not connect to collaborator database: %v\n", err)
+	if collabStore == nil {
+		fmt.Printf("  Warning: Could not connect to collaborator database: %v\n", storeErr)
 	} else {
-		defer collabStore.Close()
 		collaboratorMgr := container.NewCollaboratorManager(mgr, collabStore)
 		cr, cs, cf := collaboratorMgr.SyncCollaboratorAccounts(verbose, false)
 		fmt.Printf("  Collaborator accounts: %d restored, %d skipped, %d failed\n", cr, cs, cf)

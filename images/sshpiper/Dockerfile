@@ -27,7 +27,7 @@
 # source with a current Go toolchain, plus a targeted grpc pin below, closes
 # that gap without waiting on an upstream rebuild.
 
-FROM golang:1.26.10-bookworm AS build
+FROM golang:1.26.11-bookworm AS build
 ARG SSHPIPER_VERSION=v1.6.1
 ENV CGO_ENABLED=0
 RUN apt-get update \
@@ -51,17 +51,18 @@ RUN git clone --depth 1 --branch "${SSHPIPER_VERSION}" https://github.com/tg123/
 # stable version to move to.
 #
 # golang.org/x/net is pinned the same way: v1.6.1 resolves v0.58.0, inside
-# CVE-2026-78669's range (fixed in v0.60.0), and Go 1.26.9 closes the matching
+# CVE-2026-78669's range (fixed in v0.60.0) and CVE-2026-78661's
+# (golang.org/x/net/html, fixed in v0.62.0), and Go 1.26.9 closes the matching
 # stdlib findings CVE-2026-78667, CVE-2026-78669 and CVE-2026-97031 that failed
 # the v0.101.0 sidecar Trivy gate.
 RUN go mod edit \
         -replace google.golang.org/grpc=google.golang.org/grpc@v1.83.2 \
-        -replace golang.org/x/net=golang.org/x/net@v0.60.0 \
+        -replace golang.org/x/net=golang.org/x/net@v0.62.0 \
     && go mod tidy
 RUN cd cmd/sshpiperd \
     && go mod edit \
         -replace google.golang.org/grpc=google.golang.org/grpc@v1.83.2 \
-        -replace golang.org/x/net=golang.org/x/net@v0.60.0 \
+        -replace golang.org/x/net=golang.org/x/net@v0.62.0 \
     && go mod tidy
 
 RUN mkdir -p /out/plugins \

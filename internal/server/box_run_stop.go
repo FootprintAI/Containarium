@@ -139,6 +139,10 @@ func (s *ContainerServer) StopBoxRun(ctx context.Context, req *pb.StopBoxRunRequ
 	if err != nil {
 		return nil, err
 	}
+	if result == "dead" || result == "gone" {
+		// The run ended: sweep the box's stale per-run checkouts (#3296).
+		s.sweepBoxRunCheckoutsAfterRun(req.GetUsername())
+	}
 	return &pb.StopBoxRunResponse{
 		Run:    boxRunView2Proto(dir, view, resolve(view, boot, alive)),
 		Signal: signal,

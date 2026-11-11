@@ -55,7 +55,8 @@ a partner operator until a different one is agreed.
 | `containarium backends upgrade` | admin role plus the `containers:write` scope (`containers:read` for `GetUpgradeStatus`); tokens with no scopes claim stay unrestricted. Refused against the hosted control plane. | `TriggerUpgrade` in [container_server.go](../internal/server/container_server.go), `isCloudTarget` in [backends_upgrade.go](../internal/cmd/backends_upgrade.go) |
 | `containarium snapshot create` / `rollback` | `containers:write`, and you must be the tenant or an admin | `snapshotDatasetFor` in [container_snapshot.go](../internal/server/container_snapshot.go) |
 | `containarium snapshot list` | `containers:read`, and you must be the tenant or an admin | same |
-| `containarium backup create` / `restore` / `verify` / `prune` | `backups:write` | [backup_server.go](../internal/server/backup_server.go) |
+| `containarium backup create` / `restore` / `prune` | `backups:write` | [backup_server.go](../internal/server/backup_server.go) |
+| `containarium backup verify` | `backups:verify`; legacy `backups:write` verifier tokens are refused after the v0.120.1 migration window. Re-mint with `backups:read,backups:verify` using the [verifier token command](DB-BACKUP-OPERATIONS.md#a-least-privilege-token-for-the-restore-test-verifier-2401). | same |
 | `containarium backup list` / `get` | `backups:read` | same |
 | `containarium debug <username>` | the tenant or an admin | `DebugContainer` in [debug_container.go](../internal/server/debug_container.go), `AuthorizeTenant` in [authz.go](../internal/auth/authz.go) |
 | `containariumd recover`, `containarium doctor`, `containarium service status` | a shell on the host. The DR guide runs `recover` with `sudo`. | [DISASTER-RECOVERY.md](DISASTER-RECOVERY.md) |
@@ -81,7 +82,9 @@ containarium backup verify <backup-id> --target <username> --server <host>
 
 Also read the target release's **Upgrading** section in
 [CHANGELOG.md](../CHANGELOG.md). Write down the previous tag: you need it to
-roll back.
+roll back. Upgrading an Incus host from before v0.123.0 also needs the host
+toolchain installed (see
+[Managed toolchain](#managed-toolchain-v01230-and-later)).
 
 ## Upgrade
 
@@ -107,6 +110,18 @@ containarium backends upgrade <backend-id> --server http://<host>:8080
   [deploy-binary.sh](../scripts/deploy-binary.sh), which also does the primary
   and the peers. Set `PRIMARY_SERVICE` and `SENTINEL_SERVICE` to the host's
   real unit names; the script's header explains why.
+  After each restart the script waits up to `HEALTH_TRIES` x `HEALTH_INTERVAL`
+  seconds (defaults 15 x 2, so 30 seconds). The primary passes on the first
+  successful `PRIMARY_HEALTH_URL` check. The sentinel passes only if its unit
+  stays active for the whole window, so a binary that crashes a moment after
+  start is rolled back. A successful sentinel deploy therefore always takes the
+  full window (about 30 seconds by default). Both knobs must be plain decimal
+  integers with no sign and no leading zeros: `HEALTH_TRIES` from 1 to 9999,
+  `HEALTH_INTERVAL` from 0 to 9999 (a bare `0` is valid; `05` is not). The
+  script refuses anything else, including an empty value, before its first
+  `gcloud` call, and quotes the rejected value in the message. A healthy
+  daemon that needs longer than the window is rolled back too: raise `HEALTH_TRIES` (for example `HEALTH_TRIES=60`) before
+  deploying to a slow host.
 - **Kubernetes:** `helm upgrade` with the published chart is what CI tests
   ([helm-install-upgrade.sh](../scripts/ci/helm-install-upgrade.sh)).
 
@@ -118,6 +133,34 @@ containarium backends upgrade <backend-id> --server http://<host>:8080
 - [ ] `containarium list --server <host>` shows the containers in the state they were in before.
 - [ ] `containarium debug <username>` is clean for a sample tenant.
 - [ ] On a BYOC backend, run the checks in [BYOC-BACKEND-BRINGUP.md](BYOC-BACKEND-BRINGUP.md#verify).
+- [ ] On each Incus host upgraded to v0.123.0 or later, a managed toolchain release is active (see [Managed toolchain](#managed-toolchain-v01230-and-later)).
+
+### Managed toolchain (v0.123.0 and later)
+
+From v0.123.0 (#3285), a run at tool-access level `BUILD_TOOLS` is refused
+with `FailedPrecondition` naming `/opt/containarium/toolchains` unless the
+Incus host has a managed toolchain release installed. From v0.124.0 the
+refusal carries the typed reason `HOST_MANAGED_TOOLCHAIN_MISSING`. Every
+upgrade path on this page is binary-only: `containarium backends upgrade`,
+sentinel auto-update, [deploy-binary.sh](../scripts/deploy-binary.sh) and
+[redeploy-workhorse.sh](../scripts/redeploy-workhorse.sh) swap the binary and
+install no toolchain. So when you first upgrade a host to v0.123.0 or later,
+also install the toolchain release on that host. Use the
+same release tag and the host's CPU architecture: download
+`toolchains-linux-<arch>.tar.gz` and its `.sigstore.json`, verify it with
+`cosign verify-blob`, extract it, then run `sudo bash install.sh` from the
+extracted directory. The exact commands are in
+[MANAGED-TOOLCHAINS.md](MANAGED-TOOLCHAINS.md#install-on-each-host). `NONE`
+and `FULL_SUDO` runs work without it. Check on the host:
+
+```bash
+readlink /opt/containarium/toolchains/current
+```
+
+It prints `releases/<release>`. No such file means no release is active,
+and `BUILD_TOOLS` runs on this host will be refused. Rolling the daemon back
+does not remove the toolchain; to roll the toolchain back, see
+[MANAGED-TOOLCHAINS.md](MANAGED-TOOLCHAINS.md#update-and-rollback).
 
 ### Sentinel sshpiperd unit
 

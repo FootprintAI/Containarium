@@ -30,6 +30,7 @@ import (
 	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/network"
+	"github.com/footprintai/containarium/pkg/core/toolchain"
 	"github.com/spf13/cobra"
 )
 
@@ -45,7 +46,9 @@ var (
 	daemonAddress          string
 	daemonPort             int
 	daemonHTTPPort         int
+	restTLSTerminator      bool
 	runJournalRetention    time.Duration
+	runCheckoutMaxAge      time.Duration
 	sshAuthzMaxKeyAge      time.Duration
 	sshAuthzKeysCommand    bool
 	enableMTLS             bool
@@ -79,9 +82,6 @@ var (
 	alertWebhookSecret     string
 	sentinelURL            string
 	sshHost                string
-	dnsPassthroughHosts    []string
-	bridgeDNSReconcile     bool
-	bridgeDNSCreate        bool
 	peerAddrs              []string
 	localBackendID         string
 	pool                   string
@@ -92,6 +92,7 @@ var (
 	cpuOvercommitFactor    float64
 	cpuOvercommitEnforce   bool
 	placementCPUAware      bool
+	requirePeerMTLS        bool
 	publicHostname         string
 	publicAliases          []string
 	publicBaseDomains      []string
@@ -163,8 +164,12 @@ func init() {
 
 	// HTTP/REST settings
 	daemonCmd.Flags().IntVar(&daemonHTTPPort, "http-port", 8080, "HTTP/REST port to listen on")
+	daemonCmd.Flags().BoolVar(&restTLSTerminator, "rest-tls-terminator", false,
+		"Declare that an external TLS terminator (reverse proxy or load balancer) sits in front of the HTTP/REST listener. The listener itself serves plain HTTP; without this flag a non-loopback bind logs a startup warning (#3522)")
 	daemonCmd.Flags().DurationVar(&runJournalRetention, "run-journal-retention", server.DefaultRunJournalRetention,
 		"How long a run's journal (/var/log/agent-runtime/runs/<run_id>) stays on an agent box before the daemon's sweep removes it")
+	daemonCmd.Flags().DurationVar(&runCheckoutMaxAge, "run-checkout-max-age", server.DefaultRunCheckoutMaxAge,
+		"How old a platform run's per-run checkout (~/work/<repo>-run-<8 hex> of a box user) must be, by its newest modification, before the daemon's hourly sweep removes it. 0 turns the sweep off (#3296)")
 	daemonCmd.Flags().BoolVar(&enableREST, "rest", true, "Enable HTTP/REST API gateway")
 	daemonCmd.Flags().DurationVar(&sshAuthzMaxKeyAge, "ssh-authz-max-key-age", envDuration("CONTAINARIUM_SSH_AUTHZ_MAX_KEY_AGE", 0),
 		"Self-host SSH authorization: refuse a key registered at least this long ago (KEY_EXPIRED). 0 (default) = no limit. Applies only on a daemon with no cloud enrollment. Env: CONTAINARIUM_SSH_AUTHZ_MAX_KEY_AGE (#2517).")
@@ -209,7 +214,7 @@ func init() {
 	// Multi-backend peer settings
 	daemonCmd.Flags().StringVar(&sentinelURL, "sentinel-url", "", "Sentinel URL for auto-discovering tunnel peers, event-driven SSH key resync and self-upgrade (e.g., http://10.128.0.5:8081). Falls back to CONTAINARIUM_SENTINEL_URL when unset.")
 	daemonCmd.Flags().StringVar(&sshHost, "ssh-host", "", "Public SSH host clients dial to reach containers (the sentinel's SSH endpoint, e.g. region-a.example.com). Surfaced on each Container.ssh_host so clients build the target username@ssh_host. Empty = direct mode: ssh_host is left empty and clients use the container IP.")
-	daemonCmd.Flags().StringSliceVar(&peerAddrs, "peers", nil, "Static peer daemon addresses as host:port of each peer's own daemon (e.g., 10.0.0.12:8080). Tunnel backends behind a sentinel are found with --sentinel-url instead.")
+	daemonCmd.Flags().StringSliceVar(&peerAddrs, "peers", nil, "Static peers, each host:port of the peer's own daemon (e.g., 10.0.0.12:8080) or id=host:port to give it an explicit backend ID (e.g., backend-b=10.0.0.12:8080). The ID is what `move --target` takes and must match an incus remote name, so a peer you move containers to needs one; an address-only peer is keyed by its address, which cannot be a remote name. An ID cannot start with \"tunnel-\" (reserved for sentinel-discovered peers), and an IPv6 address needs brackets ([::1]:8080). Tunnel backends behind a sentinel are found with --sentinel-url instead.")
 	daemonCmd.Flags().StringVar(&localBackendID, "backend-id", "", "This daemon's backend ID (defaults to hostname)")
 	daemonCmd.Flags().StringVar(&pool, "pool", "", "Pool name to scope sentinel peer discovery (empty = unscoped, see all peers)")
 	daemonCmd.Flags().StringVar(&storagePool, "storage-pool", "", "Incus STORAGE pool containers are created on (default \"default\"). Unrelated to --pool, which names a sentinel-fronted cluster. Point this at a second, per-container-volume pool to migrate tenants off a shared-filesystem `dir` pool without every newly created tenant landing back on it (#1206, #1213).")
@@ -218,9 +223,6 @@ func init() {
 	daemonCmd.Flags().StringVar(&region, "region", "", "Region this backend serves; recorded in its capability profile (containarium backends profile). Empty falls back to the --pool name.")
 	daemonCmd.Flags().StringVar(&publicHostname, "public-hostname", "", "Public hostname this primary serves (e.g. prod.example.com); enables sentinel primary registration")
 	daemonCmd.Flags().StringSliceVar(&publicAliases, "public-aliases", nil, "Additional hostnames the primary's Caddy serves (e.g. api.example.com,voice.example.com); the sentinel SNI router treats these as aliases of --public-hostname")
-	daemonCmd.Flags().StringArrayVar(&dnsPassthroughHosts, "dns-passthrough-host", nil, "Hostname under --base-domain that boxes must resolve through the upstream resolvers instead of the local Caddy edge (repeatable: one hostname per flag, not comma-separated; a blank or malformed value fails at boot). With app hosting the bridge DNS resolves *.<base-domain> to Caddy; each host given here is carved out of that wildcard, like --ssh-host already is. Use it for an API host under the base domain that Caddy does not serve. Empty = only --ssh-host is carved out.")
-	daemonCmd.Flags().BoolVar(&bridgeDNSReconcile, "bridge-dns-reconcile", true, "Keep the bridge's raw.dnsmasq record for --base-domain on core-caddy's live address (#2188). Set to false to switch the reconciler off without rolling back; the record is then left exactly as it is (#2232).")
-	daemonCmd.Flags().BoolVar(&bridgeDNSCreate, "bridge-dns-create", false, "Let the bridge DNS reconciler CREATE the --base-domain record on a bridge that has none. Default false: a host without a record is left alone (every box would otherwise start resolving every name under the base domain to core-caddy); the record is only created when this daemon installs core-caddy itself, or with this flag (#2232).")
 	daemonCmd.Flags().StringSliceVar(&publicBaseDomains, "public-base-domain", nil, "Suffix-match anchor advertised to the sentinel — inbound SNI of the form <anything>.<public-base-domain> routes here without each subdomain being a registered alias. Repeatable: list multiple to host workloads under different parent domains on the same backend (e.g. --public-base-domain lab.example.com --public-base-domain demo.example.org). Defaults to [--base-domain] when unset. See docs/PER-POOL-BASE-DOMAIN.md.")
 	daemonCmd.Flags().BoolVar(&proxyProtocol, "proxy-protocol", false, "Configure Caddy to accept PROXY v2 headers from --proxy-protocol-trusted CIDRs so containers receive the real client IP. Pair with --proxy-protocol on the sentinel.")
 	daemonCmd.Flags().StringSliceVar(&proxyProtocolTrusted, "proxy-protocol-trusted", []string{"127.0.0.0/8"}, "CIDRs allowed to send PROXY headers (typically the sentinel VPC IP/32). Wildcard 0.0.0.0/0 is rejected.")
@@ -236,6 +238,7 @@ func init() {
 	daemonCmd.Flags().Var(poolHeadroomFloors, "pool-headroom-floor", "Refuse container creates and snapshots on an Incus storage pool once it is this percent used, as <pool>=<percent>. Repeatable, one pool each; whole percent 86-99 (above the 85% \"pool nearly full\" mark). Pools not named use 95. Host status and the built-in alert keep 85/95 (#3128).")
 	daemonCmd.Flags().Float64Var(&cpuOvercommitFactor, "cpu-overcommit-factor", envFloat("CONTAINARIUM_CPU_OVERCOMMIT_FACTOR", 0), "Max CPU overcommit: refuse a create when committed cores would exceed logical-CPUs (vCPUs, incl. SMT threads) × this factor. 0 (default) disables the check. Env: CONTAINARIUM_CPU_OVERCOMMIT_FACTOR (#1029).")
 	daemonCmd.Flags().BoolVar(&cpuOvercommitEnforce, "cpu-overcommit-enforce", envBool("CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE", false), "With --cpu-overcommit-factor > 0, actually reject over-ceiling creates. When false (default), the check is advisory (logs what it would reject). Env: CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE (#1029).")
+	daemonCmd.Flags().BoolVar(&requirePeerMTLS, "require-peer-mtls", envBool("CONTAINARIUM_REQUIRE_PEER_MTLS", false), "Refuse to start when daemon-to-peer calls would fall back to plain HTTP because the peer-PKI bootstrap failed or was skipped. Off by default (the fallback is logged). Env: CONTAINARIUM_REQUIRE_PEER_MTLS (#3517).")
 	daemonCmd.Flags().BoolVar(&placementCPUAware, "placement-cpu-aware", envBool("CONTAINARIUM_PLACEMENT_CPU_AWARE", false), "When a pool create has no explicit backend, place it on the least CPU-committed healthy peer instead of an arbitrary one. Off by default (first-healthy). Env: CONTAINARIUM_PLACEMENT_CPU_AWARE (#1029).")
 }
 
@@ -284,6 +287,12 @@ func resolveSentinelURL(flagValue, envValue string) string {
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
+	// Fail on a malformed --peers entry at boot, not when the first move
+	// or list silently finds no such peer.
+	if _, err := server.ParseStaticPeers(peerAddrs, resolveBackendID(localBackendID)); err != nil {
+		return fmt.Errorf("invalid --peers: %w", err)
+	}
+
 	// Capability self-check (deploy-contract #69): surface the capability
 	// trap at boot — not on the first container create, hours later. Runs
 	// under this process's (the unit's) real caps. Non-fatal.
@@ -321,6 +330,10 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 				log.Printf("Incus version: %s (OK)", serverInfo.Environment.ServerVersion)
 			}
 		}
+		// Managed toolchain (#3360): only Incus boxes mount it, and since
+		// v0.123.0 BUILD_TOOLS runs are refused without it. A binary-only
+		// upgrade does not install it, so say so at boot. Non-fatal.
+		logStartupToolchainCheck(log.Printf, toolchain.ReadStatus(toolchain.HostRoot))
 	}
 
 	// Initialize infrastructure (storage, network, profile) unless skipped or
@@ -677,6 +690,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		HTTPPort:            daemonHTTPPort,
 		EnableREST:          enableREST,
 		StartupListener:     early.releaseUnlessServing(enableREST, daemonHTTPPort),
+		RESTTLSTerminator:   restTLSTerminator,
 		JWTSecret:           finalJWTSecret,
 		SwaggerDir:          swaggerDir,
 		EnableAppHosting:    enableAppHosting,
@@ -688,49 +702,48 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			MaxBoxes: anonMaxBoxes, KeyCreatesPer10: anonKeyCreatesPer10, KeyBurst: anonKeyBurst,
 			IPCreatesPer10: anonIPCreatesPer10, IPBurst: anonIPBurst, StatePath: anonDoorStatePath,
 		},
-		GuardrailStagingRoot:       daemonGuardrailStagingRoot,
-		GuardrailSnapshotDir:       daemonGuardrailSnapshotDir,
-		GuardrailRateLimits:        daemonGuardrailRateLimits(),
-		CaddyAdminURL:              caddyAdminURL,
-		HostIP:                     hostIPFromCIDR(networkSubnet),
-		DaemonConfigStore:          daemonConfigStore,
-		CaddyCertDir:               caddyCertDir,
-		VictoriaMetricsURL:         victoriaMetricsURL,
-		Standalone:                 standaloneMode,
-		DisableSecurityScanner:     disableSecurityScanner,
-		DisablePentestScanner:      disablePentestScanner,
-		DisableZapScanner:          disableZapScanner,
-		AlertWebhookURL:            alertWebhookURL,
-		AlertWebhookSecret:         alertWebhookSecret,
-		SentinelURL:                sentinelURL,
-		SSHHost:                    sshHost,
-		DNSPassthroughHosts:        dnsPassthroughHosts,
-		BridgeDNSReconcileDisabled: !bridgeDNSReconcile,
-		BridgeDNSCreate:            bridgeDNSCreate,
-		Peers:                      peerAddrs,
-		LocalBackendID:             resolveBackendID(localBackendID),
-		Pool:                       pool,
-		Region:                     region,
-		PoolHeadroomFloors:         poolHeadroomFloors,
-		CPUOvercommitFactor:        cpuOvercommitFactor,
-		CPUOvercommitEnforce:       cpuOvercommitEnforce,
-		PlacementCPUAware:          placementCPUAware,
-		PublicHostname:             publicHostname,
-		PublicAliases:              publicAliases,
-		PublicBaseDomains:          resolvePublicBaseDomains(publicBaseDomains, baseDomain, byocBackend),
-		BYOCBackend:                byocBackend,
-		PublicPort:                 publicPort,
-		ProxyProtocol:              proxyProtocol,
-		ProxyProtocolTrusted:       proxyProtocolTrusted,
-		ClientIPHeaders:            clientIPHeaders,
-		TrustedProxyCIDRs:          trustedProxyCIDRs,
-		OTelDropLabels:             otelDropLabels,
-		Runtime:                    runtime,
-		ZFSTenantRoot:              zfsTenantRoot,
-		ZFSKeysDir:                 zfsKeysDir,
-		RunJournalRetention:        runJournalRetention,
-		SSHAuthzMaxKeyAge:          sshAuthzMaxKeyAge,
-		SSHAuthzKeysCommand:        sshAuthzKeysCommand,
+		GuardrailStagingRoot:   daemonGuardrailStagingRoot,
+		GuardrailSnapshotDir:   daemonGuardrailSnapshotDir,
+		GuardrailRateLimits:    daemonGuardrailRateLimits(),
+		CaddyAdminURL:          caddyAdminURL,
+		HostIP:                 hostIPFromCIDR(networkSubnet),
+		DaemonConfigStore:      daemonConfigStore,
+		CaddyCertDir:           caddyCertDir,
+		VictoriaMetricsURL:     victoriaMetricsURL,
+		Standalone:             standaloneMode,
+		DisableSecurityScanner: disableSecurityScanner,
+		DisablePentestScanner:  disablePentestScanner,
+		DisableZapScanner:      disableZapScanner,
+		AlertWebhookURL:        alertWebhookURL,
+		AlertWebhookSecret:     alertWebhookSecret,
+		SentinelURL:            sentinelURL,
+		SSHHost:                sshHost,
+		Peers:                  peerAddrs,
+		LocalBackendID:         resolveBackendID(localBackendID),
+		Pool:                   pool,
+		Region:                 region,
+		PoolHeadroomFloors:     poolHeadroomFloors,
+		CPUOvercommitFactor:    cpuOvercommitFactor,
+		CPUOvercommitEnforce:   cpuOvercommitEnforce,
+		PlacementCPUAware:      placementCPUAware,
+		RequirePeerMTLS:        requirePeerMTLS,
+		PublicHostname:         publicHostname,
+		PublicAliases:          publicAliases,
+		PublicBaseDomains:      resolvePublicBaseDomains(publicBaseDomains, baseDomain, byocBackend),
+		BYOCBackend:            byocBackend,
+		PublicPort:             publicPort,
+		ProxyProtocol:          proxyProtocol,
+		ProxyProtocolTrusted:   proxyProtocolTrusted,
+		ClientIPHeaders:        clientIPHeaders,
+		TrustedProxyCIDRs:      trustedProxyCIDRs,
+		OTelDropLabels:         otelDropLabels,
+		Runtime:                runtime,
+		ZFSTenantRoot:          zfsTenantRoot,
+		ZFSKeysDir:             zfsKeysDir,
+		RunJournalRetention:    runJournalRetention,
+		RunCheckoutMaxAge:      runCheckoutMaxAge,
+		SSHAuthzMaxKeyAge:      sshAuthzMaxKeyAge,
+		SSHAuthzKeysCommand:    sshAuthzKeysCommand,
 	}
 
 	// Create dual server
@@ -829,22 +842,38 @@ func recoverJumpServerAccounts() {
 		log.Printf("[account-sync] skipped (cannot connect to Incus): %v", err)
 		return
 	}
-	res, err := mgr.SyncOwnerAccounts(container.OwnerSyncOptions{})
+	// Revoked keys stay in the box's own authorized_keys, so filter through the
+	// ssh_keys registry. Fail closed: if it cannot be reached no account is
+	// restored (logged below), rather than seeding one from unchecked keys.
+	dsn := postgresConnString
+	if dsn == "" {
+		dsn = getPostgresConnString()
+	}
+	res, err := syncOwnerAccountsFiltered(mgr, dsn, container.OwnerSyncOptions{})
 	if err != nil {
 		log.Printf("[account-sync] skipped (list containers failed): %v", err)
 		return
 	}
 
 	if len(res.Restored) > 0 {
-		log.Printf("[account-sync] restored %d missing host account(s) on startup (spot boot-disk recovery): %s",
-			len(res.Restored), strings.Join(res.Restored, ", "))
+		log.Printf("[account-sync] restored %d missing host account(s) on startup (spot boot-disk recovery): %q",
+			len(res.Restored), res.Restored)
 	} else {
 		log.Printf("[account-sync] host accounts up to date (%d present, %d container(s) without a tenant key)",
 			res.Skipped, len(res.NoKey))
 	}
+	if res.FilterErr != nil {
+		log.Printf("[account-sync] WARNING: key registry unavailable (%v); owner accounts were NOT restored because the box keys cannot be checked for revocation. Restart the daemon or run `containarium sync-accounts` once the database is reachable.", res.FilterErr)
+	}
+	for u, n := range res.RevokedDropped {
+		log.Printf("[account-sync] %q: skipped %d revoked key(s)", u, n)
+	}
+	if len(res.AllRevoked) > 0 {
+		log.Printf("[account-sync] every key is revoked for %q; account not restored", res.AllRevoked)
+	}
 	if len(res.Failed) > 0 {
-		log.Printf("[account-sync] WARNING: %d container(s) had an SSH key but the host account could not be created — these tenants are SSH-dark and need attention: %s",
-			len(res.Failed), strings.Join(res.Failed, ", "))
+		log.Printf("[account-sync] WARNING: %d container(s) had an SSH key but the host account could not be created — these tenants are SSH-dark and need attention: %q",
+			len(res.Failed), res.Failed)
 	}
 }
 

@@ -80,12 +80,17 @@ check_os() {
 
     . /etc/os-release
 
-    if [ "$ID" != "ubuntu" ]; then
-        log_warn "This script is designed for Ubuntu. Detected: $ID"
+    if [ "$ID" = "debian" ]; then
+        # Debian 13 (trixie) has been verified: its kernel carries the
+        # CVE-2026-98432 fix, and Incus comes from the Zabbly repository.
+        case "$VERSION_ID" in
+            12|13) log_info "Debian $VERSION_ID is supported" ;;
+            *) log_warn "Debian $VERSION_ID is untested. Supported: 12, 13." ;;
+        esac
+    elif [ "$ID" != "ubuntu" ]; then
+        log_warn "This script is designed for Ubuntu and Debian. Detected: $ID"
         log_warn "Continuing anyway, but issues may occur..."
-    fi
-
-    if [ "$VERSION_ID" != "24.04" ] && [ "$VERSION_ID" != "22.04" ]; then
+    elif [ "$VERSION_ID" != "24.04" ] && [ "$VERSION_ID" != "22.04" ]; then
         log_warn "Recommended version: Ubuntu 24.04. Detected: $VERSION_ID"
         log_warn "Continuing anyway..."
     fi
@@ -102,9 +107,18 @@ install_dependencies() {
         wget \
         gnupg \
         ca-certificates \
-        software-properties-common \
-        jq \
-        zfsutils-linux
+        jq
+
+    # ZFS is optional. Debian ships zfsutils-linux only in contrib, and
+    # Ubuntu-only helpers such as software-properties-common are not needed.
+    # `apt-cache show` succeeds for names other packages refer to, so check the
+    # install candidate instead of the package record.
+    ZFS_CANDIDATE=$(apt-cache policy zfsutils-linux | awk '/Candidate:/{print $2}')
+    if [ -n "$ZFS_CANDIDATE" ] && [ "$ZFS_CANDIDATE" != "(none)" ]; then
+        apt-get install -y zfsutils-linux
+    else
+        log_warn "zfsutils-linux not available on this distro; ZFS storage is unavailable"
+    fi
 
     log_success "System dependencies installed"
 }
@@ -138,22 +152,24 @@ install_incus() {
     # Add Zabbly repository (use --batch to avoid TTY issues in non-interactive SSH)
     curl -fsSL https://pkgs.zabbly.com/key.asc | gpg --batch --yes --dearmor -o /usr/share/keyrings/zabbly-incus.gpg
 
-    # Detect Ubuntu codename
+    # Detect the distro codename (works on Ubuntu and Debian; lsb_release is
+    # not installed by default on Debian cloud images)
     . /etc/os-release
-    UBUNTU_CODENAME=$(lsb_release -cs)
+    DISTRO_CODENAME="${VERSION_CODENAME}"
 
-    echo "deb [signed-by=/usr/share/keyrings/zabbly-incus.gpg] https://pkgs.zabbly.com/incus/stable ${UBUNTU_CODENAME} main" | \
+    echo "deb [signed-by=/usr/share/keyrings/zabbly-incus.gpg] https://pkgs.zabbly.com/incus/stable ${DISTRO_CODENAME} main" | \
         tee /etc/apt/sources.list.d/zabbly-incus-stable.list
 
-    # Create APT preference to prioritize Zabbly repository over Ubuntu for Incus packages
+    # Create APT preference to prioritize Zabbly repository over the distro's own Incus packages
+    if [ "$ID" = "debian" ]; then DISTRO_ORIGIN=Debian; else DISTRO_ORIGIN=Ubuntu; fi
     log_info "Configuring APT to prefer Zabbly Incus packages..."
-    cat > /etc/apt/preferences.d/zabbly-incus << 'EOF'
+    cat > /etc/apt/preferences.d/zabbly-incus << EOF
 Package: incus incus-* *incus*
 Pin: origin pkgs.zabbly.com
 Pin-Priority: 1000
 
 Package: incus incus-* *incus*
-Pin: release o=Ubuntu
+Pin: release o=${DISTRO_ORIGIN}
 Pin-Priority: -1
 EOF
 
@@ -193,10 +209,14 @@ EOF
 configure_zfs() {
     log_info "Configuring ZFS..."
 
-    # Check if ZFS module is loaded
+    # Some kernel flavors (for example the Debian cloud kernel) ship without
+    # the ZFS module. Skip ZFS setup there instead of failing the install.
     if ! lsmod | grep -q zfs; then
         log_info "Loading ZFS kernel module..."
-        modprobe zfs
+        if ! modprobe zfs 2>/dev/null; then
+            log_warn "ZFS kernel module not available for $(uname -r); skipping ZFS setup"
+            return 0
+        fi
     fi
 
     # Ensure ZFS loads on boot

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -21,6 +22,7 @@ var (
 	crewRunGitRef            string
 	crewRunGitCredentialFile string
 	crewRunEngineOverrides   []string
+	crewRunModelOverrides    []string
 )
 
 var crewListCmd = &cobra.Command{
@@ -78,6 +80,29 @@ func init() {
 		"Path to a file holding a bearer token for a private --git-source. Used daemon-side for each member's fetch; never written to any box's .git/config.")
 	crewRunCmd.Flags().StringArrayVar(&crewRunEngineOverrides, "engine", nil,
 		"Override one member's engine: <skill-id>=<engine>, one of "+strings.Join(agentengine.Names(), ", ")+" (repeatable). A member with no entry keeps its manifest's own choice.")
+	crewRunCmd.Flags().StringArrayVar(&crewRunModelOverrides, "model", nil,
+		"Override one member's model: <skill-id>=<model-id> (repeatable). The id is passed through as is; a member with no entry keeps its skill's own model. Needs a named engine for that member (its manifest's, or --engine).")
+}
+
+// resolveCrewRunModelOverrides parses --model <skill-id>=<model-id> pairs into
+// the per-member map RunCrewRequest.model_overrides carries (#3259). A member
+// named more than once is an error, for the same reason as --engine.
+func resolveCrewRunModelOverrides() (map[string]string, error) {
+	if len(crewRunModelOverrides) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(crewRunModelOverrides))
+	for _, kv := range crewRunModelOverrides {
+		skillID, model, ok := strings.Cut(kv, "=")
+		if !ok || skillID == "" || model == "" {
+			return nil, fmt.Errorf("invalid --model %q (want <skill-id>=<model-id>)", kv)
+		}
+		if _, exists := out[skillID]; exists {
+			return nil, fmt.Errorf("--model %s given more than once", skillID)
+		}
+		out[skillID] = model
+	}
+	return out, nil
 }
 
 // resolveCrewRunEngineOverrides parses --engine <skill-id>=<engine> pairs
@@ -141,12 +166,18 @@ func runCrewList(cmd *cobra.Command, args []string) error {
 		fmt.Println("No crews available.")
 		return nil
 	}
-	fmt.Printf("%-16s %-14s %-28s %s\n", "ID", "TOPOLOGY", "SKILLS", "DESCRIPTION")
-	fmt.Println(strings.Repeat("-", 90))
-	for _, c := range list {
-		fmt.Printf("%-16s %-14s %-28s %s\n", c.Id, crewTopologyName(c.Topology), strings.Join(c.SkillIds, ","), c.Description)
-	}
+	printCrewList(os.Stdout, list)
 	return nil
+}
+
+// printCrewList renders the `crew list` table; crew ids, skills and
+// descriptions are tenant-supplied (#3453).
+func printCrewList(w io.Writer, list []*pb.Crew) {
+	fmt.Fprintf(w, "%-16s %-14s %-28s %s\n", "ID", "TOPOLOGY", "SKILLS", "DESCRIPTION")
+	fmt.Fprintln(w, strings.Repeat("-", 90))
+	for _, c := range list {
+		fmt.Fprintf(w, "%-16s %-14s %-28s %s\n", escapeControl(c.Id), crewTopologyName(c.Topology), escapeControl(strings.Join(c.SkillIds, ",")), escapeControl(c.Description))
+	}
 }
 
 func runCrewGet(cmd *cobra.Command, args []string) error {
@@ -182,6 +213,10 @@ func runCrewRun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	modelOverrides, err := resolveCrewRunModelOverrides()
+	if err != nil {
+		return err
+	}
 
 	c, err := newCrewClient()
 	if err != nil {
@@ -198,13 +233,13 @@ func runCrewRun(cmd *cobra.Command, args []string) error {
 		}
 		run, err = c.RunCrewGraph(&pb.RunCrewRequest{CrewId: args[0], BackendId: crewRunBackendID,
 			Pool: crewRunPool, Graph: graph, Concurrency: crewRunConcurrency, InputJson: crewRunInput,
-			GitSource: crewRunGitSource, GitRef: crewRunGitRef, GitCredential: gitCredential, EngineOverrides: engineOverrides})
+			GitSource: crewRunGitSource, GitRef: crewRunGitRef, GitCredential: gitCredential, EngineOverrides: engineOverrides, ModelOverrides: modelOverrides})
 	} else {
 		if crewRunConcurrency != 0 {
 			return fmt.Errorf("--concurrency requires --plan")
 		}
 		run, err = c.RunCrew(args[0], crewRunBackendID, crewRunPool, crewRunInput,
-			crewRunGitSource, crewRunGitRef, gitCredential, engineOverrides)
+			crewRunGitSource, crewRunGitRef, gitCredential, engineOverrides, modelOverrides)
 	}
 	if err != nil {
 		return err

@@ -1,0 +1,330 @@
+//go:build !containarium_client
+
+package server
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+
+	"github.com/footprintai/containarium/internal/policyreadiness"
+)
+
+// Late install of Postgres-backed store families after a degraded start
+// (#3326, option C of #2824).
+//
+// Stores are installed once, in NewDualServer, when Postgres answers at boot.
+// After a degraded start they stayed off until the daemon restarted; the
+// #2483 recovery loop covers only the guardrail and coding-tool egress
+// policy stores. storeRecovery is the shared version: a family registers an
+// install step, a readiness name and (through storeSlot) an atomic-swap
+// target, and ONE pool plus ONE backoff loop serve every pending family. An
+// attempt dials Postgres once if the shared pool is not open yet, then runs
+// each pending family's install over that pool; a family's install runs
+// until it succeeds and never again. Readiness is grpc.health.v1, one entry
+// per family: NOT_SERVING until installed, SERVING after, and the entry is
+// published to the policyreadiness registry so doctor and the status probe
+// list it. The opt-in self-restart watcher (#2824) is held while any family
+// is pending, so it cannot restart the daemon under a late install; once
+// nothing is pending it is again the fallback for families that do not
+// recover in-process. A family whose last attempt was a config refusal
+// (storeConfigRefusal, #3378) stays pending but does not hold it.
+//
+// Migrating a family (#3327 onwards): register the servers unconditionally,
+// answer UNAVAILABLE from the stand-in, and hand the install to Register
+// when the startup install did not happen — or RegisterInstalled when it did.
+
+// storeFamily is one Postgres-backed store family the helper can install
+// after startup.
+type storeFamily struct {
+	// Service is the grpc.health.v1 name the family's readiness is reported
+	// under; it is also its policyreadiness entry.
+	Service string
+	// Display is the operator-facing name doctor and the status probe print.
+	Display string
+	// Install opens the family's store over the shared pool and swaps it
+	// into the serving path (installInto builds it for a storeSlot). The
+	// loop calls it on every attempt until it returns nil, then never again.
+	// On error it must leave the stand-in in place.
+	Install func(ctx context.Context, pool *pgxpool.Pool) error
+}
+
+// installInto is the Install step for a family whose serving path reads
+// slot: open the durable store over the shared pool and swap it in. On error
+// the slot is untouched, so the stand-in keeps answering.
+func installInto[T any](slot *storeSlot[T], open func(context.Context, *pgxpool.Pool) (T, error)) func(context.Context, *pgxpool.Pool) error {
+	return func(ctx context.Context, pool *pgxpool.Pool) error {
+		st, err := open(ctx, pool)
+		if err != nil {
+			return err
+		}
+		slot.Store(st)
+		return nil
+	}
+}
+
+// storeConfigRefusal marks an Install error as a configuration refusal
+// (#3378): the family will not install under the daemon's current
+// configuration — CONTAINARIUM_REQUIRE_ENVELOPE with no KMS backend, say —
+// however long Postgres stays up. The family stays pending and NOT_SERVING
+// and the loop keeps retrying, but it does not hold the opt-in self-restart:
+// the operator's fix is a config change plus a restart, and holding would
+// keep the families not yet migrated off forever. Matched with errors.As
+// (isStoreConfigRefusal), never on the error text.
+type storeConfigRefusal struct{ Err error }
+
+func (e *storeConfigRefusal) Error() string { return e.Err.Error() }
+func (e *storeConfigRefusal) Unwrap() error { return e.Err }
+
+// isStoreConfigRefusal reports whether err is, or wraps, a storeConfigRefusal.
+func isStoreConfigRefusal(err error) bool {
+	var r *storeConfigRefusal
+	return errors.As(err, &r)
+}
+
+type registeredStoreFamily struct {
+	storeFamily
+	installed bool
+	// refused is set while the family's last install attempt was a
+	// storeConfigRefusal; such a family does not hold the restart.
+	refused bool
+}
+
+// storeRecovery is the registry and the retry loop. Register the families
+// in NewDualServer, then start Run once; the loop's pool is kept open for the
+// stores it installed.
+type storeRecovery struct {
+	health *health.Server
+
+	// connect opens the shared pool, one attempt (no internal retry).
+	connect func(ctx context.Context) (*pgxpool.Pool, error)
+	// publish adds a family's readiness entry to the policyreadiness registry.
+	publish func(service, display string)
+
+	initial, max time.Duration
+	after        func(time.Duration) <-chan time.Time
+	logf         func(format string, args ...any)
+
+	mu       sync.Mutex
+	families []*registeredStoreFamily // registration order
+	pool     *pgxpool.Pool            // the shared pool, once open
+}
+
+// newStoreRecovery builds the helper over h. connString is read at dial
+// time, because NewDualServer finalizes the DSN after the first families
+// would register.
+func newStoreRecovery(h *health.Server, connString func() string) *storeRecovery {
+	return &storeRecovery{
+		health: h,
+		connect: func(context.Context) (*pgxpool.Pool, error) {
+			return connectToPostgres(connString(), 1, 0)
+		},
+		publish: policyreadiness.Register,
+		initial: policyStoreRetryInitial,
+		max:     policyStoreRetryMax,
+		after:   time.After,
+		logf:    log.Printf,
+	}
+}
+
+// Register declares a family whose startup install did not happen (the
+// startup Postgres check failed, or the install itself did). Its readiness
+// is NOT_SERVING until the loop installs it.
+func (r *storeRecovery) Register(f storeFamily) { r.add(f, false) }
+
+// RegisterInstalled declares a family startup installed: its readiness is
+// SERVING and there is nothing to retry. Same registry, so it is listed with
+// the others.
+func (r *storeRecovery) RegisterInstalled(f storeFamily) { r.add(f, true) }
+
+func (r *storeRecovery) add(f storeFamily, installed bool) {
+	if f.Service == "" {
+		panic("store recovery: a family needs a readiness service name")
+	}
+	if f.Install == nil && !installed {
+		panic(fmt.Sprintf("store recovery: family %q has no install step", f.Service))
+	}
+	r.mu.Lock()
+	for _, g := range r.families {
+		if g.Service == f.Service {
+			r.mu.Unlock()
+			panic(fmt.Sprintf("store recovery: family %q registered twice", f.Service))
+		}
+	}
+	r.families = append(r.families, &registeredStoreFamily{storeFamily: f, installed: installed})
+	r.mu.Unlock()
+	r.publish(f.Service, f.Display)
+	r.setHealth(f.Service, installed)
+}
+
+func (r *storeRecovery) setHealth(service string, ready bool) {
+	st := healthpb.HealthCheckResponse_NOT_SERVING
+	if ready {
+		st = healthpb.HealthCheckResponse_SERVING
+	}
+	r.health.SetServingStatus(service, st)
+}
+
+// pending reports whether any registered family is not installed yet; the
+// loop runs while it is true.
+func (r *storeRecovery) pending() bool {
+	return len(r.pendingFamilies()) > 0
+}
+
+// holdsRestart reports whether any pending family holds the opt-in
+// self-restart: every pending family does, except one whose last attempt was
+// a config refusal (#3378). The self-restart watcher holds on it.
+func (r *storeRecovery) holdsRestart() bool {
+	for _, f := range r.pendingFamilies() {
+		if !r.isRefused(f) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *storeRecovery) isRefused(f *registeredStoreFamily) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return f.refused
+}
+
+// configRefused reports whether the family registered under service is
+// pending and its last install attempt was a config refusal. False for a
+// family not registered, installed, not yet attempted, or whose last attempt
+// failed otherwise. A family that depends on another reads it (#3387): the
+// tracker reports its wait on a config-refused secrets store as a refusal
+// too. Safe to call from an Install step; the lock is not held across one.
+func (r *storeRecovery) configRefused(service string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, f := range r.families {
+		if f.Service == service {
+			return !f.installed && f.refused
+		}
+	}
+	return false
+}
+
+func (r *storeRecovery) pendingFamilies() []*registeredStoreFamily {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*registeredStoreFamily
+	for _, f := range r.families {
+		if !f.installed {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func (r *storeRecovery) serviceNames(fams []*registeredStoreFamily) string {
+	names := make([]string, 0, len(fams))
+	for _, f := range fams {
+		names = append(names, f.Service)
+	}
+	return strings.Join(names, ", ")
+}
+
+// Run retries until every registered family is installed or ctx ends.
+// startupPool is the pool startup opened, or nil if it could not connect; it
+// becomes the shared pool, so no family dials on its own. Start it once, after
+// every family has registered.
+func (r *storeRecovery) Run(ctx context.Context, startupPool *pgxpool.Pool) {
+	if startupPool != nil {
+		r.mu.Lock()
+		if r.pool == nil {
+			r.pool = startupPool
+		}
+		r.mu.Unlock()
+	}
+	if !r.pending() {
+		return
+	}
+	wait := r.initial
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-r.after(wait):
+		}
+		next := min(wait*2, r.max)
+		err := r.attempt(ctx)
+		still := r.pendingFamilies()
+		if len(still) == 0 {
+			r.mu.Lock()
+			all := append([]*registeredStoreFamily(nil), r.families...)
+			r.mu.Unlock()
+			r.logf("Store families recovered in-process: %s (every registered family is installed)", r.serviceNames(all))
+			return
+		}
+		// A refused family was logged when it entered the refusal; it is
+		// not repeated on every retry.
+		var retrying []*registeredStoreFamily
+		for _, f := range still {
+			if !r.isRefused(f) {
+				retrying = append(retrying, f)
+			}
+		}
+		if len(retrying) > 0 {
+			r.logf("Warning: store families pending in-process recovery (%s): %v; next attempt in %s", r.serviceNames(retrying), err, next)
+		}
+		wait = next
+	}
+}
+
+// attempt opens the shared pool if needed (one dial) and runs every pending
+// family's install over it. The lock is not held across the dial or the
+// installs, so pending() stays cheap for the watcher.
+func (r *storeRecovery) attempt(ctx context.Context) error {
+	r.mu.Lock()
+	pool := r.pool
+	r.mu.Unlock()
+	if pool == nil {
+		p, err := r.connect(ctx)
+		if err != nil {
+			return fmt.Errorf("connect to Postgres: %w", err)
+		}
+		r.mu.Lock()
+		if r.pool == nil {
+			r.pool = p
+		} else {
+			p.Close() // a startup pool arrived meanwhile; keep one
+		}
+		pool = r.pool
+		r.mu.Unlock()
+	}
+	var errs []error
+	for _, f := range r.pendingFamilies() {
+		if err := f.Install(ctx, pool); err != nil {
+			refusal := isStoreConfigRefusal(err)
+			r.mu.Lock()
+			entered := refusal && !f.refused
+			f.refused = refusal
+			r.mu.Unlock()
+			if refusal {
+				if entered {
+					r.logf("Store family %s: install refused by configuration: %v; readiness stays NOT_SERVING, retries continue, and the self-restart is not held for it", f.Service, err)
+				}
+				continue
+			}
+			errs = append(errs, fmt.Errorf("%s: %w", f.Service, err))
+			continue
+		}
+		r.mu.Lock()
+		f.installed = true
+		f.refused = false
+		r.mu.Unlock()
+		r.setHealth(f.Service, true)
+		r.logf("Store family %s: Postgres store installed in-process (by retry)", f.Service)
+	}
+	return errors.Join(errs...)
+}

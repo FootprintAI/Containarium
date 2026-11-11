@@ -2,8 +2,12 @@ syntax = "proto3";
 
 package containarium.v1;
 
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "containarium/v1/sandbox.proto";
+import "containarium/v1/agent.proto";
+import "containarium/v1/run_usage.proto";
+import "containarium/v1/agent_command_audit.proto";
 
 option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
 
@@ -53,6 +57,19 @@ message BoxRun {
   // whatever the engine's exit status), never reported by the agent. Empty for a
   // run with no readable sidecar (an older run, or a box without the probe).
   repeated BoxRunTool tools = 9;
+  // The model id the run was started with (StartBoxRunRequest.model, #3259).
+  // Empty when none was requested: the engine's own default ran, and the
+  // daemon does not claim to know which. Empty for a run from before the field.
+  string model = 10;
+  // Tokens the engine reported for this run (capability "run_usage"). Always
+  // set; check usage.status before reading usage.models. UNAVAILABLE means the
+  // daemon has no usage for the run (never zeros).
+  RunUsage usage = 11;
+  // The directory the run was started in, relative to the run's home, as
+  // requested in StartBoxRunRequest.workdir (#3551). Empty when the run started
+  // in the home itself, and for a run from before the field. Capability
+  // "box_run_workdir".
+  string workdir = 12;
 }
 
 // BoxRunTool is one tool the box's run wrapper found on the run's PATH. It says
@@ -148,10 +165,117 @@ message StartBoxRunRequest {
   // continue_session run gets no discovered id at all. Capability
   // "box_run_structured_output" in SystemInfo.capabilities.
   bool structured_output = 6;
+  // The model id to run the engine with (Claude Code's --model), for example
+  // one a caller chose from a policy or a label (#3259). Empty keeps the
+  // engine's own default, exactly as before. Claude Code only: any other
+  // engine is FAILED_PRECONDITION, before anything on the box is touched. The
+  // id is opaque to the API (no tier names are enumerated here, ids change
+  // with every release) but must match [A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127};
+  // anything else is INVALID_ARGUMENT. Whether the engine accepts the id is
+  // the engine's to say: an id it rejects ends the run non-zero and the
+  // reason is in the run's log. BoxRun.model reports the id the run was
+  // started with. Capability "box_run_model" in SystemInfo.capabilities.
+  string model = 7;
+
+  // run_token is reserved for a per-run credential. This daemon does not
+  // honour it: the field is accepted and ignored (it is never written to the
+  // box), and the daemon does not advertise the box_run_token capability. A
+  // client must send it only to a daemon that advertises box_run_token, and
+  // must not rely on it for a credential.
+  string run_token = 10;
+  // Command mode (#3322): run this shell command (through `sh -c`) instead of
+  // an engine prompt. No engine starts and no agent credential is loaded, so
+  // the run user's agent sign-in is not required. Mutually exclusive with
+  // prompt, session_id, continue_session, structured_output and model
+  // (INVALID_ARGUMENT, before anything on the box is touched). The command
+  // runs as the box's run user with the sudo grant of its recorded
+  // tool-access level, in that user's home directory. Without command_policy
+  // the level selects the run user and its sudo grant, nothing more: the
+  // engine's allow/deny tool policy does not apply, so a caller holding the
+  // command-mode scope can run any program the run user can. With
+  // command_policy the command goes through the same decision, sink and events
+  // as an engine run's shell commands (see command_policy). A caller that needs
+  // a checkout makes it part of the command. The run is
+  // listed, tailed and stopped like any other (ListBoxRuns, TailBoxRunLog,
+  // StopBoxRun); BoxRun.session_id stays empty. Capability "box_run_command"
+  // in SystemInfo.capabilities.
+  string command = 8;
+  // With command: the daemon ends the command after this many seconds
+  // (`timeout -k 5`, so the run exits with code 124). 0 means the daemon's
+  // default of 900; more than 3600 is INVALID_ARGUMENT, as is a value without
+  // command.
+  int32 timeout_seconds = 9;
+  // Command allowlist and audit events for this run (#3582). Requires a
+  // recorded tool-access level (FAILED_PRECONDITION otherwise) and, for an
+  // engine run, the Claude Code engine. Every shell command is then classified
+  // before it runs: within the level it runs as before; outside it, it runs
+  // only if an allow entry matches; a hard deny (network clients, git push, git
+  // remote, git transport options) or no match refuses it and ENDS the run. An
+  // engine run gets this through PreToolUse / PostToolUse hooks; a command-mode
+  // run (command) through the same decision applied to its one command, which
+  // on a refusal never runs: the run exits 120 and records a BLOCKED event with
+  // its close reason. Each command gets a start event before it runs and
+  // exactly one end event (exit code when known, and whether it ran; the sink
+  // writes it when the run ends first, see AgentCommandEvent), in an
+  // append-only file inside the box that the
+  // run user cannot write (/var/lib/containarium-run-audit/events/<run_name>.jsonl,
+  // protojson AgentCommandEvent lines). At FULL_SUDO all of this applies but is
+  // advisory: the run user can become root and step around it, so it is not a
+  // security boundary at that level. Capability "box_run_command_policy".
+  AgentCommandPolicy command_policy = 11;
+  // Set when this run is a re-run a human approved after a refusal: every
+  // event of the run records it. Needs command_policy, and is refused with
+  // session_id or continue_session (INVALID_ARGUMENT): an approval starts a new
+  // run, it never resumes the refused one. Each id must match
+  // [A-Za-z0-9._:@-]{1,128}.
+  AgentRunApproval approval = 12;
+  // The directory the run starts in, relative to the home directory a run
+  // starts in without it (#3551): the box user's home, or the unprivileged run
+  // user's home on a box with a recorded tool-access level. Empty keeps that
+  // home. Applies to prompt and command runs alike; the engine's session
+  // folder, and what continue_session resumes, follow the directory. The value
+  // must be in the canonical relative form WriteBoxFileRequest.path uses: no
+  // leading "/", no "." or ".." segment, no empty or trailing segment, no
+  // control characters, at most 1024 bytes, and not under .ssh or
+  // .containarium; anything else is INVALID_ARGUMENT before the box is
+  // touched. The directory must already exist and be a directory the run user
+  // can enter, checked as that user before anything on the box is changed:
+  // otherwise FAILED_PRECONDITION naming it, and no run starts. It is never
+  // created, and there is no fallback to the home. BoxRun.workdir reports it.
+  // Capability "box_run_workdir" in SystemInfo.capabilities.
+  string workdir = 13;
 }
 
 message StartBoxRunResponse {
   BoxRun run = 1;
+}
+
+// GetBoxRunUserStatusRequest names the box whose run-user sign-in to report.
+message GetBoxRunUserStatusRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+}
+
+// GetBoxRunUserStatusResponse is the read-only answer to "would StartBoxRun
+// refuse a platform run on this box for want of a run-user sign-in?" (#3274).
+// It is the same probe StartBoxRun applies, run without queueing anything and
+// without provisioning the run user. It names the credential's SOURCE only:
+// nothing here reads, copies, prints or refreshes a credential value.
+message GetBoxRunUserStatusResponse {
+  // The OS user platform runs execute as on a box with a recorded tool-access
+  // level. Reported even when tool_access_recorded is false.
+  string run_user = 1;
+  // Whether the box has a tool-access level recorded. When false, platform
+  // runs use the owner's identity and none of the run-user fields below apply.
+  bool tool_access_recorded = 2;
+  // Whether the run user already exists on the box. It is created by the box's
+  // first platform run, so false on a recorded box means no run has happened.
+  bool run_user_exists = 3;
+  // The run user's sign-in. UNSPECIFIED when tool_access_recorded is false.
+  // NONE when the run user does not exist yet or has never signed in (the same
+  // answer StartBoxRun would refuse on), EXPIRED when its sign-in has lapsed,
+  // INTERACTIVE or API_KEY when a run would proceed.
+  CodeCredentialSource state = 4;
 }
 
 message ListBoxRunsRequest {
@@ -215,6 +339,73 @@ enum BoxRunStopSignal {
   BOX_RUN_STOP_SIGNAL_SIGKILL = 3;
 }
 
+// WriteBoxFileRequest writes one file into a box user's home directory (#3548).
+message WriteBoxFileRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // Path relative to the box user's home directory, e.g.
+  // "attachments/turn-1/brief.md". Absolute paths, ".." segments, an empty
+  // path and anything under ".ssh" or ".containarium" are INVALID_ARGUMENT.
+  string path = 2;
+  // The file's bytes. At most 2 MiB; larger is INVALID_ARGUMENT.
+  bytes content = 3;
+  // File mode as octal text. Empty means "0600"; only "0600" and "0400" are
+  // accepted.
+  string mode = 4;
+  // Lowercase hex SHA-256 of content. Optional; when set, the bytes that land
+  // on the box are checked against it before the file appears.
+  string sha256 = 5;
+}
+
+message WriteBoxFileResponse {
+  // Absolute path of the file on the box.
+  string path = 1;
+  // Bytes written.
+  int64 size = 2;
+  // Lowercase hex SHA-256 of the file as it is on the box.
+  string sha256 = 3;
+}
+
+// WriteBoxFileStreamRequest is one message of a WriteBoxFileStream upload
+// (#3548): the first message is the header, every later one carries data.
+message WriteBoxFileStreamRequest {
+  oneof part {
+    // First message only.
+    WriteBoxFileStreamHeader header = 1;
+    // A slice of the file, in order. Any size up to the transport's message
+    // cap; the client sends 1 MiB.
+    bytes data = 2;
+  }
+}
+
+// WriteBoxFileStreamHeader names the file a WriteBoxFileStream writes. The
+// fields mean what they mean on WriteBoxFileRequest.
+message WriteBoxFileStreamHeader {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // Path relative to the box user's home directory, same rules as
+  // WriteBoxFileRequest.path.
+  string path = 2;
+  // "0600" (default when empty) or "0400".
+  string mode = 3;
+  // Lowercase hex SHA-256 of the whole file. Optional; when set, the bytes on
+  // the box are checked against it before the file appears.
+  string sha256 = 4;
+  // Total bytes the stream carries, at most 64 MiB. A stream that ends short
+  // of it, or carries more, is INVALID_ARGUMENT and leaves no file.
+  int64 size = 5;
+}
+
+// WriteBoxFileStreamResponse is WriteBoxFileResponse for the streamed form.
+message WriteBoxFileStreamResponse {
+  // Absolute path of the file on the box.
+  string path = 1;
+  // Bytes written.
+  int64 size = 2;
+  // Lowercase hex SHA-256 of the file as it is on the box.
+  string sha256 = 3;
+}
+
 // StopBoxRunRequest stops a box run (#2603): SIGTERM, or SIGKILL with force,
 // to the run's whole process group. Idempotent: stopping a run that has
 // already exited signals nothing and succeeds.
@@ -237,6 +428,172 @@ message StopBoxRunResponse {
   // sent but the process had not exited when the call returned (SIGTERM
   // ignored); call again with force.
   bool exited = 3;
+}
+
+// Per-run checkouts (#3296). A platform-started run works in a fresh clone of
+// its own, a directory directly under a box user's ~/work named
+// <repo>-run-<8 lowercase hex>. Nothing else removes them, so the daemon
+// sweeps the stale ones: hourly, after StopBoxRun ends a run, and on demand
+// through SweepBoxRunCheckouts. Only a directory whose name matches
+// ^[A-Za-z0-9._-]+-run-[0-9a-f]{8}$ is ever considered; a person's own
+// checkout (~/work/<repo>) is never touched, and never listed.
+
+// BoxRunCheckoutDisposition is what a sweep did, or would do, with one
+// matching entry.
+enum BoxRunCheckoutDisposition {
+  BOX_RUN_CHECKOUT_DISPOSITION_UNSPECIFIED = 0;
+  // Removed by this sweep.
+  BOX_RUN_CHECKOUT_DISPOSITION_REMOVED = 1;
+  // A dry run: a real sweep at this moment would remove it.
+  BOX_RUN_CHECKOUT_DISPOSITION_WOULD_REMOVE = 2;
+  // Its newest modification is within the daemon's maximum age (or could not
+  // be read).
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_RECENT = 3;
+  // It may be a live run's working directory: modified at or after the start
+  // of a run on the box that is still going, or named as a live run's cwd.
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_LIVE_RUN = 4;
+  // A process on the box has its working directory in it.
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_IN_USE = 5;
+  // A symbolic link; links are never followed or removed.
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_SYMLINK = 6;
+  // Not a directory.
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_NOT_DIRECTORY = 7;
+  // Chosen for removal, but at removal time it no longer qualified (it was
+  // replaced, modified, or a process entered it); left alone.
+  BOX_RUN_CHECKOUT_DISPOSITION_KEPT_CHANGED = 8;
+  // Chosen for removal, but removing it failed (for example a mount inside
+  // it); whatever is left stays.
+  BOX_RUN_CHECKOUT_DISPOSITION_REMOVE_FAILED = 9;
+}
+
+// BoxRunCheckout is one matching entry directly under a box user's ~/work.
+message BoxRunCheckout {
+  // The box OS user whose ~/work holds it: the box's owner, or the
+  // unprivileged run user platform runs execute as.
+  string user = 1;
+  // The entry's name directly under that user's ~/work.
+  string name = 2;
+  // Disk usage in bytes (du, one filesystem). 0 for a symlink or non-directory.
+  int64 size_bytes = 3;
+  // The newest modification time of the directory or anything in it. Unset
+  // when it could not be read, or for a symlink or non-directory.
+  google.protobuf.Timestamp newest_modification = 4;
+  BoxRunCheckoutDisposition disposition = 5;
+}
+
+// SweepBoxRunCheckoutsRequest runs the per-run checkout sweep once on one box.
+message SweepBoxRunCheckoutsRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // List what a real sweep would remove (WOULD_REMOVE) and remove nothing.
+  bool dry_run = 2;
+}
+
+message SweepBoxRunCheckoutsResponse {
+  // Whether the box has had a platform-started run (a recorded tool-access
+  // level or a run record). A box without one is never swept, so checkouts
+  // is empty.
+  bool platform_runs = 1;
+  // The daemon's maximum age (--run-checkout-max-age).
+  google.protobuf.Duration max_age = 2;
+  // Every matching entry, with what the sweep did or would do with it. The
+  // REMOVED (or, on a dry run, WOULD_REMOVE) entries are exactly the removal
+  // set.
+  repeated BoxRunCheckout checkouts = 3;
+}
+
+// A box's SDLC skill sets (#3374). `containarium code install --skill-sets`
+// installs the pinned open-sdlc-skills role skills into the box owner's
+// ~/.claude/skills when a box is set up (scripts/install-sdlc-skills.sh, the
+// sets of pkg/core/sdlcskills/sdlc-skills.lock). ApplyBoxSkillSets changes
+// that selection on a box that already exists, through the same installer
+// and the same lock, so a set added or removed later, or a pin bump, reaches
+// the box without re-creating it. A per-box manifest beside the skills
+// (.sdlc-skill-sets.json) records which skill directories each set
+// installed, so removing a set deletes exactly those and never a skill the
+// owner installed by hand. The skills are written as the box's own user,
+// the same identity `code install` writes them as; the unprivileged run
+// user's copy is refreshed from them at the start of each platform run.
+
+// BoxSkillSetsRefusal is the typed reason ApplyBoxSkillSets refuses a call,
+// so a caller never matches on message text. It is carried in the error's
+// details, spelled as the enum value's name: as the `type` of the
+// google.rpc.PreconditionFailure violation of a FAILED_PRECONDITION, or as
+// the `reason` of the google.rpc.BadRequest field violation of an
+// INVALID_ARGUMENT. The violation's subject names the set or the box.
+// APPLY_IN_PROGRESS is the one value carried the other way round: by a
+// StartBoxRun refused because an ApplyBoxSkillSets call is changing the box's
+// skills at that moment (the mirror of RUN_IN_PROGRESS), and by an
+// ApplyBoxSkillSets refused because another apply holds the box.
+enum BoxSkillSetsRefusal {
+  BOX_SKILL_SETS_REFUSAL_UNSPECIFIED = 0;
+  // A requested set id is not defined in the daemon's skill-set lock
+  // (INVALID_ARGUMENT); the message names the known ids. Nothing was
+  // changed.
+  BOX_SKILL_SETS_REFUSAL_UNKNOWN_SKILL_SET = 1;
+  // The box has a run in progress: a code run that is RUNNING, or a skill
+  // run executing in this box (FAILED_PRECONDITION). Its skill files are
+  // not changed under a run; retry once the run has ended.
+  BOX_SKILL_SETS_REFUSAL_RUN_IN_PROGRESS = 2;
+  // A set the box holds was installed before the per-box manifest existed,
+  // so what it installed is not recorded, and the target list omits it
+  // (FAILED_PRECONDITION). Keep the set in the list: that re-installs and
+  // records it, after which a later call can remove it.
+  BOX_SKILL_SETS_REFUSAL_SET_PREDATES_MANIFEST = 3;
+  // An ApplyBoxSkillSets call is installing skill sets on the box
+  // (FAILED_PRECONDITION; the subject is the box). Returned to a StartBoxRun,
+  // which is refused before it touches the box, so it never reads a
+  // half-written skills tree; there is no queueing and no wait. Also returned
+  // to a second ApplyBoxSkillSets that could not take the box's gate within 30s
+  // because the first apply still held it. Retry once the apply has returned.
+  BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS = 4;
+}
+
+// BoxSkillSetChange is what one call did for one skill set.
+message BoxSkillSetChange {
+  // The set id, as in the lock's `set.<id>=` line (for example "qa"). Empty
+  // only in `removed`, for installer-owned skills no set in the daemon's lock
+  // claims (a namespace the lock no longer has) that the installer pruned.
+  string skill_set = 1;
+  // The skill directory names under ~/.claude/skills this set installed or
+  // removed (for example "qa-sprint-verify"), sorted.
+  repeated string skills = 2;
+}
+
+// ApplyBoxSkillSetsRequest re-applies a box's SDLC skill sets.
+message ApplyBoxSkillSetsRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // The complete target list of set ids the box should have (for example
+  // ["sdlc", "qa"]). Sets in the list and not on the box are installed; sets
+  // on the box (per its manifest) and not in the list are removed. An empty
+  // list removes every set the manifest records. An id not in the lock is
+  // refused (UNKNOWN_SKILL_SET).
+  repeated string skill_sets = 2;
+  // The Containarium release whose installer, lock and skills bundle to use
+  // (a v-prefixed tag). Empty means the daemon's own release.
+  string release = 3;
+}
+
+message ApplyBoxSkillSetsResponse {
+  // The sets the box's manifest records after the call, sorted: the target
+  // list.
+  repeated string skill_sets = 1;
+  // The skills this call installed, by set: the directories now recorded
+  // under the set that were not recorded under it before. A set the
+  // manifest already recorded whose directories did not change is not
+  // listed; a set adopted from before the manifest lists all of its skills.
+  repeated BoxSkillSetChange installed = 2;
+  // The skills this call removed, by set.
+  repeated BoxSkillSetChange removed = 3;
+  // True when the call installed and removed no skill: the box already had
+  // exactly the target sets. Repeating a call is unchanged. The installed
+  // files are still refreshed to the release's pin, so a pin bump that
+  // changes a skill's content without adding or removing one is unchanged
+  // too.
+  bool unchanged = 4;
+  // The release the skills came from (the request's, or the daemon's own).
+  string release = 5;
 }
 
 // Permission requests of a box run (#2183, #2184). A run started with
@@ -299,6 +656,59 @@ message ListRunInputsRequest {
   string username = 1;
   // The run's name, as ListBoxRuns reports it.
   string run_name = 2;
+}
+
+// ListRunCommandEventsRequest reads a run's command events (#3582).
+message ListRunCommandEventsRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // The run's name, as ListBoxRuns reports it.
+  string run_name = 2;
+  // Return only events with a seq greater than this. 0 reads from the start.
+  uint64 after_seq = 3;
+  // At most this many events. 0 means the default, 500; the maximum is 500.
+  int32 limit = 4;
+}
+
+// RunCommandEventEntry is one event with its position in the run's feed.
+message RunCommandEventEntry {
+  // The event's seq, the same value as event.seq.
+  uint64 seq = 1;
+  // The START, END or BLOCKED event the run's audit sink recorded.
+  AgentCommandEvent event = 2;
+}
+
+message ListRunCommandEventsResponse {
+  // Events with seq > after_seq in seq order, at most limit of them. A jump in
+  // seq between consecutive entries means events were missed.
+  repeated RunCommandEventEntry events = 1;
+  // True when the run's audit sink has finished (every START has its END) and
+  // this page reaches the last event: nothing more will ever be added. False
+  // while the run can still add events, or when more events are waiting past
+  // this page.
+  bool ended = 2;
+  // Where the feed stands as of this page. A reader polls while it is OPEN
+  // and stops at ENDED or INCOMPLETE.
+  RunCommandFeedState state = 3;
+}
+
+// RunCommandFeedState is where a run's command event feed stands as of one
+// page of it.
+enum RunCommandFeedState {
+  // A daemon that predates this field; read ended instead.
+  RUN_COMMAND_FEED_STATE_UNSPECIFIED = 0;
+  // More events can still come, or more are waiting past this page. Ask
+  // again after the last seq received.
+  RUN_COMMAND_FEED_STATE_OPEN = 1;
+  // The same as ended = true: the feed is complete and this page reaches its
+  // last event.
+  RUN_COMMAND_FEED_STATE_ENDED = 2;
+  // The run has stopped and its audit sink is gone without finishing the
+  // feed (it was killed, or could not start). This page reaches the last
+  // event stored and this start of the run adds nothing more, but the feed
+  // is not complete: events may be missing from its end, and a START may
+  // have no END. ended stays false.
+  RUN_COMMAND_FEED_STATE_INCOMPLETE = 3;
 }
 
 message ListRunInputsResponse {

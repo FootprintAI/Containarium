@@ -79,7 +79,7 @@ func otelEnvVars(opts CreateOptions, containerName string) map[string]string {
 		return nil
 	}
 	if opts.OTelCollectorEndpoint == "" {
-		log.Printf("[otel] container %s requested monitoring=true but daemon has no collector endpoint configured; skipping env-var injection", containerName)
+		log.Printf("[otel] container %q requested monitoring=true but daemon has no collector endpoint configured; skipping env-var injection", containerName)
 		return nil
 	}
 	return buildOTelEnvMap(opts.Username, OTelContainerID(opts.Labels, containerName), opts.BackendID, opts.OTelCollectorEndpoint, opts.OTelBearer)

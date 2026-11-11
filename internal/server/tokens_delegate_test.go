@@ -502,3 +502,87 @@ func TestExchangeDelegatedToken_NonRunCallerStillDelegates(t *testing.T) {
 		t.Fatal("no token returned")
 	}
 }
+
+// code:answer is matched literally (#3191), so an exchange must grant it only
+// to a caller that names it literally. IntersectScopes passes any request
+// through for a "*" caller; without this rule a human's "*" token on a box
+// could be exchanged for one whose claim reads [ssh:write code:answer], which
+// AnswerRunInput accepts. Other scopes keep their usual wildcard semantics.
+func TestExchangeDelegatedToken_CodeAnswerNeedsTheLiteralScope(t *testing.T) {
+	s := delegateTestServer(t)
+	tm := s.tokenManager
+	minted := func(t *testing.T, resp *pb.ExchangeDelegatedTokenResponse) []string {
+		t.Helper()
+		claims, err := tm.ValidateToken(resp.GetToken())
+		if err != nil {
+			t.Fatalf("validate minted token: %v", err)
+		}
+		return claims.Scopes
+	}
+	has := func(scopes []string, want string) bool {
+		for _, s := range scopes {
+			if s == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("wildcard caller does not get code:answer", func(t *testing.T) {
+		ctx := callerCtx("owner", []string{auth.ScopeWildcard}, nil)
+		resp, err := s.ExchangeDelegatedToken(ctx, &pb.ExchangeDelegatedTokenRequest{
+			Subject: "owner",
+			Scopes:  []string{auth.ScopeSSHWrite, auth.ScopeCodeAnswer},
+		})
+		if err != nil {
+			t.Fatalf("exchange: %v", err)
+		}
+		if has(resp.GetGrantedScopes(), auth.ScopeCodeAnswer) {
+			t.Errorf("granted = %v: a \"*\" caller was granted code:answer", resp.GetGrantedScopes())
+		}
+		if got := minted(t, resp); has(got, auth.ScopeCodeAnswer) || !has(got, auth.ScopeSSHWrite) {
+			t.Errorf("minted scopes = %v, want ssh:write without code:answer", got)
+		}
+	})
+
+	t.Run("wildcard caller asking only for code:answer is refused", func(t *testing.T) {
+		ctx := callerCtx("owner", []string{auth.ScopeWildcard}, nil)
+		_, err := s.ExchangeDelegatedToken(ctx, &pb.ExchangeDelegatedTokenRequest{
+			Subject: "owner",
+			Scopes:  []string{auth.ScopeCodeAnswer},
+		})
+		if status.Code(err) != codes.PermissionDenied {
+			t.Errorf("err = %v, want PermissionDenied (nothing left to grant)", err)
+		}
+	})
+
+	t.Run("caller holding code:answer literally may pass it on", func(t *testing.T) {
+		ctx := callerCtx("owner",
+			[]string{auth.ScopeTokensDelegate, auth.ScopeSSHWrite, auth.ScopeCodeAnswer}, nil)
+		resp, err := s.ExchangeDelegatedToken(ctx, &pb.ExchangeDelegatedTokenRequest{
+			Subject: "owner",
+			Scopes:  []string{auth.ScopeSSHWrite, auth.ScopeCodeAnswer},
+		})
+		if err != nil {
+			t.Fatalf("exchange: %v", err)
+		}
+		if got := minted(t, resp); !has(got, auth.ScopeCodeAnswer) || !has(got, auth.ScopeSSHWrite) {
+			t.Errorf("minted scopes = %v, want ssh:write and code:answer", got)
+		}
+	})
+
+	t.Run("wildcard caller still gets other scopes", func(t *testing.T) {
+		ctx := callerCtx("owner", []string{auth.ScopeWildcard}, nil)
+		resp, err := s.ExchangeDelegatedToken(ctx, &pb.ExchangeDelegatedTokenRequest{
+			Subject: "owner",
+			Scopes:  []string{auth.ScopeSecretsRead, auth.ScopeContainersWrite},
+		})
+		if err != nil {
+			t.Fatalf("exchange: %v", err)
+		}
+		got := minted(t, resp)
+		if !has(got, auth.ScopeSecretsRead) || !has(got, auth.ScopeContainersWrite) || len(got) != 2 {
+			t.Errorf("minted scopes = %v, want exactly secrets:read and containers:write", got)
+		}
+	})
+}

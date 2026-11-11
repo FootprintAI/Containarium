@@ -76,7 +76,10 @@ class FileChangeWatch implements JournalSink {
 // returned no final message, and the engine can continue the conversation, it
 // sends FINAL_JSON_REPROMPT once and returns that turn's result, or throws if
 // the reply is empty too. The returned result is the reply with both turns'
-// usage summed (#3107).
+// usage summed (#3107). modelUsage is summed the same way unless the reply
+// resumed the session: Claude Code's modelUsage on a resumed result is
+// cumulative, so the reply's already counts the first turn and is kept as it
+// is (#3467). Its usage is that turn's own, so usage is still summed.
 //
 // What counts as a final message (#3107 item 6): any non-blank text, for the
 // first turn and the reply alike. The runtime does not parse it. A schema-bound
@@ -106,5 +109,6 @@ export async function runWithFinalJsonReprompt(
       "the agent changed files but returned no final JSON, even after one re-prompt for it; see the run journal for the tool calls it made",
     );
   }
-  return { ...reply, usage: sumUsage(res.usage, reply.usage) };
+  const modelUsage = reply.resumedSession ? reply.modelUsage : sumUsage(res.modelUsage, reply.modelUsage);
+  return { ...reply, usage: sumUsage(res.usage, reply.usage), modelUsage };
 }

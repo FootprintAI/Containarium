@@ -146,9 +146,11 @@ func (m *Manager) tick(ctx context.Context) {
 		if m.traffic != nil {
 			lastNet, err = m.traffic.LastNetworkActivity(ctx, c.Name)
 			if err != nil {
-				log.Printf("[autosleep] last activity for %s: %v", c.Name, err)
-				// Treat error as no signal — fall through with zero time.
-				lastNet = time.Time{}
+				log.Printf("[autosleep] last activity for %q: %v", c.Name, err)
+				// An unsuccessful read is unknown activity, not evidence
+				// of idleness. Keep the since-start fallback for an
+				// actual successful zero-activity result.
+				continue
 			}
 		}
 
@@ -168,7 +170,7 @@ func (m *Manager) tick(ctx context.Context) {
 		}
 
 		if err := m.stopper.StopForAutoSleep(ctx, username, d.Reason, d.IdleMinutes); err != nil {
-			log.Printf("[autosleep] stop %s: %v", username, err)
+			log.Printf("[autosleep] stop %q: %v", username, err)
 			continue
 		}
 		m.logSleep(ctx, username, d)
@@ -185,5 +187,5 @@ func (m *Manager) logSleep(_ context.Context, username string, d Decision) {
 		m.audit.Log("autosleep.stopped", fields)
 		return
 	}
-	log.Printf("[autosleep] stopped username=%s reason=%q idle_minutes=%d", username, d.Reason, d.IdleMinutes)
+	log.Printf("[autosleep] stopped username=%q reason=%q idle_minutes=%d", username, d.Reason, d.IdleMinutes)
 }

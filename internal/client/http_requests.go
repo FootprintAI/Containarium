@@ -50,13 +50,14 @@ type containerResources struct {
 // for the other three — and omitted them entirely otherwise. Pointers
 // reproduce that exactly; plain strings with omitempty would not.
 type createContainerRequest struct {
-	Username     string             `json:"username"`
-	Resources    containerResources `json:"resources"`
-	SSHKeys      []string           `json:"sshKeys"`
-	Image        string             `json:"image"`
-	EnablePodman bool               `json:"enablePodman"`
-	Stack        string             `json:"stack"`
-	GPUs         []string           `json:"gpus"`
+	NetworkTenant string             `json:"networkTenant,omitempty"`
+	Username      string             `json:"username"`
+	Resources     containerResources `json:"resources"`
+	SSHKeys       []string           `json:"sshKeys"`
+	Image         string             `json:"image"`
+	EnablePodman  bool               `json:"enablePodman"`
+	Stack         string             `json:"stack"`
+	GPUs          []string           `json:"gpus"`
 	// The generated enum, not a string: json.Marshal emits its numeric
 	// value, which is what the previous map sent and what protojson
 	// accepts on the server side.
@@ -256,6 +257,9 @@ type deployRecipeRequest struct {
 	// attestation carries enums and bytes, so it is encoded the way the
 	// grpc-gateway decodes it, not by encoding/json).
 	GuardrailInput json.RawMessage `json:"guardrail_input,omitempty"`
+	// SSHKeys are authorized at create time (#3514); omitted when empty so a
+	// key-less deploy's body is unchanged.
+	SSHKeys []string `json:"ssh_keys,omitempty"`
 }
 
 // provisionSkillBoxRequest is POST /v1/agent-skills/{skill_id}/provision-box
@@ -348,6 +352,8 @@ type runCrewRequest struct {
 	// (e.g. "AGENT_ENGINE_CODEX"), the shape protojson expects for an enum
 	// map value. Omitted when the caller named no override for any member.
 	EngineOverrides map[string]string `json:"engine_overrides,omitempty"`
+	// ModelOverrides (#3259) maps skill_id -> model id, passed through as is.
+	ModelOverrides map[string]string `json:"model_overrides,omitempty"`
 }
 
 // addRouteRequest is POST /v1/network/routes.

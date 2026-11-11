@@ -47,7 +47,7 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerWrite); err != nil {
 		return nil, err
 	}
-	if s.trackerStore == nil {
+	if s.loadTrackerStore() == nil {
 		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -73,7 +73,7 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 	if err := enforceConnectionBinding(ctx, req.Connection); err != nil {
 		return nil, err
 	}
-	record, err := s.trackerStore.Get(ctx, req.Username, req.Connection)
+	record, err := s.loadTrackerStore().Get(ctx, req.Username, req.Connection)
 	if err != nil {
 		return nil, mapTrackerError(err)
 	}
@@ -106,7 +106,7 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 	lineageRecorded := false
 	if isRun {
 		var upstreamErr error
-		rec, err := s.trackerStore.RecordChild(ctx, tracker.Lineage{
+		rec, err := s.loadTrackerStore().RecordChild(ctx, tracker.Lineage{
 			Username: req.Username, Connection: req.Connection,
 			ParentNumber: req.ParentNumber, CreatedByRun: runID,
 		}, policy.MaxDepth, policy.MaxChildrenPerRun, func(ctx context.Context) (int64, error) {
@@ -129,7 +129,7 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 			// lineage_recorded=false) — an error here would make the
 			// caller retry and file a duplicate (review of #2034).
 			depth = recErr.Depth
-			log.Printf("[tracker] %s/%s: %v", req.Username, req.Connection, recErr)
+			log.Printf("[tracker] %q/%q: %v", req.Username, req.Connection, recErr)
 		case errors.Is(err, tracker.ErrDepthExceeded):
 			return nil, status.Errorf(codes.FailedPrecondition, "follow-up would exceed the connection's max_depth (%d): %v", policy.MaxDepth, err)
 		case errors.Is(err, tracker.ErrFanoutExceeded):
@@ -170,7 +170,7 @@ func (s *ContainerServer) CreateTrackerIssue(ctx context.Context, req *pb.Create
 	if req.ParentNumber > 0 {
 		backlink := fmt.Sprintf("Filed follow-up #%d: %s", created.Number, title) + "\n\n" + tracker.Stamp(id, tracker.KindComment)
 		if _, cerr := provider.Comment(postCtx, conn, req.ParentNumber, backlink); cerr != nil {
-			log.Printf("[tracker] %s/%s: back-link comment on #%d for child #%d: %v", req.Username, req.Connection, req.ParentNumber, created.Number, cerr)
+			log.Printf("[tracker] %q/%q: back-link comment on #%d for child #%d: %v", req.Username, req.Connection, req.ParentNumber, created.Number, cerr)
 		} else {
 			parentCommentPosted = true
 		}
@@ -265,7 +265,7 @@ type trackerIssueCreateOutcomeUnknownAuditDetail struct {
 // returns the distinct error for it. The audit write is detached from the
 // caller's cancellation, like the success path's.
 func (s *ContainerServer) upstreamCreateOutcomeUnknown(ctx context.Context, req *pb.CreateTrackerIssueRequest, record *tracker.Connection, id tracker.Identity, title string, labels []string, depth int32, slotRetained bool, cause error) error {
-	log.Printf("[tracker] %s/%s: upstream create outcome unknown (title %q, parent #%d): %v", req.Username, req.Connection, title, req.ParentNumber, cause)
+	log.Printf("[tracker] %q/%q: upstream create outcome unknown (title %q, parent #%d): %v", req.Username, req.Connection, title, req.ParentNumber, cause)
 	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), postCreateTimeout)
 	defer cancel()
 	s.auditTrackerWrite(auditCtx, auditActionIssueCreateOutcomeUnknown, req.Username, req.Connection, 0, trackerIssueCreateOutcomeUnknownAuditDetail{

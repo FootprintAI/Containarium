@@ -31,7 +31,7 @@ func (s *ContainerServer) requireTrackerRouteAccess(ctx context.Context, usernam
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerAdmin); err != nil {
 		return err
 	}
-	if s.trackerStore == nil {
+	if s.loadTrackerStore() == nil {
 		return status.Error(codes.Unavailable, "tracker store not configured on this daemon")
 	}
 	if username == "" {
@@ -55,7 +55,7 @@ func (s *ContainerServer) SetTrackerRoute(ctx context.Context, req *pb.SetTracke
 		return nil, status.Error(codes.InvalidArgument, "skill_id is required")
 	}
 
-	route, err := s.trackerStore.SetRoute(ctx, tracker.Route{
+	route, err := s.loadTrackerStore().SetRoute(ctx, tracker.Route{
 		Username: req.Username, Connection: req.Connection, Scope: req.Scope, SkillID: req.SkillId,
 	})
 	if err != nil {
@@ -66,7 +66,7 @@ func (s *ContainerServer) SetTrackerRoute(ctx context.Context, req *pb.SetTracke
 	if !route.CreatedAt.Equal(route.UpdatedAt) {
 		msg, action = "route updated", "tracker.route_updated"
 	}
-	log.Printf("[tracker] route set %s/%s scope=%s skill=%s", req.Username, req.Connection, req.Scope, req.SkillId)
+	log.Printf("[tracker] route set %q/%q scope=%q skill=%q", req.Username, req.Connection, req.Scope, req.SkillId)
 	s.auditTrackerRouteWrite(ctx, action, req.Username, req.Connection, trackerRouteAuditDetail{Scope: req.Scope, SkillID: req.SkillId})
 	return &pb.SetTrackerRouteResponse{Message: msg, Route: toProtoTrackerRoute(route)}, nil
 }
@@ -76,7 +76,7 @@ func (s *ContainerServer) ListTrackerRoutes(ctx context.Context, req *pb.ListTra
 	if err := s.requireTrackerRouteAccess(ctx, req.Username, req.Connection); err != nil {
 		return nil, err
 	}
-	routes, err := s.trackerStore.ListRoutes(ctx, req.Username, req.Connection)
+	routes, err := s.loadTrackerStore().ListRoutes(ctx, req.Username, req.Connection)
 	if err != nil {
 		return nil, mapTrackerRouteError(err)
 	}
@@ -95,10 +95,10 @@ func (s *ContainerServer) DeleteTrackerRoute(ctx context.Context, req *pb.Delete
 	if req.Scope == "" {
 		return nil, status.Error(codes.InvalidArgument, "scope is required")
 	}
-	if err := s.trackerStore.DeleteRoute(ctx, req.Username, req.Connection, req.Scope); err != nil {
+	if err := s.loadTrackerStore().DeleteRoute(ctx, req.Username, req.Connection, req.Scope); err != nil {
 		return nil, mapTrackerRouteError(err)
 	}
-	log.Printf("[tracker] route deleted %s/%s scope=%s", req.Username, req.Connection, req.Scope)
+	log.Printf("[tracker] route deleted %q/%q scope=%q", req.Username, req.Connection, req.Scope)
 	s.auditTrackerRouteWrite(ctx, "tracker.route_deleted", req.Username, req.Connection, trackerRouteAuditDetail{Scope: req.Scope})
 	return &pb.DeleteTrackerRouteResponse{Message: fmt.Sprintf("route %s deleted", req.Scope)}, nil
 }
@@ -135,7 +135,7 @@ func (s *ContainerServer) auditTrackerRouteWrite(ctx context.Context, action, us
 		ResourceID:   fmt.Sprintf("%s/%s/%s", username, connection, detail.Scope),
 		Detail:       string(payload),
 	}); err != nil {
-		log.Printf("[tracker] audit %s %s/%s: %v", action, username, connection, err)
+		log.Printf("[tracker] audit %s %q/%q: %v", action, username, connection, err)
 	}
 }
 

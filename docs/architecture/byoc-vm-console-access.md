@@ -236,6 +236,18 @@ meaningfully higher blast radius than a new opt-in agent binary nobody
 has to run. The hypervisor-agent is independently buildable and
 testable without it.
 
+#### Transport security (TLS)
+
+The router listens in plaintext by default, so the pre-shared token and the
+console stream cross the network unencrypted. Pass `--console-router-tls-cert`
+and `--console-router-tls-key` (PEM, both required together) to the sentinel
+to serve TLS only: a plaintext client is refused during the handshake before
+any router data is exchanged. Without them the sentinel logs a
+`WARNING: ... plaintext` line at router startup. Plaintext remains the
+default in this release. Clients verify the router certificate against a CA
+bundle with `sentinel.ConsoleRouterClientTLSConfig`; no console client or
+client-side CA flag exists yet, so this is a helper only.
+
 ### CLI
 
 `containarium console <target>` (already shipped for #1750/#1751) is

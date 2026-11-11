@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -217,8 +218,9 @@ type AgentSkillServer struct {
 	// revocations kills a run's credentials when the run ends (#1817). nil on a
 	// daemon without Postgres: runs still complete and seed files are still
 	// wiped, but the credentials live to their expiry and each run says so in
-	// the log.
-	revocations runlease.Revoker
+	// the log. Read only through loadRevocations: after a degraded start the
+	// store is swapped in while runs end (#3328).
+	revocations atomic.Pointer[revokerRef]
 	// runs is the in-memory registry of currently-live runs (#1922) —
 	// nil until dual_server.go wires the same instance into both this
 	// server and ContainerServer via SetRunRegistry. Registration is
@@ -241,12 +243,15 @@ type AgentSkillServer struct {
 	// note decision D3). Nil on a daemon without the tracker store wired
 	// (--standalone, or Postgres unavailable): a request naming a
 	// tracker_connection then fails closed rather than minting an
-	// unvalidated claim — see RunAgentSkill.
-	trackerConnections trackerConnectionChecker
-	// lineageReservations sweeps a run's leftover fan-out reservations
+	// unvalidated claim — see RunAgentSkill. Read through
+	// loadTrackerConnections: the tracker store's late install (#3329)
+	// sets it while RPCs are served.
+	trackerConnectionsRef liveValue[trackerConnectionChecker]
+	// lineageReservationsRef sweeps a run's leftover fan-out reservations
 	// when its lease ends (#2062). Nil on a daemon without the tracker
-	// store wired: there is nothing to sweep.
-	lineageReservations lineageReservationReleaser
+	// store wired: there is nothing to sweep. Read through
+	// loadLineageReservations, for the same reason.
+	lineageReservationsRef liveValue[lineageReservationReleaser]
 	// Run journal read path (#2096). runIndex remembers each run's member
 	// skills for TailRunLog; crewRunMembers resolves a crew run from its
 	// durable record (wired by NewCrewServer); execScript is a test seam over
@@ -341,7 +346,13 @@ func (s *AgentSkillServer) SetPlatformMCPPort(port int) {
 // Nil (the default) makes any request naming a tracker_connection fail
 // closed with FailedPrecondition.
 func (s *AgentSkillServer) SetTrackerConnections(c trackerConnectionChecker) {
-	s.trackerConnections = c
+	s.trackerConnectionsRef.store(c)
+}
+
+// loadTrackerConnections returns the current connection checker, nil
+// until one is wired.
+func (s *AgentSkillServer) loadTrackerConnections() trackerConnectionChecker {
+	return s.trackerConnectionsRef.load()
 }
 
 // lineageReservationReleaser is the one method of *tracker.Store
@@ -355,7 +366,13 @@ type lineageReservationReleaser interface {
 // default) leaves them in place. As with SetRevocationStore, the caller
 // must pass a true nil, not a nil *tracker.Store.
 func (s *AgentSkillServer) SetLineageReservations(r lineageReservationReleaser) {
-	s.lineageReservations = r
+	s.lineageReservationsRef.store(r)
+}
+
+// loadLineageReservations returns the current reservation releaser, nil
+// until one is wired.
+func (s *AgentSkillServer) loadLineageReservations() lineageReservationReleaser {
+	return s.lineageReservationsRef.load()
 }
 
 // auditLogger is the one method of *audit.Store this server uses. Narrowed to
@@ -394,7 +411,18 @@ func (s *AgentSkillServer) SetAuditStore(store *audit.Store) {
 // dual_server.go does that nil check at the one place the concrete pointer
 // exists.
 func (s *AgentSkillServer) SetRevocationStore(store auth.RevocationStore) {
-	s.revocations = store
+	s.revocations.Store(&revokerRef{r: store})
+}
+
+type revokerRef struct{ r runlease.Revoker }
+
+// loadRevocations is the one read of the run-lease revocation store; a true
+// nil when none is set.
+func (s *AgentSkillServer) loadRevocations() runlease.Revoker {
+	if ref := s.revocations.Load(); ref != nil {
+		return ref.r
+	}
+	return nil
 }
 
 // SetGatewayProvisioning enables model-gateway provisioning for skill boxes:
@@ -660,17 +688,18 @@ func (s *AgentSkillServer) RunAgentSkill(ctx context.Context, req *pb.RunAgentSk
 	// its caller — so artifact.json is always read into this Go string BEFORE
 	// endRunLease's directory removal ever runs. A run whose artifact was
 	// returned never loses it to the wipe.
-	artifact, err := s.runInBoxAgentResult(containerName, lease.SeedDir, runID, run.skillID, run.engineRes, run.model)
+	artifact, err := s.runInBoxAgentRun(containerName, lease.SeedDir, runID, run.skillID, run.engineRes, run.model)
 	if err != nil {
-		log.Printf("[agent-skill] run %s: %v", runID, err)
+		log.Printf("[agent-skill] run %q: %v", runID, err)
 		return nil, inBoxRunStatus(runID, err)
 	}
 	return &pb.RunAgentSkillResponse{
 		Container:     box,
-		ArtifactJson:  artifact,
+		ArtifactJson:  artifact.output,
 		RunId:         runID,
 		GitCommit:     gitCommit,
 		WorkspacePath: workspacePath,
+		Usage:         artifact.usage,
 	}, nil
 }
 
@@ -760,6 +789,11 @@ func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAge
 	// by value), so this only affects this call — a caller's own
 	// gitSourceBestEffort (set above us) is preserved alongside it.
 	opts.engineOverride = req.GetEngine()
+	// #3264: a per-run model wins over the skill's own, on a copy so the shared
+	// catalog skill is never mutated; refused before any box work.
+	if skill, err = applyRunModel(skill, req); err != nil {
+		return nil, err
+	}
 	if opts.orgID, err = authorizeRunOrg(ctx, req.GetOnBehalfOfOrgId()); err != nil {
 		return nil, err
 	}
@@ -784,7 +818,7 @@ func (s *AgentSkillServer) beginSkillRunWith(ctx context.Context, req *pb.RunAge
 	// rather than failing a run that otherwise provisioned successfully.
 	if s.recordSkillRun != nil {
 		if err := s.recordSkillRun(ctx, runID, skill.Id); err != nil {
-			log.Printf("[agent-skill] run %s: record durable run index: %v", runID, err)
+			log.Printf("[agent-skill] run %q: record durable run index: %v", runID, err)
 		}
 	}
 
@@ -871,18 +905,18 @@ func (s *AgentSkillServer) endRunLease(ctx context.Context, lease runlease.Lease
 
 	detached := context.WithoutCancel(ctx)
 	lctx, cancel := context.WithTimeout(detached, endRunLeaseCeiling)
-	out := runlease.End(lctx, lease, s.revocations, w, reason)
+	out := runlease.End(lctx, lease, s.loadRevocations(), w, reason)
 	cancel()
 
 	if len(out.Unrevoked) > 0 {
 		// One line per run, naming the run, so an operator running without
 		// Postgres can see exactly which credentials are now alive until their
 		// 30-minute expiry.
-		log.Printf("[agent-skill] run %s: %d credential(s) could not be revoked before expiry (no revocation store, or the store rejected them)",
+		log.Printf("[agent-skill] run %q: %d credential(s) could not be revoked before expiry (no revocation store, or the store rejected them)",
 			lease.RunID, len(out.Unrevoked))
 	}
 	for _, err := range out.Errs {
-		log.Printf("[agent-skill] run %s: ending lease: %v", lease.RunID, err)
+		log.Printf("[agent-skill] run %q: ending lease: %v", lease.RunID, err)
 	}
 
 	// After the revocations: with its credentials dead the run cannot
@@ -906,7 +940,8 @@ const lineageReleaseBudget = 3 * time.Second
 // swept: over-counting is the fail-closed side. Best-effort: a failure is
 // logged and leaves the rows, which ListTrackerDispatches still shows.
 func (s *AgentSkillServer) releaseLineageReservations(ctx context.Context, runID string) {
-	if s.lineageReservations == nil || runID == "" {
+	reservations := s.loadLineageReservations()
+	if reservations == nil || runID == "" {
 		return
 	}
 	username, _, ok := auth.SubjectFromGRPCContext(ctx)
@@ -915,13 +950,13 @@ func (s *AgentSkillServer) releaseLineageReservations(ctx context.Context, runID
 	}
 	rctx, cancel := context.WithTimeout(ctx, lineageReleaseBudget)
 	defer cancel()
-	n, err := s.lineageReservations.ReleaseRunReservations(rctx, username, runID)
+	n, err := reservations.ReleaseRunReservations(rctx, username, runID)
 	if err != nil {
-		log.Printf("[agent-skill] run %s: releasing lineage reservations: %v", runID, err)
+		log.Printf("[agent-skill] run %q: releasing lineage reservations: %v", runID, err)
 		return
 	}
 	if n > 0 {
-		log.Printf("[agent-skill] run %s: released %d stale lineage reservation(s) at lease end", runID, n)
+		log.Printf("[agent-skill] run %q: released %d stale lineage reservation(s) at lease end", runID, n)
 	}
 }
 
@@ -974,14 +1009,15 @@ func (s *AgentSkillServer) validateTrackerConnection(ctx context.Context, connNa
 	if connName == "" {
 		return nil
 	}
-	if s.trackerConnections == nil {
+	connections := s.loadTrackerConnections()
+	if connections == nil {
 		return status.Error(codes.FailedPrecondition, "tracker connections not configured on this daemon")
 	}
 	username, _, ok := auth.SubjectFromGRPCContext(ctx)
 	if !ok || username == "" {
 		return status.Error(codes.Unauthenticated, "no authenticated subject")
 	}
-	if _, err := s.trackerConnections.Get(ctx, username, connName); err != nil {
+	if _, err := connections.Get(ctx, username, connName); err != nil {
 		if errors.Is(err, tracker.ErrNotFound) {
 			return status.Errorf(codes.InvalidArgument, "tracker_connection %q not found for tenant %q", connName, username)
 		}
@@ -1052,7 +1088,10 @@ func mintedAgentTokenScopes(ctx context.Context, skill *pb.AgentSkill) []string 
 //     it; a custom skill via CONTAINARIUM_SKILLS_DIR could. The handler
 //     also refuses any run-bound caller outright, so a run token minted
 //     before this entry existed is covered too.
-var runForbiddenScopes = []string{auth.ScopeTrackerAdmin, auth.ScopeTokensDelegate}
+//   - code:answer (#3191) — answers a box run's permission requests. The
+//     run token lives on the box with the agent, so holding it would let
+//     the agent approve its own tool calls.
+var runForbiddenScopes = []string{auth.ScopeTrackerAdmin, auth.ScopeTokensDelegate, auth.ScopeCodeAnswer}
 
 // mintRunToken mints the run's platform JWT — the one credential every
 // in-box call back to the daemon presents — and returns it with the lease
@@ -1154,35 +1193,69 @@ func (s *AgentSkillServer) provisionBoxOnly(ctx context.Context, skill *pb.Agent
 	// (and its one-time post_start assembly) and just re-mint the token,
 	// re-seed, and re-apply policy below. A stopped box (idle-sleep, host
 	// reboot) is started so the subsequent seed-exec / loop-exec lands.
-	if info, gerr := s.recipes.containers.manager.Get(name); gerr == nil && info != nil {
-		if info.State != "Running" {
-			if err := s.recipes.containers.manager.Start(name); err != nil {
-				return "", nil, false, status.Errorf(codes.Internal, "failed to start existing agent box %s: %v", name, err)
+	//
+	// The skip holds only for a box whose post_start completed (#3546): deploy
+	// marks the box before post_start and clears the mark on success, so a box
+	// an earlier run left half-prepared (post_start failed, or the daemon
+	// stopped mid-way) still carries it, and post_start runs again here. If it
+	// fails again the run fails with FailedPrecondition and the box is kept.
+	// rerunPendingPostStart is called even when this read saw no mark: it
+	// waits for a deploy still preparing the box (#3555) and reads it again.
+	//
+	// Two first runs of one skill can both miss the lookup and both deploy.
+	// The deploy that loses fails at once (boxBeingPreparedError); its run
+	// waits for the winner's preparation and goes round again, now finding
+	// the box (#3555). The bound only stops a loop if the box keeps
+	// vanishing between attempts.
+	const provisionAttempts = 3
+	for attempt := 1; ; attempt++ {
+		if info, gerr := s.recipes.boxOps().Get(name); gerr == nil && info != nil {
+			if info.State != "Running" {
+				if err := s.recipes.containers.manager.Start(name); err != nil {
+					return "", nil, false, status.Errorf(codes.Internal, "failed to start existing agent box %s: %v", name, err)
+				}
 			}
-			if reread, rerr := s.recipes.containers.manager.Get(name); rerr == nil && reread != nil {
-				info = reread
+			after, err := s.recipes.rerunPendingPostStart(ctx, recipeID, name, agentBoxDeployParams())
+			if err != nil {
+				return "", nil, false, err
 			}
+			if after != nil {
+				info = after
+			}
+			st := boxlxc.StatusFromInfo(info)
+			return skillBoxName(skill.Id), toProtoContainer(&st), false, nil
 		}
-		st := boxlxc.StatusFromInfo(info)
-		return skillBoxName(skill.Id), toProtoContainer(&st), false, nil
-	}
 
-	// First provision. Pass the daemon's version as the agent-runtime
-	// recipe's `release` param so the box's post_start pulls matching
-	// agent-box + agent-runtime artifacts (box-image assembly). Recipes that
-	// don't declare these params ignore the extras; assembly is best-effort
-	// (a dev/unpublished version just skips it).
-	dep, derr := s.recipes.deploy(ctx, &pb.DeployRecipeRequest{
-		RecipeId:   recipeID,
-		Name:       name,
-		BackendId:  backendID,
-		Pool:       pool,
-		Parameters: map[string]string{"release": agentRuntimeReleaseTag()},
-	})
-	if derr != nil {
-		return "", nil, false, derr // already a gRPC status from deploy/CreateContainer
+		// First provision. Pass the daemon's version as the agent-runtime
+		// recipe's `release` param so the box's post_start pulls matching
+		// agent-box + agent-runtime artifacts (box-image assembly). Recipes
+		// that don't declare these params ignore the extras; assembly is
+		// best-effort (a dev/unpublished version just skips it).
+		dep, derr := s.recipes.deploy(ctx, &pb.DeployRecipeRequest{
+			RecipeId:   recipeID,
+			Name:       name,
+			BackendId:  backendID,
+			Pool:       pool,
+			Parameters: agentBoxDeployParams(),
+		})
+		var preparing *boxBeingPreparedError
+		if errors.As(derr, &preparing) && attempt < provisionAttempts {
+			if err := s.recipes.postStartLocks.wait(ctx, name); err != nil {
+				return "", nil, false, preparationWaitErr(name, err)
+			}
+			continue
+		}
+		if derr != nil {
+			return "", nil, false, derr // already a gRPC status from deploy/CreateContainer
+		}
+		return skillBoxName(skill.Id), dep.Container, true, nil
 	}
-	return skillBoxName(skill.Id), dep.Container, true, nil
+}
+
+// agentBoxDeployParams are the recipe parameters a skill's box is deployed
+// with, and post_start re-run with on a box left not prepared (#3546).
+func agentBoxDeployParams() map[string]string {
+	return map[string]string{"release": agentRuntimeReleaseTag()}
 }
 
 // skillBoxName is the container a skill's runs use: one box per skill id,
@@ -1232,7 +1305,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 		return "", nil, noLease, "", "", agentengine.Resolved{}, status.Errorf(codes.Internal, "resolving engine for skill %s: %v", skill.Id, resolveErr)
 	}
 	if engineRes.Default && skill.GetModel() != "" {
-		log.Printf("[agent-skill] skill %s pins model %q but names no engine; CONTAINARIUM_AGENT_MODEL is not exported (only named-engine skills carry their pinned model to the box)", skill.Id, skill.GetModel())
+		log.Printf("[agent-skill] skill %q pins model %q but names no engine; CONTAINARIUM_AGENT_MODEL is not exported (only named-engine skills carry their pinned model to the box)", skill.Id, skill.GetModel())
 	}
 
 	// #2229: a named-engine skill's pinned model is validated against what the
@@ -1261,7 +1334,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 						skill.Id, modelCeiling, engineRes.Provider, strings.Join(models, ", "))
 				}
 			} else if !errors.Is(lerr, modelgateway.ErrModelListUnsupported) && !errors.Is(lerr, modelgateway.ErrNoKey) {
-				log.Printf("[agent-skill] skill %s: model list check for provider %s failed, proceeding without it: %v", skill.Id, engineRes.Provider, lerr)
+				log.Printf("[agent-skill] skill %q: model list check for provider %s failed, proceeding without it: %v", skill.Id, engineRes.Provider, lerr)
 			}
 		}
 	}
@@ -1299,9 +1372,9 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 	// a failure here is an operational one (mint/script), not a readiness one.
 	if s.gateway != nil {
 		if gwTok, gwMinted, gerr := s.mintRunGatewayToken(ctx, name, skill.Id, runID, engineRes.Provider, modelCeiling, box, opts.orgID); gerr != nil {
-			log.Printf("[agent-skill] gateway token mint failed for %s (box runs direct mode): %v", name, gerr)
+			log.Printf("[agent-skill] gateway token mint failed for %q (box runs direct mode): %v", name, gerr)
 		} else if envScript, eerr := gatewayEnvScript(engineRes.Provider, s.gateway.httpPort, gwTok, seedDir); eerr != nil {
-			log.Printf("[agent-skill] gateway env script failed for %s (box runs direct mode): %v", name, eerr)
+			log.Printf("[agent-skill] gateway env script failed for %q (box runs direct mode): %v", name, eerr)
 		} else {
 			seedScript += "\n" + envScript
 			lease.Credentials = append(lease.Credentials, runlease.Credential{
@@ -1355,7 +1428,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 			// The (empty) workspace dir stays on the lease for the wipe;
 			// the run is registered with no git_commit, so
 			// SubmitTrackerChange answers FAILED_PRECONDITION for it.
-			log.Printf("[agent-skill] run %s: git fetch into %s failed; continuing without a workspace: %v", runID, containerName, ferr)
+			log.Printf("[agent-skill] run %q: git fetch into %q failed; continuing without a workspace: %v", runID, containerName, ferr)
 			workspacePath = ""
 		} else if ferr != nil {
 			s.endRunLease(ctx, lease, s.boxWiper(), provisionFailedReason)
@@ -1376,7 +1449,7 @@ func (s *AgentSkillServer) provisionSkillBoxWith(ctx context.Context, skill *pb.
 				GitCommit: gitCommit,
 			})
 			if werr := s.agentBox().Exec(containerName, []string{"bash", "-c", wsScript}); werr != nil {
-				log.Printf("[agent-skill] workspace.json seed failed for %s (runtime won't see the workspace path via the contract file): %v", containerName, werr)
+				log.Printf("[agent-skill] workspace.json seed failed for %q (runtime won't see the workspace path via the contract file): %v", containerName, werr)
 			}
 		}
 	}
@@ -1427,7 +1500,7 @@ func runtimeEnvPrefix(res agentengine.Resolved, model string) string {
 func (s *AgentSkillServer) startServeMode(ctx context.Context, containerName, seedDir, skillID string, engineRes agentengine.Resolved, model string) error {
 	box := s.inBox()
 	if box == nil {
-		return fmt.Errorf("no container manager to start %s's serve mode on %s", skillID, containerName)
+		return fmt.Errorf("no container manager to start %q's serve mode on %q", skillID, containerName)
 	}
 	// Stop any previous serve-mode instance before starting a new one
 	// (cloud#1733). The box is reused across runs — provisionSkillBox
@@ -1454,19 +1527,19 @@ func (s *AgentSkillServer) startServeMode(ctx context.Context, containerName, se
 	if s.agentA2ASecret(skillID) == "" {
 		// The box will serve /agent-card and refuse every task (#2125). Say so
 		// here: in-box the only trace is one line in the box's own log.
-		log.Printf("[agent-skill] no A2A credential derivable for %s: its serve mode will refuse every task", containerName)
+		log.Printf("[agent-skill] no A2A credential derivable for %q: its serve mode will refuse every task", containerName)
 	}
 	cmd := s.serveModeCommand(seedDir, skillID, engineRes, model)
 	_, stderr, exitCode, err := box.ExecWithExitCode(containerName, []string{"bash", "-lc", cmd})
 	if err != nil && !incusExecCommandMissing(err) {
-		return fmt.Errorf("could not launch %s's serve mode on %s: %w", skillID, containerName, err)
+		return fmt.Errorf("could not launch %q's serve mode on %q: %w", skillID, containerName, err)
 	}
 	if err != nil || exitCode == exitCommandNotFound {
-		log.Printf("[agent-skill] agent-runtime not found on %s (image may not ship it); stderr=%s", containerName, scrubInBoxText(stderr))
-		return fmt.Errorf("on %s: %w", containerName, errInBoxRuntimeMissing)
+		log.Printf("[agent-skill] agent-runtime not found on %q (image may not ship it); stderr=%q", containerName, scrubInBoxText(stderr))
+		return fmt.Errorf("on %q: %w", containerName, errInBoxRuntimeMissing)
 	}
 	if exitCode != 0 {
-		return fmt.Errorf("%s's serve-mode launch on %s exited %d; stderr=%s", skillID, containerName, exitCode, scrubInBoxText(stderr))
+		return fmt.Errorf("%q's serve-mode launch on %q exited %d; stderr=%s", skillID, containerName, exitCode, scrubInBoxText(stderr))
 	}
 	return s.waitForServeReady(ctx, box, containerName, skillID)
 }
@@ -1517,7 +1590,7 @@ func (s *AgentSkillServer) waitForServeReady(ctx context.Context, box inBoxRunne
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("waiting for %s's serve mode on %s: %w", skillID, containerName, ctx.Err())
+			return fmt.Errorf("waiting for %q's serve mode on %q: %w", skillID, containerName, ctx.Err())
 		case <-time.After(interval):
 		}
 	}
@@ -1526,9 +1599,9 @@ func (s *AgentSkillServer) waitForServeReady(ctx context.Context, box inBoxRunne
 		[]string{"bash", "-lc", fmt.Sprintf("tail -c %d %s 2>/dev/null", serveLogTailBytes, serveLogPath)})
 	tail = scrubInBoxText(tail)
 	if strings.Contains(tail, "command not found") {
-		return fmt.Errorf("on %s: %w; %s: %s", containerName, errInBoxRuntimeMissing, serveLogPath, tail)
+		return fmt.Errorf("on %q: %w; %s: %s", containerName, errInBoxRuntimeMissing, serveLogPath, tail)
 	}
-	return fmt.Errorf("%s's serve mode on %s did not answer /agent-card within %s; the tail of %s: %s",
+	return fmt.Errorf("%q's serve mode on %q did not answer /agent-card within %s; the tail of %s: %s",
 		skillID, containerName, timeout, serveLogPath, tail)
 }
 
@@ -1657,38 +1730,45 @@ func inBoxRunStatus(runID string, err error) error {
 // this function only renders them into the exec, it never resolves anything
 // itself.
 func (s *AgentSkillServer) runInBoxAgentResult(containerName, seedDir, runID, skillID string, engineRes agentengine.Resolved, model string) (string, error) {
+	a, err := s.runInBoxAgentRun(containerName, seedDir, runID, skillID, engineRes, model)
+	return a.output, err
+}
+
+// runInBoxAgentRun is runInBoxAgentResult keeping the artifact's token usage
+// too (#3467).
+func (s *AgentSkillServer) runInBoxAgentRun(containerName, seedDir, runID, skillID string, engineRes agentengine.Resolved, model string) (inBoxArtifact, error) {
 	box := s.inBox()
 	if box == nil {
-		return "", fmt.Errorf("no container manager to run the in-box agent on %s", containerName)
+		return inBoxArtifact{}, fmt.Errorf("no container manager to run the in-box agent on %q", containerName)
 	}
 
 	_, stderr, exitCode, err := box.ExecWithExitCode(containerName,
 		[]string{"bash", "-lc", s.runModeCommand(seedDir, runID, skillID, engineRes, model)})
 	if err != nil && !incusExecCommandMissing(err) {
-		return "", fmt.Errorf("could not exec the in-box agent on %s: %w", containerName, err)
+		return inBoxArtifact{}, fmt.Errorf("could not exec the in-box agent on %q: %w", containerName, err)
 	}
 	if err != nil || exitCode == exitCommandNotFound {
-		log.Printf("[agent-skill] agent-runtime not found on %s (image may not ship it yet); stderr=%s",
+		log.Printf("[agent-skill] agent-runtime not found on %q (image may not ship it yet); stderr=%q",
 			containerName, scrubInBoxText(stderr))
-		return "", fmt.Errorf("on %s: %w", containerName, errInBoxRuntimeMissing)
+		return inBoxArtifact{}, fmt.Errorf("on %q: %w", containerName, errInBoxRuntimeMissing)
 	}
 	if exitCode != 0 {
-		log.Printf("[agent-skill] in-box agent on %s exited %d; stderr=%s", containerName, exitCode, scrubInBoxText(stderr))
+		log.Printf("[agent-skill] in-box agent on %q exited %d; stderr=%q", containerName, exitCode, scrubInBoxText(stderr))
 		if reason := s.inBoxArtifactError(box, containerName, seedDir); reason != "" {
-			return "", fmt.Errorf("in-box agent on %s exited %d: %s", containerName, exitCode, reason)
+			return inBoxArtifact{}, fmt.Errorf("in-box agent on %q exited %d: %s", containerName, exitCode, reason)
 		}
-		return "", fmt.Errorf("in-box agent on %s exited %d (no error recorded in artifact.json)", containerName, exitCode)
+		return inBoxArtifact{}, fmt.Errorf("in-box agent on %q exited %d (no error recorded in artifact.json)", containerName, exitCode)
 	}
 
 	raw, err := box.ReadFile(containerName, seedDir+"/artifact.json")
 	if err != nil {
-		return "", fmt.Errorf("could not read artifact from %s: %w", containerName, err)
+		return inBoxArtifact{}, fmt.Errorf("could not read artifact from %q: %w", containerName, err)
 	}
-	out, err := parseArtifactOutput(raw)
+	a, err := parseArtifact(raw)
 	if err != nil {
-		return "", fmt.Errorf("in-box agent on %s reported an error: %s", containerName, scrubInBoxText(err.Error()))
+		return inBoxArtifact{}, fmt.Errorf("in-box agent on %q reported an error: %s", containerName, scrubInBoxText(err.Error()))
 	}
-	return out, nil
+	return a, nil
 }
 
 // inBoxArtifactError is the scrubbed `error` artifact.json recorded for a
@@ -1721,19 +1801,10 @@ func (s *AgentSkillServer) inBox() inBoxRunner {
 
 // parseArtifactOutput extracts the agent's output JSON from artifact.json
 // (written by agent-runtime). A non-empty `error` field is surfaced as an
-// error so the run is reported failed.
+// error so the run is reported failed. parseArtifact also keeps the usage.
 func parseArtifactOutput(raw []byte) (string, error) {
-	var a struct {
-		OutputJSON string `json:"outputJson"`
-		Error      string `json:"error"`
-	}
-	if err := json.Unmarshal(raw, &a); err != nil {
-		return "", fmt.Errorf("decode artifact.json: %w", err)
-	}
-	if a.Error != "" {
-		return "", fmt.Errorf("%s", a.Error)
-	}
-	return a.OutputJSON, nil
+	a, err := parseArtifact(raw)
+	return a.output, err
 }
 
 // applyAllowedPeersPolicy compiles a skill's allowed_peers into a per-box
@@ -2129,7 +2200,7 @@ func (s *AgentSkillServer) auditHop(ctx context.Context, trace, from, to, outcom
 		DelegationChain: delegationChain,
 		TokenID:         tokenID,
 	}); err != nil {
-		log.Printf("[agent-skill] audit A2A hop %s->%s: %v", from, to, err)
+		log.Printf("[agent-skill] audit A2A hop %q->%q: %v", from, to, err)
 	}
 }
 
@@ -2252,7 +2323,7 @@ func (s *AgentSkillServer) auditRunLease(ctx context.Context, action, runID, det
 		TokenID:         tokenID,
 		RunID:           runID,
 	}); err != nil {
-		log.Printf("[agent-skill] audit %s for run %s: %v", action, runID, err)
+		log.Printf("[agent-skill] audit %s for run %q: %v", action, runID, err)
 	}
 }
 

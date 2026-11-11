@@ -22,14 +22,17 @@ import (
 // injecting secret_env. Not the richer create options the user-facing
 // ContainerService offers — cloud-assigned boxes are minimal v1 workloads.
 type cloudContainerActuator struct {
-	incus  *incus.Client
-	routes *app.RouteStore // nil when the host has no route store (no Postgres/Caddy) → routes skipped
+	incus incus.Backend
+	// routes is the daemon's route store, read on every call so one installed
+	// after a degraded start is used (#3331); nil when the host has no route
+	// store (no Postgres/Caddy) → routes skipped.
+	routes routeLister
 }
 
 // newCloudContainerActuator builds an actuator with its own Incus client and the
 // daemon's route store (may be nil — then route exposure is skipped). Returns an
 // error (→ caller runs policy-sync-only) if Incus is unavailable, e.g. non-Linux.
-func newCloudContainerActuator(routes *app.RouteStore) (*cloudContainerActuator, error) {
+func newCloudContainerActuator(routes routeLister) (*cloudContainerActuator, error) {
 	c, err := incus.New()
 	if err != nil {
 		return nil, fmt.Errorf("incus client: %w", err)
@@ -57,10 +60,18 @@ func (a *cloudContainerActuator) EnsureRunning(ctx context.Context, spec cloud.C
 			return cerr
 		}
 	} else {
-		// Best-effort: a stamp failure here shouldn't block start/route
-		// convergence for an otherwise-healthy container — it retries next cycle.
+		// Fail closed: a container whose tenant label is missing or stale
+		// cannot be matched to its org by the network-policy enforcer, so do
+		// not start it or expose its routes until the stamp succeeds (the
+		// reconcile loop retries next cycle). An already-running container is
+		// left running — stopping it would turn a labelling fault into an
+		// outage — and reported degraded instead.
 		if terr := a.ensureTenantLabel(spec.LocalName, spec.OrgID, info.Tenant); terr != nil {
-			log.Printf("[cloud] stamp tenant label on %s: %v", spec.LocalName, terr)
+			log.Printf("[cloud] stamp tenant label on %q: %v", spec.LocalName, terr)
+			if isRunning(info.State) {
+				return fmt.Errorf("stamp tenant label on %s: %w: %w", spec.LocalName, cloud.ErrContainerDegraded, terr)
+			}
+			return fmt.Errorf("stamp tenant label on %s: %w", spec.LocalName, terr)
 		}
 		if isRunning(info.State) {
 			a.applyRoutes(ctx, spec) // already running — still converge routes
@@ -183,7 +194,7 @@ func (a *cloudContainerActuator) applyRoutes(ctx context.Context, spec cloud.Con
 	}
 	info, err := a.incus.GetContainer(spec.LocalName)
 	if err != nil || info.IPAddress == "" {
-		log.Printf("[cloud] %s: IP not ready, deferring route exposure to next reconcile", spec.LocalName)
+		log.Printf("[cloud] %q: IP not ready, deferring route exposure to next reconcile", spec.LocalName)
 		return
 	}
 	desired := make(map[string]bool, len(spec.Routes))
@@ -194,7 +205,7 @@ func (a *cloudContainerActuator) applyRoutes(ctx context.Context, spec cloud.Con
 		desired[r.Domain] = true
 		rec := routeRecordFor(spec.LocalName, info.IPAddress, r)
 		if err := a.routes.Save(ctx, rec); err != nil {
-			log.Printf("[cloud] expose route %s → %s:%d: %v", r.Domain, info.IPAddress, r.TargetPort, err)
+			log.Printf("[cloud] expose route %q → %s:%d: %v", r.Domain, info.IPAddress, r.TargetPort, err)
 		}
 	}
 	a.pruneRoutes(ctx, spec.LocalName, desired)
@@ -211,7 +222,7 @@ func (a *cloudContainerActuator) pruneRoutes(ctx context.Context, localName stri
 	for _, r := range existing {
 		if r.CreatedBy == cloudRouteCreatedBy && !keep[r.FullDomain] {
 			if err := a.routes.Delete(ctx, r.FullDomain); err != nil {
-				log.Printf("[cloud] prune route %s: %v", r.FullDomain, err)
+				log.Printf("[cloud] prune route %q: %v", r.FullDomain, err)
 			}
 		}
 	}

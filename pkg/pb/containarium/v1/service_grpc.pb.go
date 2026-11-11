@@ -43,15 +43,22 @@ const (
 	ContainerService_SetContainerDeletePolicy_FullMethodName  = "/containarium.v1.ContainerService/SetContainerDeletePolicy"
 	ContainerService_SetContainerToolAccess_FullMethodName    = "/containarium.v1.ContainerService/SetContainerToolAccess"
 	ContainerService_SetContainerAttribution_FullMethodName   = "/containarium.v1.ContainerService/SetContainerAttribution"
+	ContainerService_SetCodingAgent_FullMethodName            = "/containarium.v1.ContainerService/SetCodingAgent"
 	ContainerService_AddSSHKey_FullMethodName                 = "/containarium.v1.ContainerService/AddSSHKey"
 	ContainerService_SetSSHKeys_FullMethodName                = "/containarium.v1.ContainerService/SetSSHKeys"
 	ContainerService_RemoveSSHKey_FullMethodName              = "/containarium.v1.ContainerService/RemoveSSHKey"
 	ContainerService_StartBoxRun_FullMethodName               = "/containarium.v1.ContainerService/StartBoxRun"
+	ContainerService_GetBoxRunUserStatus_FullMethodName       = "/containarium.v1.ContainerService/GetBoxRunUserStatus"
 	ContainerService_ListBoxRuns_FullMethodName               = "/containarium.v1.ContainerService/ListBoxRuns"
 	ContainerService_TailBoxRunLog_FullMethodName             = "/containarium.v1.ContainerService/TailBoxRunLog"
 	ContainerService_StopBoxRun_FullMethodName                = "/containarium.v1.ContainerService/StopBoxRun"
+	ContainerService_WriteBoxFile_FullMethodName              = "/containarium.v1.ContainerService/WriteBoxFile"
+	ContainerService_WriteBoxFileStream_FullMethodName        = "/containarium.v1.ContainerService/WriteBoxFileStream"
+	ContainerService_SweepBoxRunCheckouts_FullMethodName      = "/containarium.v1.ContainerService/SweepBoxRunCheckouts"
+	ContainerService_ApplyBoxSkillSets_FullMethodName         = "/containarium.v1.ContainerService/ApplyBoxSkillSets"
 	ContainerService_GetRunApprovalKey_FullMethodName         = "/containarium.v1.ContainerService/GetRunApprovalKey"
 	ContainerService_ListRunInputs_FullMethodName             = "/containarium.v1.ContainerService/ListRunInputs"
+	ContainerService_ListRunCommandEvents_FullMethodName      = "/containarium.v1.ContainerService/ListRunCommandEvents"
 	ContainerService_AnswerRunInput_FullMethodName            = "/containarium.v1.ContainerService/AnswerRunInput"
 	ContainerService_AddCollaborator_FullMethodName           = "/containarium.v1.ContainerService/AddCollaborator"
 	ContainerService_RemoveCollaborator_FullMethodName        = "/containarium.v1.ContainerService/RemoveCollaborator"
@@ -260,6 +267,8 @@ type ContainerServiceClient interface {
 	// named are left intact. Cloud→daemon plumbing (like /authorized-keys/sentinel),
 	// not a standalone operator action — no CLI verb.
 	SetContainerAttribution(ctx context.Context, in *SetContainerAttributionRequest, opts ...grpc.CallOption) (*SetContainerAttributionResponse, error)
+	// SetCodingAgent records the coding agent installed on a container
+	SetCodingAgent(ctx context.Context, in *SetCodingAgentRequest, opts ...grpc.CallOption) (*SetCodingAgentResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(ctx context.Context, in *AddSSHKeyRequest, opts ...grpc.CallOption) (*AddSSHKeyResponse, error)
 	// SetSSHKeys replaces the caller-managed SSH public keys of a container
@@ -272,6 +281,12 @@ type ContainerServiceClient interface {
 	// connecting to the box: ssh:write, and the box owner or one of its
 	// collaborators.
 	StartBoxRun(ctx context.Context, in *StartBoxRunRequest, opts ...grpc.CallOption) (*StartBoxRunResponse, error)
+	// GetBoxRunUserStatus reports whether the unprivileged run user on a box has a
+	// usable agent sign-in: the same probe StartBoxRun applies before refusing a
+	// platform run, without queueing one (#3274). Names the credential source
+	// only; never reads, copies or prints a credential value. Same access as
+	// StartBoxRun.
+	GetBoxRunUserStatus(ctx context.Context, in *GetBoxRunUserStatusRequest, opts ...grpc.CallOption) (*GetBoxRunUserStatusResponse, error)
 	// ListBoxRuns lists the `code run` records on a box (#2123). Same access
 	// as connecting to the box: ssh:write, and the box owner or one of its
 	// collaborators.
@@ -285,6 +300,34 @@ type ContainerServiceClient interface {
 	// `containarium code stop`, for a caller with no SSH client. Same access as
 	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
 	StopBoxRun(ctx context.Context, in *StopBoxRunRequest, opts ...grpc.CallOption) (*StopBoxRunResponse, error)
+	// WriteBoxFile writes one file into a box user's home directory through the
+	// container file API, never through a shell (#3548): the way a caller puts
+	// input on a box for a run to read, without SSH and without embedding the
+	// bytes in a `command` run. Same access as StartBoxRun: ssh:write, and the
+	// box owner or one of its collaborators. Advertised as the "box_files"
+	// capability.
+	WriteBoxFile(ctx context.Context, in *WriteBoxFileRequest, opts ...grpc.CallOption) (*WriteBoxFileResponse, error)
+	// WriteBoxFileStream is WriteBoxFile for a file above 2 MiB (#3548): a
+	// client stream of a header and then data, at most 64 MiB in all. The bytes
+	// go straight into the same root-made staging file as WriteBoxFile and are
+	// placed by the same box-user script, so the confinement, the atomic rename
+	// and the checksum are the same; a stream that ends early, runs past its
+	// declared size or fails its checksum leaves no file. Same access as
+	// StartBoxRun. Advertised as the "box_files_stream" capability.
+	WriteBoxFileStream(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse], error)
+	// SweepBoxRunCheckouts runs the per-run checkout sweep once on one box
+	// (#3296): removes directories directly under the owner's and the run
+	// user's ~/work named <repo>-run-<8 hex> that are older than the daemon's
+	// maximum age, not in use and not a live run's. dry_run lists the same set
+	// and removes nothing. Same access as StopBoxRun.
+	SweepBoxRunCheckouts(ctx context.Context, in *SweepBoxRunCheckoutsRequest, opts ...grpc.CallOption) (*SweepBoxRunCheckoutsResponse, error)
+	// ApplyBoxSkillSets re-applies a box's SDLC skill sets without re-creating
+	// it (#3374): installs the skills of newly listed sets, removes those of
+	// sets no longer listed (per the box's manifest), and leaves everything
+	// else alone. Idempotent; refused with a typed reason (BoxSkillSetsRefusal)
+	// under a run in progress, for an unknown set id, or when a set that
+	// predates the manifest would be removed. Same access as StartBoxRun.
+	ApplyBoxSkillSets(ctx context.Context, in *ApplyBoxSkillSetsRequest, opts ...grpc.CallOption) (*ApplyBoxSkillSetsResponse, error)
 	// GetRunApprovalKey returns the public key a box's permission-request
 	// answers are signed with (#2184). `code run --approvals ask` hands it to
 	// the box. Same access as StartBoxRun.
@@ -292,9 +335,15 @@ type ContainerServiceClient interface {
 	// ListRunInputs lists the open permission requests of a box run (#2184).
 	// Same access as StartBoxRun.
 	ListRunInputs(ctx context.Context, in *ListRunInputsRequest, opts ...grpc.CallOption) (*ListRunInputsResponse, error)
+	// ListRunCommandEvents reads a box run's command events (#3582): the START,
+	// END and BLOCKED records the run's audit sink wrote, in order, after a
+	// given sequence number. Read-only. Same access as ListRunInputs.
+	ListRunCommandEvents(ctx context.Context, in *ListRunCommandEventsRequest, opts ...grpc.CallOption) (*ListRunCommandEventsResponse, error)
 	// AnswerRunInput answers one permission request of a box run (#2184).
 	// Answering a request that is already closed or expired changes nothing
-	// and reports the existing outcome. Same access as StartBoxRun.
+	// and reports the existing outcome. StartBoxRun's access rule plus the
+	// code:answer scope, matched literally (#3191): no credential on a box
+	// carries it, so the agent cannot answer its own requests.
 	AnswerRunInput(ctx context.Context, in *AnswerRunInputRequest, opts ...grpc.CallOption) (*AnswerRunInputResponse, error)
 	// AddCollaborator adds a collaborator to a container
 	AddCollaborator(ctx context.Context, in *AddCollaboratorRequest, opts ...grpc.CallOption) (*AddCollaboratorResponse, error)
@@ -696,6 +745,16 @@ func (c *containerServiceClient) SetContainerAttribution(ctx context.Context, in
 	return out, nil
 }
 
+func (c *containerServiceClient) SetCodingAgent(ctx context.Context, in *SetCodingAgentRequest, opts ...grpc.CallOption) (*SetCodingAgentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetCodingAgentResponse)
+	err := c.cc.Invoke(ctx, ContainerService_SetCodingAgent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) AddSSHKey(ctx context.Context, in *AddSSHKeyRequest, opts ...grpc.CallOption) (*AddSSHKeyResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AddSSHKeyResponse)
@@ -736,6 +795,16 @@ func (c *containerServiceClient) StartBoxRun(ctx context.Context, in *StartBoxRu
 	return out, nil
 }
 
+func (c *containerServiceClient) GetBoxRunUserStatus(ctx context.Context, in *GetBoxRunUserStatusRequest, opts ...grpc.CallOption) (*GetBoxRunUserStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetBoxRunUserStatusResponse)
+	err := c.cc.Invoke(ctx, ContainerService_GetBoxRunUserStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) ListBoxRuns(ctx context.Context, in *ListBoxRunsRequest, opts ...grpc.CallOption) (*ListBoxRunsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListBoxRunsResponse)
@@ -766,6 +835,49 @@ func (c *containerServiceClient) StopBoxRun(ctx context.Context, in *StopBoxRunR
 	return out, nil
 }
 
+func (c *containerServiceClient) WriteBoxFile(ctx context.Context, in *WriteBoxFileRequest, opts ...grpc.CallOption) (*WriteBoxFileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WriteBoxFileResponse)
+	err := c.cc.Invoke(ctx, ContainerService_WriteBoxFile_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) WriteBoxFileStream(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &ContainerService_ServiceDesc.Streams[0], ContainerService_WriteBoxFileStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ContainerService_WriteBoxFileStreamClient = grpc.ClientStreamingClient[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse]
+
+func (c *containerServiceClient) SweepBoxRunCheckouts(ctx context.Context, in *SweepBoxRunCheckoutsRequest, opts ...grpc.CallOption) (*SweepBoxRunCheckoutsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SweepBoxRunCheckoutsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_SweepBoxRunCheckouts_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ApplyBoxSkillSets(ctx context.Context, in *ApplyBoxSkillSetsRequest, opts ...grpc.CallOption) (*ApplyBoxSkillSetsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplyBoxSkillSetsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ApplyBoxSkillSets_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *containerServiceClient) GetRunApprovalKey(ctx context.Context, in *GetRunApprovalKeyRequest, opts ...grpc.CallOption) (*GetRunApprovalKeyResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetRunApprovalKeyResponse)
@@ -780,6 +892,16 @@ func (c *containerServiceClient) ListRunInputs(ctx context.Context, in *ListRunI
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListRunInputsResponse)
 	err := c.cc.Invoke(ctx, ContainerService_ListRunInputs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ListRunCommandEvents(ctx context.Context, in *ListRunCommandEventsRequest, opts ...grpc.CallOption) (*ListRunCommandEventsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRunCommandEventsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ListRunCommandEvents_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1352,6 +1474,8 @@ type ContainerServiceServer interface {
 	// named are left intact. Cloud→daemon plumbing (like /authorized-keys/sentinel),
 	// not a standalone operator action — no CLI verb.
 	SetContainerAttribution(context.Context, *SetContainerAttributionRequest) (*SetContainerAttributionResponse, error)
+	// SetCodingAgent records the coding agent installed on a container
+	SetCodingAgent(context.Context, *SetCodingAgentRequest) (*SetCodingAgentResponse, error)
 	// AddSSHKey adds an SSH public key to a container
 	AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error)
 	// SetSSHKeys replaces the caller-managed SSH public keys of a container
@@ -1364,6 +1488,12 @@ type ContainerServiceServer interface {
 	// connecting to the box: ssh:write, and the box owner or one of its
 	// collaborators.
 	StartBoxRun(context.Context, *StartBoxRunRequest) (*StartBoxRunResponse, error)
+	// GetBoxRunUserStatus reports whether the unprivileged run user on a box has a
+	// usable agent sign-in: the same probe StartBoxRun applies before refusing a
+	// platform run, without queueing one (#3274). Names the credential source
+	// only; never reads, copies or prints a credential value. Same access as
+	// StartBoxRun.
+	GetBoxRunUserStatus(context.Context, *GetBoxRunUserStatusRequest) (*GetBoxRunUserStatusResponse, error)
 	// ListBoxRuns lists the `code run` records on a box (#2123). Same access
 	// as connecting to the box: ssh:write, and the box owner or one of its
 	// collaborators.
@@ -1377,6 +1507,34 @@ type ContainerServiceServer interface {
 	// `containarium code stop`, for a caller with no SSH client. Same access as
 	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
 	StopBoxRun(context.Context, *StopBoxRunRequest) (*StopBoxRunResponse, error)
+	// WriteBoxFile writes one file into a box user's home directory through the
+	// container file API, never through a shell (#3548): the way a caller puts
+	// input on a box for a run to read, without SSH and without embedding the
+	// bytes in a `command` run. Same access as StartBoxRun: ssh:write, and the
+	// box owner or one of its collaborators. Advertised as the "box_files"
+	// capability.
+	WriteBoxFile(context.Context, *WriteBoxFileRequest) (*WriteBoxFileResponse, error)
+	// WriteBoxFileStream is WriteBoxFile for a file above 2 MiB (#3548): a
+	// client stream of a header and then data, at most 64 MiB in all. The bytes
+	// go straight into the same root-made staging file as WriteBoxFile and are
+	// placed by the same box-user script, so the confinement, the atomic rename
+	// and the checksum are the same; a stream that ends early, runs past its
+	// declared size or fails its checksum leaves no file. Same access as
+	// StartBoxRun. Advertised as the "box_files_stream" capability.
+	WriteBoxFileStream(grpc.ClientStreamingServer[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse]) error
+	// SweepBoxRunCheckouts runs the per-run checkout sweep once on one box
+	// (#3296): removes directories directly under the owner's and the run
+	// user's ~/work named <repo>-run-<8 hex> that are older than the daemon's
+	// maximum age, not in use and not a live run's. dry_run lists the same set
+	// and removes nothing. Same access as StopBoxRun.
+	SweepBoxRunCheckouts(context.Context, *SweepBoxRunCheckoutsRequest) (*SweepBoxRunCheckoutsResponse, error)
+	// ApplyBoxSkillSets re-applies a box's SDLC skill sets without re-creating
+	// it (#3374): installs the skills of newly listed sets, removes those of
+	// sets no longer listed (per the box's manifest), and leaves everything
+	// else alone. Idempotent; refused with a typed reason (BoxSkillSetsRefusal)
+	// under a run in progress, for an unknown set id, or when a set that
+	// predates the manifest would be removed. Same access as StartBoxRun.
+	ApplyBoxSkillSets(context.Context, *ApplyBoxSkillSetsRequest) (*ApplyBoxSkillSetsResponse, error)
 	// GetRunApprovalKey returns the public key a box's permission-request
 	// answers are signed with (#2184). `code run --approvals ask` hands it to
 	// the box. Same access as StartBoxRun.
@@ -1384,9 +1542,15 @@ type ContainerServiceServer interface {
 	// ListRunInputs lists the open permission requests of a box run (#2184).
 	// Same access as StartBoxRun.
 	ListRunInputs(context.Context, *ListRunInputsRequest) (*ListRunInputsResponse, error)
+	// ListRunCommandEvents reads a box run's command events (#3582): the START,
+	// END and BLOCKED records the run's audit sink wrote, in order, after a
+	// given sequence number. Read-only. Same access as ListRunInputs.
+	ListRunCommandEvents(context.Context, *ListRunCommandEventsRequest) (*ListRunCommandEventsResponse, error)
 	// AnswerRunInput answers one permission request of a box run (#2184).
 	// Answering a request that is already closed or expired changes nothing
-	// and reports the existing outcome. Same access as StartBoxRun.
+	// and reports the existing outcome. StartBoxRun's access rule plus the
+	// code:answer scope, matched literally (#3191): no credential on a box
+	// carries it, so the agent cannot answer its own requests.
 	AnswerRunInput(context.Context, *AnswerRunInputRequest) (*AnswerRunInputResponse, error)
 	// AddCollaborator adds a collaborator to a container
 	AddCollaborator(context.Context, *AddCollaboratorRequest) (*AddCollaboratorResponse, error)
@@ -1620,6 +1784,9 @@ func (UnimplementedContainerServiceServer) SetContainerToolAccess(context.Contex
 func (UnimplementedContainerServiceServer) SetContainerAttribution(context.Context, *SetContainerAttributionRequest) (*SetContainerAttributionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetContainerAttribution not implemented")
 }
+func (UnimplementedContainerServiceServer) SetCodingAgent(context.Context, *SetCodingAgentRequest) (*SetCodingAgentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetCodingAgent not implemented")
+}
 func (UnimplementedContainerServiceServer) AddSSHKey(context.Context, *AddSSHKeyRequest) (*AddSSHKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddSSHKey not implemented")
 }
@@ -1632,6 +1799,9 @@ func (UnimplementedContainerServiceServer) RemoveSSHKey(context.Context, *Remove
 func (UnimplementedContainerServiceServer) StartBoxRun(context.Context, *StartBoxRunRequest) (*StartBoxRunResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StartBoxRun not implemented")
 }
+func (UnimplementedContainerServiceServer) GetBoxRunUserStatus(context.Context, *GetBoxRunUserStatusRequest) (*GetBoxRunUserStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetBoxRunUserStatus not implemented")
+}
 func (UnimplementedContainerServiceServer) ListBoxRuns(context.Context, *ListBoxRunsRequest) (*ListBoxRunsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListBoxRuns not implemented")
 }
@@ -1641,11 +1811,26 @@ func (UnimplementedContainerServiceServer) TailBoxRunLog(context.Context, *TailB
 func (UnimplementedContainerServiceServer) StopBoxRun(context.Context, *StopBoxRunRequest) (*StopBoxRunResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StopBoxRun not implemented")
 }
+func (UnimplementedContainerServiceServer) WriteBoxFile(context.Context, *WriteBoxFileRequest) (*WriteBoxFileResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method WriteBoxFile not implemented")
+}
+func (UnimplementedContainerServiceServer) WriteBoxFileStream(grpc.ClientStreamingServer[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse]) error {
+	return status.Error(codes.Unimplemented, "method WriteBoxFileStream not implemented")
+}
+func (UnimplementedContainerServiceServer) SweepBoxRunCheckouts(context.Context, *SweepBoxRunCheckoutsRequest) (*SweepBoxRunCheckoutsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SweepBoxRunCheckouts not implemented")
+}
+func (UnimplementedContainerServiceServer) ApplyBoxSkillSets(context.Context, *ApplyBoxSkillSetsRequest) (*ApplyBoxSkillSetsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApplyBoxSkillSets not implemented")
+}
 func (UnimplementedContainerServiceServer) GetRunApprovalKey(context.Context, *GetRunApprovalKeyRequest) (*GetRunApprovalKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRunApprovalKey not implemented")
 }
 func (UnimplementedContainerServiceServer) ListRunInputs(context.Context, *ListRunInputsRequest) (*ListRunInputsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListRunInputs not implemented")
+}
+func (UnimplementedContainerServiceServer) ListRunCommandEvents(context.Context, *ListRunCommandEventsRequest) (*ListRunCommandEventsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListRunCommandEvents not implemented")
 }
 func (UnimplementedContainerServiceServer) AnswerRunInput(context.Context, *AnswerRunInputRequest) (*AnswerRunInputResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AnswerRunInput not implemented")
@@ -2220,6 +2405,24 @@ func _ContainerService_SetContainerAttribution_Handler(srv interface{}, ctx cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_SetCodingAgent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetCodingAgentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).SetCodingAgent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_SetCodingAgent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).SetCodingAgent(ctx, req.(*SetCodingAgentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_AddSSHKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(AddSSHKeyRequest)
 	if err := dec(in); err != nil {
@@ -2292,6 +2495,24 @@ func _ContainerService_StartBoxRun_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_GetBoxRunUserStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetBoxRunUserStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).GetBoxRunUserStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_GetBoxRunUserStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).GetBoxRunUserStatus(ctx, req.(*GetBoxRunUserStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_ListBoxRuns_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListBoxRunsRequest)
 	if err := dec(in); err != nil {
@@ -2346,6 +2567,67 @@ func _ContainerService_StopBoxRun_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ContainerService_WriteBoxFile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WriteBoxFileRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).WriteBoxFile(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_WriteBoxFile_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).WriteBoxFile(ctx, req.(*WriteBoxFileRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_WriteBoxFileStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(ContainerServiceServer).WriteBoxFileStream(&grpc.GenericServerStream[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ContainerService_WriteBoxFileStreamServer = grpc.ClientStreamingServer[WriteBoxFileStreamRequest, WriteBoxFileStreamResponse]
+
+func _ContainerService_SweepBoxRunCheckouts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SweepBoxRunCheckoutsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).SweepBoxRunCheckouts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_SweepBoxRunCheckouts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).SweepBoxRunCheckouts(ctx, req.(*SweepBoxRunCheckoutsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ApplyBoxSkillSets_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyBoxSkillSetsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ApplyBoxSkillSets(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ApplyBoxSkillSets_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ApplyBoxSkillSets(ctx, req.(*ApplyBoxSkillSetsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ContainerService_GetRunApprovalKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetRunApprovalKeyRequest)
 	if err := dec(in); err != nil {
@@ -2378,6 +2660,24 @@ func _ContainerService_ListRunInputs_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).ListRunInputs(ctx, req.(*ListRunInputsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ListRunCommandEvents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRunCommandEventsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ListRunCommandEvents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ListRunCommandEvents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ListRunCommandEvents(ctx, req.(*ListRunCommandEventsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3206,6 +3506,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ContainerService_SetContainerAttribution_Handler,
 		},
 		{
+			MethodName: "SetCodingAgent",
+			Handler:    _ContainerService_SetCodingAgent_Handler,
+		},
+		{
 			MethodName: "AddSSHKey",
 			Handler:    _ContainerService_AddSSHKey_Handler,
 		},
@@ -3222,6 +3526,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ContainerService_StartBoxRun_Handler,
 		},
 		{
+			MethodName: "GetBoxRunUserStatus",
+			Handler:    _ContainerService_GetBoxRunUserStatus_Handler,
+		},
+		{
 			MethodName: "ListBoxRuns",
 			Handler:    _ContainerService_ListBoxRuns_Handler,
 		},
@@ -3234,12 +3542,28 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ContainerService_StopBoxRun_Handler,
 		},
 		{
+			MethodName: "WriteBoxFile",
+			Handler:    _ContainerService_WriteBoxFile_Handler,
+		},
+		{
+			MethodName: "SweepBoxRunCheckouts",
+			Handler:    _ContainerService_SweepBoxRunCheckouts_Handler,
+		},
+		{
+			MethodName: "ApplyBoxSkillSets",
+			Handler:    _ContainerService_ApplyBoxSkillSets_Handler,
+		},
+		{
 			MethodName: "GetRunApprovalKey",
 			Handler:    _ContainerService_GetRunApprovalKey_Handler,
 		},
 		{
 			MethodName: "ListRunInputs",
 			Handler:    _ContainerService_ListRunInputs_Handler,
+		},
+		{
+			MethodName: "ListRunCommandEvents",
+			Handler:    _ContainerService_ListRunCommandEvents_Handler,
 		},
 		{
 			MethodName: "AnswerRunInput",
@@ -3402,6 +3726,12 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ContainerService_SetTenantKMSKey_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "WriteBoxFileStream",
+			Handler:       _ContainerService_WriteBoxFileStream_Handler,
+			ClientStreams: true,
+		},
+	},
 	Metadata: "containarium/v1/service.proto",
 }

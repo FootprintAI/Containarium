@@ -85,7 +85,9 @@ func (s *CrewServer) runCrewGraph(ctx context.Context, req *pb.RunCrewRequest, c
 	}
 	run := &pb.CrewRun{Id: runID, CrewId: crew.Id, TraceId: genTraceID(), Owner: s.owner,
 		State: pb.CrewRunState_CREW_RUN_STATE_RUNNING, Graph: req.Graph,
-		GitSource: req.GitSource, GitRef: req.GitRef}
+		GitSource: req.GitSource, GitRef: req.GitRef,
+		// What each node's skill will run with (#3264).
+		MemberModels: crewMemberModels(graphModelMembers(req.Graph, s.catalog), req, s.skillByID)}
 	nodes := make(map[string]*pb.TaskNode, len(req.Graph.Nodes))
 	results := make(map[string]*pb.TaskNodeResult, len(req.Graph.Nodes))
 	deps := make(map[string][]string)
@@ -212,6 +214,8 @@ func (s *CrewServer) runCrewGraph(ctx context.Context, req *pb.RunCrewRequest, c
 	if ctx.Err() != nil {
 		run.State = pb.CrewRunState_CREW_RUN_STATE_CANCELLED
 	}
+	// Summed from the nodes' own run records (#3467).
+	run.Usage = s.graphRunUsage(context.WithoutCancel(ctx), run.NodeResults)
 	if err := persist(); err != nil {
 		return nil, status.Errorf(codes.Internal, "record graph result: %v", err)
 	}

@@ -28,10 +28,10 @@ var tmuxLoginHook []byte
 func (m *Manager) installLoginExtras(containerName string, pkgMgr ospkg.PackageManager) {
 	if script := pkgMgr.MoshInstallScript(); script != "" {
 		if err := m.incus.Exec(containerName, []string{"bash", "-c", script}); err != nil {
-			log.Printf("Warning: mosh install failed in %s (mosh unavailable, ssh+tmux unaffected): %v", containerName, err)
+			log.Printf("Warning: mosh install failed in %q (mosh unavailable, ssh+tmux unaffected): %v", containerName, err)
 		}
 	}
 	if err := m.incus.WriteFile(containerName, tmuxLoginHookPath, tmuxLoginHook, "0644"); err != nil {
-		log.Printf("Warning: failed to install tmux login hook in %s (logins get a plain shell): %v", containerName, err)
+		log.Printf("Warning: failed to install tmux login hook in %q (logins get a plain shell): %v", containerName, err)
 	}
 }

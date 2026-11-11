@@ -4,18 +4,24 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/agentbox"
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/coderun/engine"
+	"github.com/footprintai/containarium/internal/runhook"
+	corecontainer "github.com/footprintai/containarium/pkg/core/container"
+	"github.com/footprintai/containarium/pkg/core/toolchain"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -39,6 +45,27 @@ import (
 // it directly (ignoring username — a test sandbox has no real box user to
 // drop into).
 type boxRunStartFunc func(box, username, script string) (string, error)
+
+// Stable reason for a BUILD_TOOLS refusal when the host release is absent.
+const BoxRunViolationHostManagedToolchainMissing = "HOST_MANAGED_TOOLCHAIN_MISSING"
+
+// boxRunToolchainRefusal preserves the existing FailedPrecondition behavior
+// for every ensure failure, adding a typed violation only for the explicit
+// host-release-missing condition.
+func boxRunToolchainRefusal(err error) error {
+	msg := fmt.Sprintf("managed toolchain mount %s: %v", toolchain.HostRoot, err)
+	st := status.New(codes.FailedPrecondition, msg)
+	if err == nil || !errors.Is(err, corecontainer.ErrManagedToolchainHostMissing) {
+		return st.Err()
+	}
+	detailed, detailErr := st.WithDetails(&errdetails.PreconditionFailure{
+		Violations: []*errdetails.PreconditionFailure_Violation{{Type: BoxRunViolationHostManagedToolchainMissing, Subject: toolchain.HostRoot, Description: msg}},
+	})
+	if detailErr == nil {
+		st = detailed
+	}
+	return st.Err()
+}
 
 // boxRunStartExecFn returns the exec seam: the injected fake, else the
 // container manager wrapped with `su - <username> -c`.
@@ -79,14 +106,9 @@ cat "$HOME/.containarium/code.json" 2>/dev/null || true
 // back to the same default `code run` does: Claude Code + a tenant secret —
 // see readBoxCodeConfig's identical contract in internal/cmd/code_run_engine.go.
 func resolveBoxRunConfig(exec boxRunStartFunc, box, username string) (home string, cfg *engine.CodeConfig, err error) {
-	out, err := exec(box, username, boxRunHomeAndConfigScript())
+	home, rest, err := readBoxRunHomeAndConfig(exec, box, username)
 	if err != nil {
-		return "", nil, status.Errorf(codes.Unavailable, "read %s's $HOME/code.json on %q: %v", username, box, err)
-	}
-	home, rest, _ := strings.Cut(out, "\n")
-	home = strings.TrimSpace(home)
-	if home == "" {
-		return "", nil, status.Errorf(codes.Unavailable, "could not resolve $HOME for %q on %q", username, box)
+		return "", nil, err
 	}
 	blob := strings.TrimSpace(rest)
 	if blob == "" {
@@ -103,10 +125,36 @@ func resolveBoxRunConfig(exec boxRunStartFunc, box, username string) (home strin
 	return home, cfg, nil
 }
 
+// resolveBoxRunHome is resolveBoxRunConfig for command mode (#3422): it runs the
+// same script but keeps only the $HOME line and never parses code.json.
+func resolveBoxRunHome(exec boxRunStartFunc, box, username string) (string, error) {
+	home, _, err := readBoxRunHomeAndConfig(exec, box, username)
+	return home, err
+}
+
+// readBoxRunHomeAndConfig runs boxRunHomeAndConfigScript and splits its output
+// into the trimmed $HOME line and the raw remainder (code.json's content).
+func readBoxRunHomeAndConfig(exec boxRunStartFunc, box, username string) (home, rest string, err error) {
+	out, err := exec(box, username, boxRunHomeAndConfigScript())
+	if err != nil {
+		return "", "", status.Errorf(codes.Unavailable, "read %s's $HOME/code.json on %q: %v", username, box, err)
+	}
+	home, rest, _ = strings.Cut(out, "\n")
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return "", "", status.Errorf(codes.Unavailable, "could not resolve $HOME for %q on %q", username, box)
+	}
+	return home, rest, nil
+}
+
 // boxRunSpawn is everything boxRunSpawnScript needs to render one run's
 // launch script.
 type boxRunSpawn struct {
 	dir, name, command, home string
+	// cwd is the directory the run starts in (StartBoxRunRequest.workdir, #3551,
+	// already shown to exist). Empty or equal to home keeps the home, entered
+	// best-effort as before; any other value must be entered or the spawn fails.
+	cwd string
 	// prelaunch runs before the engine is launched (the session-directory
 	// snapshot a fresh run's discovery compares against). Empty for none.
 	prelaunch string
@@ -121,6 +169,14 @@ type boxRunSpawn struct {
 	structured bool
 }
 
+// runDir is the directory the run starts in: cwd, or the home when unset.
+func (sp boxRunSpawn) runDir() string {
+	if sp.cwd != "" {
+		return sp.cwd
+	}
+	return sp.home
+}
+
 // boxRunSpawnScript builds the script that spawns the command detached
 // (setsid, so it survives this exec call returning), replicating
 // spawnBackgroundProcess's shape: stdout+stderr to the run's log, the child
@@ -129,11 +185,61 @@ type boxRunSpawn struct {
 // <boot_id>" as its one line of stdout.
 func boxRunSpawnScript(sp boxRunSpawn) string {
 	q := shellSingleQuote
+	script := boxRunSpawnPrepareScript(sp) +
+		"setsid sh -c " + q(boxRunSpawnInner(sp)) + " </dev/null >/dev/null 2>&1 &\n" +
+		"pid=$!\n" +
+		"disown 2>/dev/null || true\n" +
+		"boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\n" +
+		"printf '%s %s\\n' \"$pid\" \"$boot\"\n"
+	if sp.sessionTrailer != "" {
+		script += sp.sessionTrailer + "\n"
+	}
+	return script
+}
+
+// boxRunSpawnPrepareScript is the part of the spawn that runs, as the run's
+// user, before the launch: the run's fresh log, the previous sidecars removed,
+// the working directory and the prelaunch.
+func boxRunSpawnPrepareScript(sp boxRunSpawn) string {
+	q := shellSingleQuote
 	dir, name := sp.dir, sp.name
 	logPath := dir + "/" + name + ".log"
 	stderrPath := dir + "/" + name + ".stderr.log"
 	exitPath := dir + "/" + name + ".exit"
 	sessionPath := dir + "/" + name + ".session"
+	toolsPath := dir + "/" + name + ".tools"
+	toolsTmp := toolsPath + ".tmp"
+	script := "set -e\n" +
+		"d=" + q(dir) + "\n" +
+		"mkdir -p \"$d\"\n" +
+		": > " + q(logPath) + "\n" +
+		"chmod 600 " + q(logPath) + " 2>/dev/null || true\n"
+	if sp.structured {
+		script += ": > " + q(stderrPath) + "\n" +
+			"chmod 600 " + q(stderrPath) + " 2>/dev/null || true\n"
+	}
+	script += "rm -f " + q(exitPath) + " " + q(sessionPath) + " " + q(sessionPath+".snap") + " " + q(toolsPath) + " " + q(toolsTmp) + " " + q(toolsTmp+".e.") + "*\n"
+	if sp.runDir() == sp.home {
+		script += "cd " + q(sp.home) + " 2>/dev/null || true\n"
+	} else {
+		// Never a silent fallback to the home: a workdir that vanished since it
+		// was checked fails the start (set -e).
+		script += "cd " + q(sp.runDir()) + "\n"
+	}
+	if sp.prelaunch != "" {
+		script += sp.prelaunch + "\n"
+	}
+	return script
+}
+
+// boxRunSpawnInner is the run's own shell: the toolchain probes around the
+// command, its output to the run's log, and its exit status to <name>.exit.
+func boxRunSpawnInner(sp boxRunSpawn) string {
+	q := shellSingleQuote
+	dir, name := sp.dir, sp.name
+	logPath := dir + "/" + name + ".log"
+	stderrPath := dir + "/" + name + ".stderr.log"
+	exitPath := dir + "/" + name + ".exit"
 	toolsPath := dir + "/" + name + ".tools"
 	toolsTmp := toolsPath + ".tmp"
 
@@ -147,34 +253,59 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 	// run's own shell, so it is written whatever the engine's exit status and costs no
 	// model tokens. It lands BEFORE the exit sidecar, so a reader that sees the run
 	// finished also sees its tools.
-	inner := boxRunToolsPreProbe(toolsTmp) + "( " + sp.command + " ) " + redirect + "; __cx=$?; " +
+	return boxRunToolsPreProbe(toolsTmp) + "( " + sp.command + " ) " + redirect + "; __cx=$?; " +
 		boxRunToolsPostProbe(toolsTmp, toolsPath) +
 		"printf '%s %s' \"$__cx\" \"$(date -u +%s)\" > " + q(exitPath+".tmp") + " 2>/dev/null && " +
 		"mv -f " + q(exitPath+".tmp") + " " + q(exitPath) + "; exit $__cx"
+}
 
-	script := "set -e\n" +
-		"d=" + q(dir) + "\n" +
-		"mkdir -p \"$d\"\n" +
-		": > " + q(logPath) + "\n" +
-		"chmod 600 " + q(logPath) + " 2>/dev/null || true\n"
-	if sp.structured {
-		script += ": > " + q(stderrPath) + "\n" +
-			"chmod 600 " + q(stderrPath) + " 2>/dev/null || true\n"
+// boxRunSupervisedLaunchScript runs as root: it starts the root-owned
+// `agent-box run-supervise` detached, which runs the run's own shell as
+// runUser in its own session and is the run's parent, waits for the run's
+// "<pid> <boot_id>" and prints it. The supervisor alone writes the run's exit
+// status to runhook.ExitPath, which the audit sink reads (#3582); the run
+// directory's <name>.exit is still written by the run's shell, for the
+// listing.
+func boxRunSupervisedLaunchScript(sp boxRunSpawn, runUser string) string {
+	q := shellSingleQuote
+	launch := runhook.LaunchPath(sp.name)
+	return "set -e\n" +
+		"p=" + q(launch) + "\n" +
+		"rm -f \"$p\"\n" +
+		"setsid " + q(runhook.AgentBoxPath) + " run-supervise --config " + q(runhook.ConfigPath(sp.name)) +
+		" --user " + q(runUser) + " --dir " + q(sp.runDir()) + " --command " + q(boxRunSpawnInner(sp)) +
+		" </dev/null >\"$p\" 2>/dev/null &\n" +
+		"i=0\n" +
+		"while [ ! -s \"$p\" ]; do\n" +
+		"  i=$((i+1))\n" +
+		"  [ \"$i\" -le 100 ] || { echo \"the run supervisor did not start\" >&2; exit 1; }\n" +
+		"  sleep 0.1\n" +
+		"done\n" +
+		"head -n 1 \"$p\"\n"
+}
+
+// spawnBoxRun launches the run and returns the spawn's output ("<pid>
+// <boot_id>" first). A run under a command policy is launched by the root
+// supervisor (the prepare and the session trailer still run as runAs), so its
+// exit status is recorded where the run user cannot write it; any other run
+// is spawned by runAs itself, as before.
+func spawnBoxRun(startExec boxRunStartFunc, rootExec boxScriptFunc, box, runAs string, sp boxRunSpawn, supervised bool) (string, error) {
+	if !supervised {
+		return startExec(box, runAs, boxRunSpawnScript(sp))
 	}
-	script += "rm -f " + q(exitPath) + " " + q(sessionPath) + " " + q(sessionPath+".snap") + " " + q(toolsPath) + " " + q(toolsTmp) + " " + q(toolsTmp+".e.") + "*\n" +
-		"cd " + q(sp.home) + " 2>/dev/null || true\n"
-	if sp.prelaunch != "" {
-		script += sp.prelaunch + "\n"
+	if _, err := startExec(box, runAs, boxRunSpawnPrepareScript(sp)); err != nil {
+		return "", err
 	}
-	script += "setsid sh -c " + q(inner) + " </dev/null >/dev/null 2>&1 &\n" +
-		"pid=$!\n" +
-		"disown 2>/dev/null || true\n" +
-		"boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\n" +
-		"printf '%s %s\\n' \"$pid\" \"$boot\"\n"
+	out, err := rootExec(box, boxRunSupervisedLaunchScript(sp, runAs))
+	if err != nil {
+		return "", err
+	}
 	if sp.sessionTrailer != "" {
-		script += sp.sessionTrailer + "\n"
+		if _, err := startExec(box, runAs, sp.sessionTrailer+"\n"); err != nil {
+			return "", err
+		}
 	}
-	return script
+	return out, nil
 }
 
 // sessionSidecarWriteCommand atomically writes id as name's session sidecar —
@@ -212,10 +343,60 @@ func boxRunRotateScript(dir, name string, startedAtUnix int64) string {
 	for _, ext := range []string{"json", "log", "stderr.log", "exit", "session", "session.snap", "tools"} {
 		from := q(dir + "/" + name + "." + ext)
 		to := q(dir + "/" + name + suffix + "." + ext)
-		fmt.Fprintf(&b, "[ -e %s ] && mv -f %s %s 2>/dev/null; ", from, from, to)
+		fmt.Fprintf(&b, "[ -e %s ] && mv -fT %s %s 2>/dev/null; ", from, from, to)
 	}
 	b.WriteString("true\n")
 	return b.String()
+}
+
+// boxRunUnrotateScript undoes boxRunRotateScript for the run that was rotated
+// aside under startedAtUnix: each file goes back to its own name. It runs as
+// root over a run directory the run user can write (sticky, 1777), and only
+// after a start that failed before anything was spawned, with the (box, name)
+// lock held, so nothing legitimate occupies the original name. It therefore
+// does not guard on the original name: a guard there would let a run user block
+// the restore by pre-creating it. mv -fT renames over a planted file or symlink
+// (it never follows a link, and never moves into a directory of that name).
+// A planted directory cannot be renamed over, so that restore fails: the script
+// prints "restore failed: ..." for it (the caller returns that text in its
+// error), leaves the planted directory alone (run-user content is never deleted
+// as root) and leaves the rotated file under its aside name, so nothing is lost.
+func boxRunUnrotateScript(dir, name string, startedAtUnix int64) string {
+	q := shellSingleQuote
+	suffix := "." + strconv.FormatInt(startedAtUnix, 10)
+	var b strings.Builder
+	for _, ext := range []string{"json", "log", "stderr.log", "exit", "session", "session.snap", "tools"} {
+		rawOrig := dir + "/" + name + "." + ext
+		rawAside := dir + "/" + name + suffix + "." + ext
+		orig, aside := q(rawOrig), q(rawAside)
+		fmt.Fprintf(&b, "if [ -e %s ]; then mv -fT %s %s 2>/dev/null || echo %s; fi; ", aside, aside, orig, q("restore failed: "+rawAside+" stays at "+rawOrig))
+	}
+	b.WriteString("true\n")
+	return b.String()
+}
+
+// setUpBoxRunAuditOrRestore runs the command policy's audit setup. When it
+// fails after a finished run was rotated aside, that run is put back under its
+// own name, so a refused start leaves the earlier run as it was (the setup's
+// refusals, such as an untrusted agent-box, are start-time preconditions).
+// The setup stays after the rotation: the sink reads the run directory and
+// could take a not-yet-rotated previous run's record for the new run's.
+func setUpBoxRunAuditOrRestore(listExec boxScriptFunc, startExec boxRunStartFunc, box, dir, name, ownerHome, username string, level boxRunPolicy, req *pb.StartBoxRunRequest, rotated bool, startedAtUnix int64, asRoot bool) error {
+	err := setUpBoxRunAudit(listExec, box, dir, name, ownerHome, username, level, req)
+	if err == nil || !rotated {
+		return err
+	}
+	undo := boxRunUnrotateScript(dir, name, startedAtUnix)
+	var out string
+	if asRoot {
+		out, _ = listExec(box, undo)
+	} else {
+		out, _ = startExec(box, username, undo)
+	}
+	if out = strings.TrimSpace(out); out != "" {
+		return fmt.Errorf("%w; %s", err, strings.ReplaceAll(out, "\n", "; "))
+	}
+	return err
 }
 
 // checkBoxRunCollision looks for an existing run under name via the SAME
@@ -264,8 +445,25 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	if err := validateBoxRunOwner(req.GetUsername()); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(req.GetPrompt()) == "" {
-		return nil, status.Error(codes.InvalidArgument, "prompt is required")
+	// Command mode (#3322): a shell command instead of an engine prompt. The two
+	// are exclusive, and so is everything that only means something to an engine.
+	// A non-empty but blank command is refused outright (#3423): treating it as
+	// "no command" would silently start an engine run, or blame the wrong field.
+	commandMode := req.GetCommand() != ""
+	if commandMode && strings.TrimSpace(req.GetCommand()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "command must not be blank")
+	}
+	if !commandMode && strings.TrimSpace(req.GetPrompt()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "prompt is required (or command, to run a shell command instead of an engine)")
+	}
+	if commandMode && (req.GetPrompt() != "" || req.GetSessionId() != "" || req.GetContinueSession() || req.GetStructuredOutput() || req.GetModel() != "") {
+		return nil, status.Error(codes.InvalidArgument, "command is mutually exclusive with prompt, session_id, continue_session, structured_output and model")
+	}
+	if req.GetTimeoutSeconds() < 0 || req.GetTimeoutSeconds() > coderun.MaxCommandTimeoutSeconds {
+		return nil, status.Errorf(codes.InvalidArgument, "timeout_seconds must be between 0 and %d", coderun.MaxCommandTimeoutSeconds)
+	}
+	if req.GetTimeoutSeconds() != 0 && !commandMode {
+		return nil, status.Error(codes.InvalidArgument, "timeout_seconds applies to command only")
 	}
 	if req.GetSessionId() != "" && req.GetContinueSession() {
 		return nil, status.Error(codes.InvalidArgument, "session_id and continue_session are mutually exclusive")
@@ -279,6 +477,15 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	if req.GetRunName() != "" && boxRunNameCollidesWithDerivedFile(req.GetRunName()) {
 		return nil, status.Error(codes.InvalidArgument,
 			"run_name must not end in \".stderr\" or in \".<digits>\" (those collide with a run's derived files and rotated-aside runs)")
+	}
+	if req.GetModel() != "" && !validBoxRunModel(req.GetModel()) {
+		return nil, status.Errorf(codes.InvalidArgument, "model must match %s", boxRunModelPattern.String())
+	}
+	if err := validateBoxRunCommandPolicy(req); err != nil {
+		return nil, err
+	}
+	if err := validateBoxRunWorkdir(req.GetWorkdir()); err != nil {
+		return nil, err
 	}
 	if err := s.authorizeBoxRuns(ctx, req.GetUsername()); err != nil {
 		return nil, err
@@ -315,6 +522,15 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	lock.Lock()
 	defer lock.Unlock()
 
+	// #3510: refused, before the box is touched, while ApplyBoxSkillSets is
+	// changing the box's skills; held until return (the run's record is
+	// written by then) so an apply arriving meanwhile sees this run.
+	releaseGate, err := s.enterBoxRunStart(box, name)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseGate()
+
 	collision, rotate, err := checkBoxRunCollision(listExec, box, dir, name)
 	if err != nil {
 		return nil, err
@@ -332,9 +548,22 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	// so moving it ahead of the rotate costs nothing and means a refusal
 	// from here on leaves a colliding finished run's files exactly where
 	// they were, still discoverable under their original name.
-	home, cfg, err := resolveBoxRunConfig(startExec, box, req.GetUsername())
+	//
+	// Command mode (#3422) needs only $HOME: it does not consult code.json, so a
+	// corrupt or unknown-version file must not stop a plain command. The engine
+	// path keeps the full resolve.
+	var home string
+	var cfg *engine.CodeConfig
+	if commandMode {
+		home, err = resolveBoxRunHome(startExec, box, req.GetUsername())
+	} else {
+		home, cfg, err = resolveBoxRunConfig(startExec, box, req.GetUsername())
+	}
 	if err != nil {
 		return nil, err
+	}
+	if commandMode {
+		return s.startBoxRunCommand(ctx, req, box, dir, name, home, listExec, startExec, collision, rotate)
 	}
 	if cfg.Credential == engine.KindGateway {
 		// #2193 scope boundary (documented in the PR, not a silent gap): a
@@ -354,6 +583,12 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	if req.GetStructuredOutput() && eng.Name() != engine.NameClaude {
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"structured_output is only supported for the %s engine; %s on %q selects %s",
+			engine.NameClaude, engine.CodeConfigPath, req.GetUsername(), eng.Name())
+	}
+
+	if req.GetModel() != "" && eng.Name() != engine.NameClaude {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"model is only supported for the %s engine; %s on %q selects %s",
 			engine.NameClaude, engine.CodeConfigPath, req.GetUsername(), eng.Name())
 	}
 
@@ -380,8 +615,33 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 			return nil, status.Errorf(codes.FailedPrecondition, "%q: %v", req.GetUsername(), err)
 		}
 	}
+	// The command policy's hooks evaluate the level's own rules and rely on the
+	// unprivileged run user not owning their files (#3582).
+	if req.GetCommandPolicy() != nil && level == "" {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"%q has no tool-access level recorded; command_policy needs one", req.GetUsername())
+	}
 
-	// Every precondition has now passed — safe to mutate.
+	// Lazily attach the release to old boxes before rotating any previous run.
+	// Only BUILD_TOOLS requires it; the other levels keep working on hosts
+	// that have not installed a managed toolchain release.
+	ensureTools := s.boxRunEnsureToolchain
+	if ensureTools == nil && s.manager != nil {
+		ensureTools = s.manager.EnsureManagedToolchains
+	}
+	if level == "build_tools" {
+		if ensureTools == nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "missing managed toolchain mount %s", toolchain.HostRoot)
+		}
+		if err := ensureTools(req.GetUsername()); err != nil {
+			return nil, boxRunToolchainRefusal(err)
+		}
+	} else if ensureTools != nil {
+		_ = ensureTools(req.GetUsername())
+	}
+
+	// The level and required mount are ready; now provision the run user.
+	ownerHome := home
 	if level != "" {
 		runHome, err := prepareUnprivilegedRun(listExec, box, dir, home, level)
 		if err != nil {
@@ -399,6 +659,13 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		if state != engine.CredentialStatusInteractive && state != engine.CredentialStatusAPIKey {
 			return nil, boxRunSignInRefusal(box, state, runHome)
 		}
+	}
+
+	// The run's directory (#3551), checked as the run user under the home the run
+	// starts in, before anything is rotated or spawned.
+	cwd, err := resolveBoxRunWorkdir(startExec, box, runAs, home, req.GetWorkdir())
+	if err != nil {
+		return nil, err
 	}
 
 	// Only now does a finished prior run under this name get rotated aside. In
@@ -423,11 +690,30 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		command += engine.ClaudeStructuredOutputFlag
 	}
 
+	if req.GetModel() != "" {
+		// Validated above to a plain id; quoted anyway, as the prompt is.
+		command += " --model " + coderun.ShellQuoteSingle(req.GetModel())
+	}
+
+	if req.GetCommandPolicy() != nil {
+		// Root-owned configuration and sink first: the run must not start
+		// before its first command can be recorded (#3582).
+		if err := setUpBoxRunAuditOrRestore(listExec, startExec, box, dir, name, ownerHome, req.GetUsername(), policy, req, rotate, collision.GetStartedAt().AsTime().Unix(), level != ""); err != nil {
+			return nil, err
+		}
+		policy.Settings = boxRunHookSettingsJSON(name)
+		// The engine the run executes is the root-staged copy (setUpBoxRunAudit
+		// staged it), never the run user's own.
+		if command, err = boxRunPolicyEngineCommand(command); err != nil {
+			return nil, status.Errorf(codes.Internal, "%q: %v", req.GetUsername(), err)
+		}
+	}
+
 	if level != "" {
 		command += policy.commandFlags()
 	}
 
-	sp := boxRunSpawn{dir: dir, name: name, command: command, home: home, structured: req.GetStructuredOutput()}
+	sp := boxRunSpawn{dir: dir, name: name, command: command, home: home, cwd: cwd, structured: req.GetStructuredOutput()}
 	sidecar := dir + "/" + name + ".session"
 	switch {
 	case req.GetSessionId() != "":
@@ -440,16 +726,17 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	default:
 		// A fresh run: snapshot the engine's session directory BEFORE the
 		// launch, then poll for the one entry this run creates. Never the
-		// newest pre-existing one (see engine/session_discovery.go).
-		if pre, ok := engine.SessionDiscoveryPrepareCommand(eng.Name(), home, home, sidecar); ok {
-			if cmd, ok := engine.SessionDiscoveryBackgroundCommand(eng.Name(), home, home, sidecar); ok {
+		// newest pre-existing one (see engine/session_discovery.go). The
+		// engine keys its sessions by the directory it starts in.
+		if pre, ok := engine.SessionDiscoveryPrepareCommand(eng.Name(), home, cwd, sidecar); ok {
+			if cmd, ok := engine.SessionDiscoveryBackgroundCommand(eng.Name(), home, cwd, sidecar); ok {
 				sp.prelaunch = pre
 				sp.sessionTrailer = cmd
 			}
 		}
 	}
 
-	out, err := startExec(box, runAs, boxRunSpawnScript(sp))
+	out, err := spawnBoxRun(startExec, listExec, box, runAs, sp, req.GetCommandPolicy() != nil)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
 	}
@@ -469,10 +756,13 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		PID:         pid,
 		BootID:      strings.TrimSpace(boot),
 		Command:     command,
-		Cwd:         home,
+		Cwd:         cwd,
 		CaptureMode: agentbox.CaptureCombined,
 		LogPath:     dir + "/" + name + ".log",
 		StartedAt:   startedAt,
+		Model:       req.GetModel(),
+		Workdir:     req.GetWorkdir(),
+		Resumed:     boxRunResumed(req),
 	}
 	recordJSON, err := json.Marshal(record)
 	if err != nil {
@@ -489,6 +779,116 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	return &pb.StartBoxRunResponse{Run: run}, nil
 }
 
+// startBoxRunCommand is StartBoxRun's command mode (#3322): the same run
+// directory, record, rotation, identity and tool-access handling as an engine
+// run, with a shell command under a timeout in the engine's place. Nothing
+// engine-specific happens: no code.json engine is resolved, no gateway token,
+// no sign-in probe (nothing is signed in), no session discovery. The caller has
+// validated the request and holds the (box, name) lock.
+func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartBoxRunRequest, box, dir, name, home string, listExec boxScriptFunc, startExec boxRunStartFunc, collision *pb.BoxRun, rotate bool) (*pb.StartBoxRunResponse, error) {
+	level, err := s.boxRunRecordedToolAccess(ctx, req.GetUsername())
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "read the tool-access level of %q: %v", req.GetUsername(), err)
+	}
+	var policy boxRunPolicy
+	if level != "" {
+		if policy, err = boxRunPolicyFor(level); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "%q: %v", req.GetUsername(), err)
+		}
+	}
+	// A command policy decides the command against the level's rules and relies
+	// on the unprivileged run user not owning its files, as for an engine run
+	// (#3582).
+	if req.GetCommandPolicy() != nil && level == "" {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"%q has no tool-access level recorded; command_policy needs one", req.GetUsername())
+	}
+	ensureTools := s.boxRunEnsureToolchain
+	if ensureTools == nil && s.manager != nil {
+		ensureTools = s.manager.EnsureManagedToolchains
+	}
+	if level == "build_tools" {
+		if ensureTools == nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "missing managed toolchain mount %s", toolchain.HostRoot)
+		}
+		if err := ensureTools(req.GetUsername()); err != nil {
+			return nil, boxRunToolchainRefusal(err)
+		}
+	} else if ensureTools != nil {
+		_ = ensureTools(req.GetUsername())
+	}
+	runAs, ownerHome := req.GetUsername(), home
+	if level != "" {
+		// The run user, its sudo grant for the level and its staged home, as for an
+		// engine run; the engine sign-in is not checked, because no engine starts.
+		runHome, err := prepareUnprivilegedRun(listExec, box, dir, home, level)
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "prepare the unprivileged run user on %q: %v", req.GetUsername(), err)
+		}
+		runAs, home = boxRunUnprivilegedUser, runHome
+	}
+	// The run's directory (#3551), checked as the run user before the rotate.
+	cwd, err := resolveBoxRunWorkdir(startExec, box, runAs, home, req.GetWorkdir())
+	if err != nil {
+		return nil, err
+	}
+	if rotate {
+		rotateScript := boxRunRotateScript(dir, name, collision.GetStartedAt().AsTime().Unix())
+		var err error
+		if level != "" {
+			_, err = listExec(box, rotateScript)
+		} else {
+			_, err = startExec(box, req.GetUsername(), rotateScript)
+		}
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "rotate finished run %q on %q: %v", name, req.GetUsername(), err)
+		}
+	}
+
+	command := coderun.BuildShellCommand(req.GetCommand(), int(req.GetTimeoutSeconds()))
+	if req.GetCommandPolicy() != nil {
+		// The same sink, decision and events as an engine run's shell commands
+		// (#3582): the command is in the root-owned configuration, and the
+		// root-owned agent-box decides it before running it.
+		if err := setUpBoxRunAuditOrRestore(listExec, startExec, box, dir, name, ownerHome, req.GetUsername(), policy, req, rotate, collision.GetStartedAt().AsTime().Unix(), level != ""); err != nil {
+			return nil, err
+		}
+		command = boxRunPolicyCommandLine(name, int(req.GetTimeoutSeconds()))
+	}
+	out, err := spawnBoxRun(startExec, listExec, box, runAs, boxRunSpawn{dir: dir, name: name, command: command, home: home, cwd: cwd}, req.GetCommandPolicy() != nil)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
+	}
+	pidStr, boot, found := strings.Cut(strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]), " ")
+	if !found {
+		return nil, status.Errorf(codes.Internal, "unexpected spawn output %q", out)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(pidStr))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "unexpected spawn pid %q", pidStr)
+	}
+	record := agentbox.RunRecord{
+		Version:     agentbox.RunRecordVersion,
+		Name:        name,
+		PID:         pid,
+		BootID:      strings.TrimSpace(boot),
+		Command:     command,
+		Cwd:         cwd,
+		CaptureMode: agentbox.CaptureCombined,
+		LogPath:     dir + "/" + name + ".log",
+		StartedAt:   time.Now().UTC(),
+		Workdir:     req.GetWorkdir(),
+	}
+	recordJSON, err := json.Marshal(record)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "marshal run record: %v", err)
+	}
+	if _, err := startExec(box, runAs, boxRunWriteRecordScript(dir, name, recordJSON)); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "persist run record for %q on %q: %v", name, req.GetUsername(), err)
+	}
+	return &pb.StartBoxRunResponse{Run: boxRunProto(name, dir, record, agentbox.RunOutcomeRunning)}, nil
+}
+
 // Daemon capability names advertised in SystemInfo.capabilities. A client
 // checks for a name before sending the request field it gates (the REST mux
 // rejects unknown JSON fields, so an older daemon would fail the whole call).
@@ -498,11 +898,23 @@ const (
 	DaemonCapBoxRunName = "box_run_name"
 	// DaemonCapBoxRunStructuredOutput: StartBoxRunRequest.structured_output.
 	DaemonCapBoxRunStructuredOutput = "box_run_structured_output"
+	// DaemonCapBoxRunModel: StartBoxRunRequest.model and BoxRun.model (#3259).
+	DaemonCapBoxRunModel = "box_run_model"
+	// DaemonCapBoxRunCommand: StartBoxRunRequest.command and timeout_seconds (#3322).
+	DaemonCapBoxRunCommand = "box_run_command"
+	// DaemonCapRunUsage: BoxRun.usage, RunAgentSkillResponse.usage and CrewRun.usage (#3467).
+	DaemonCapRunUsage = "run_usage"
+	// DaemonCapBoxRunCommandPolicy: StartBoxRunRequest.command_policy and approval (#3582).
+	DaemonCapBoxRunCommandPolicy = "box_run_command_policy"
+	// DaemonCapBoxRunWorkdir: StartBoxRunRequest.workdir and BoxRun.workdir (#3551).
+	DaemonCapBoxRunWorkdir = "box_run_workdir"
+	// DaemonCapBoxFiles (the WriteBoxFile RPC, #3548) is declared in box_file_write.go,
+	// DaemonCapBoxFilesStream (WriteBoxFileStream) in box_file_stream.go.
 )
 
 // daemonCapabilities is the list GetSystemInfo reports.
 func daemonCapabilities() []string {
-	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput}
+	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxRunCommandPolicy, DaemonCapBoxRunWorkdir, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream}
 }
 
 // boxRunNameCollidesWithDerivedFile reports whether name would alias a file or
@@ -553,4 +965,17 @@ func prepareUnprivilegedRun(rootExec func(box, script string) (string, error), b
 		return "", fmt.Errorf("stage the run user's home: %w", err)
 	}
 	return runHome, nil
+}
+
+// boxRunModelPattern bounds a model id. The id is opaque to the API, but it ends
+// up in a shell command, so only the characters real ids use are allowed, and it
+// cannot start with "-" (it would read as another flag).
+var boxRunModelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$`)
+
+func validBoxRunModel(id string) bool { return boxRunModelPattern.MatchString(id) }
+
+// boxRunResumed reports whether the run continues an earlier engine session,
+// whose usage the engine then reports cumulatively (#3467).
+func boxRunResumed(req *pb.StartBoxRunRequest) bool {
+	return req.GetSessionId() != "" || req.GetContinueSession()
 }

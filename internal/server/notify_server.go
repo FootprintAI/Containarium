@@ -57,7 +57,11 @@ type NotifyServer struct {
 
 	store   notify.ChannelStore
 	secrets notifySecretStore
-	sender  notifySender
+	// secretsSource, when set, is read on every call in place of secrets
+	// (see secretStore). The daemon sets it before serving, so a secrets
+	// store installed after a degraded start (#3327) reaches the service.
+	secretsSource func() notifySecretStore
+	sender        notifySender
 	// exec runs a script in a box (ContainerServer.boxRunExecFn); dir is
 	// agent-box's log dir.
 	exec func() boxScriptFunc
@@ -82,6 +86,15 @@ type NotifyServer struct {
 	inflight map[string]bool
 	sem      chan struct{}
 	wg       sync.WaitGroup
+}
+
+// secretStore is the secrets store for this call: secretsSource when set,
+// otherwise the one the service was built with. Nil means none.
+func (s *NotifyServer) secretStore() notifySecretStore {
+	if s.secretsSource != nil {
+		return s.secretsSource()
+	}
+	return s.secrets
 }
 
 // NewNotifyServer wires the service. secretStore may be nil on a daemon
@@ -141,7 +154,8 @@ func notifyChannelProto(ch notify.Channel) *pb.NotifyChannel {
 // storeNotifyToken writes token into a new broker-only secret and returns
 // its name. Nothing points at it yet.
 func (s *NotifyServer) storeNotifyToken(ctx context.Context, username, token string) (string, error) {
-	if s.secrets == nil {
+	secretStore := s.secretStore()
+	if secretStore == nil {
 		return "", status.Error(codes.FailedPrecondition, "secrets store not configured on this daemon; a channel cannot hold a token")
 	}
 	name, err := notify.NewTokenSecretName()
@@ -149,13 +163,13 @@ func (s *NotifyServer) storeNotifyToken(ctx context.Context, username, token str
 		return "", status.Errorf(codes.Internal, "%v", err)
 	}
 	// A fresh random name: anything already there is not ours to overwrite.
-	if _, _, err := s.secrets.Get(ctx, username, name); !errors.Is(err, secrets.ErrNotFound) {
+	if _, _, err := secretStore.Get(ctx, username, name); !errors.Is(err, secrets.ErrNotFound) {
 		if err == nil || errors.Is(err, secrets.ErrBrokerOnly) {
 			return "", status.Errorf(codes.Aborted, "token secret name %s is taken; retry", name)
 		}
 		return "", status.Errorf(codes.Internal, "check token secret: %v", err)
 	}
-	if _, err := s.secrets.Set(ctx, username, name, token, secrets.DeliveryBroker); err != nil {
+	if _, err := secretStore.Set(ctx, username, name, token, secrets.DeliveryBroker); err != nil {
 		return "", status.Errorf(codes.Internal, "store token: %v", err)
 	}
 	return name, nil
@@ -166,10 +180,11 @@ func (s *NotifyServer) storeNotifyToken(ctx context.Context, username, token str
 // ever passed here, never a name merely sharing the prefix. A secret that is
 // already gone is fine.
 func (s *NotifyServer) removeTokenSecret(ctx context.Context, username, name string) error {
-	if s.secrets == nil || name == "" {
+	secretStore := s.secretStore()
+	if secretStore == nil || name == "" {
 		return nil
 	}
-	if err := s.secrets.Delete(ctx, username, name); err != nil && !errors.Is(err, secrets.ErrNotFound) {
+	if err := secretStore.Delete(ctx, username, name); err != nil && !errors.Is(err, secrets.ErrNotFound) {
 		return fmt.Errorf("delete %s: %w", name, err)
 	}
 	return nil
@@ -225,7 +240,7 @@ func (s *NotifyServer) SetNotifyChannel(ctx context.Context, req *pb.SetNotifyCh
 	stored, err := s.store.Set(ctx, ch)
 	if err != nil {
 		if derr := s.removeTokenSecret(ctx, username, created); derr != nil {
-			log.Printf("[notify] remove uncommitted token secret of %s: %v", username, derr)
+			log.Printf("[notify] remove uncommitted token secret of %q: %v", username, derr)
 		}
 		return nil, status.Errorf(codes.Internal, "store channel: %v", err)
 	}
@@ -233,10 +248,10 @@ func (s *NotifyServer) SetNotifyChannel(ctx context.Context, req *pb.SetNotifyCh
 	// delete fails the secret stays behind (broker-only, never delivered).
 	if prev.TokenSecret != stored.TokenSecret {
 		if err := s.removeTokenSecret(ctx, username, prev.TokenSecret); err != nil {
-			log.Printf("[notify] remove the previous token secret of %s: %v", username, err)
+			log.Printf("[notify] remove the previous token secret of %q: %v", username, err)
 		}
 	}
-	log.Printf("[notify] channel set for %s: ntfy %s (token %v, redact %v)", username, ch.Server, stored.HasToken(), ch.RedactCommand)
+	log.Printf("[notify] channel set for %q: ntfy %q (token %v, redact %v)", username, ch.Server, stored.HasToken(), ch.RedactCommand)
 	return &pb.SetNotifyChannelResponse{Channel: notifyChannelProto(stored)}, nil
 }
 
@@ -313,7 +328,7 @@ func (s *NotifyServer) TestNotifyChannel(ctx context.Context, req *pb.TestNotify
 	if err := s.sender.Send(ctx, ch, token, msg); err != nil {
 		// The reason (an HTTP status, a dial error) says something about
 		// the daemon's network; it goes to the daemon log, not the caller.
-		log.Printf("[notify] test push for %s: %v", username, err)
+		log.Printf("[notify] test push for %q: %v", username, err)
 		return nil, status.Error(codes.Unavailable, "the ntfy server did not accept the test push; check the server URL, topic and token (the daemon log has the details)")
 	}
 	return &pb.TestNotifyChannelResponse{Message: "test push accepted by " + ch.Server}, nil
@@ -330,10 +345,11 @@ func (s *NotifyServer) channelAndToken(ctx context.Context, username string) (no
 	if !ch.HasToken() {
 		return ch, "", nil
 	}
-	if s.secrets == nil {
+	secretStore := s.secretStore()
+	if secretStore == nil {
 		return notify.Channel{}, "", errors.New("read token: secrets store not configured on this daemon")
 	}
-	token, err := s.secrets.BrokerCredential(ctx, username, ch.TokenSecret)
+	token, err := secretStore.BrokerCredential(ctx, username, ch.TokenSecret)
 	if err != nil {
 		return notify.Channel{}, "", fmt.Errorf("read token: %w", err)
 	}
@@ -553,7 +569,7 @@ func (s *NotifyServer) execBounded(ctx context.Context, exec boxScriptFunc, user
 		return "", ctx.Err()
 	case <-t.C:
 	}
-	log.Printf("[notify] reading %s's box took over %s; freeing its slot until the read returns", user, s.execTimeout)
+	log.Printf("[notify] reading %q's box took over %s; freeing its slot until the read returns", user, s.execTimeout)
 	release()
 	select {
 	case <-done:
@@ -583,7 +599,7 @@ func (s *NotifyServer) pollUser(ctx context.Context, exec boxScriptFunc, user st
 			continue
 		}
 		if err := s.deliver(ctx, user, p); err != nil {
-			log.Printf("[notify] push for %s/%s: %v", user, p.Run, err)
+			log.Printf("[notify] push for %q/%q: %v", user, p.Run, err)
 			s.coalescer.Requeue(p)
 			continue
 		}

@@ -285,8 +285,14 @@ message SystemInfo {
   // reject (the REST mux rejects unknown JSON fields). Absent from an older
   // daemon: an empty list means "none of the optional features", so a
   // client must treat a missing name as unsupported. Names are only ever
-  // added. Currently: "box_run_name" (StartBoxRunRequest.run_name) and
-  // "box_run_structured_output" (StartBoxRunRequest.structured_output).
+  // added. Currently: "box_run_name" (StartBoxRunRequest.run_name),
+  // "box_run_structured_output" (StartBoxRunRequest.structured_output),
+  // "box_run_model" (StartBoxRunRequest.model, BoxRun.model),
+  // "box_run_command" (StartBoxRunRequest.command, timeout_seconds),
+  // "box_run_workdir" (StartBoxRunRequest.workdir, BoxRun.workdir, #3551),
+  // "box_skill_sets" (the ApplyBoxSkillSets RPC, #3374), "box_files" (the
+  // WriteBoxFile RPC, #3548) and "box_files_stream" (the WriteBoxFileStream
+  // RPC, files up to 64 MiB, #3548).
   // An open string set rather than an enum so a newer daemon's extra names
   // never fail to decode in an older client.
   repeated string capabilities = 30;
@@ -297,6 +303,38 @@ message SystemInfo {
   // the monitor's snapshot (no extra Incus call); empty when the monitor has
   // not read yet or the daemon predates the field.
   repeated StoragePoolCapacity storage_pools = 31;
+
+  // peer_transport is how this daemon's own calls to peer backends are
+  // secured right now (Phase 0.5 peer mTLS). PEER_TRANSPORT_HTTP is a
+  // supported setup (peer mTLS off, or no peer CA on the sentinel) but it
+  // means those calls go over plain HTTP, not over the pinned peer-PKI
+  // TLS, so an operator can see the degraded state instead of finding one
+  // startup log line. UNSPECIFIED means this daemon has no sentinel URL and no
+  // peers, so makes no peer calls (or predates the field). Says nothing about any other transport, such as
+  // the sentinel-backend tunnel. See #3079.
+  PeerTransport peer_transport = 32;
+
+  // managed_backup_key_configured is true when this daemon has a managed
+  // backup key (CONTAINARIUM_BACKUP_KMS_KEY_NAME), so every database backup
+  // it takes is encrypted even for a tenant with no registered age
+  // recipient. `containarium backup status` reads it to avoid flagging such
+  // tenants as unencrypted. False covers both "no managed key" and a daemon
+  // that predates the field, so a client must treat false as "not known to
+  // be encrypted". See #3213.
+  bool managed_backup_key_configured = 33;
+}
+
+// PeerTransport is the transport this daemon uses for its calls to peer
+// backends.
+enum PeerTransport {
+  // No sentinel and no peers (no peer calls), or the daemon predates the field.
+  PEER_TRANSPORT_UNSPECIFIED = 0;
+  // Peer calls use plain HTTP: peer mTLS is not enabled (no peer cert was
+  // obtained from the sentinel).
+  PEER_TRANSPORT_HTTP = 1;
+  // Peer calls use HTTPS with the sentinel-issued leaf cert and the pinned
+  // peer CA.
+  PEER_TRANSPORT_MTLS = 2;
 }
 
 // StoragePoolCapacity is one storage pool's fill (#2823).
@@ -766,6 +804,8 @@ message GetNetworkPolicyRequest {
 }
 message GetNetworkPolicyResponse {
   NetworkPolicy policy = 1;
+  // SHA256 of the complete observed policy for optimistic ingress edits.
+  string revision = 2;
 }
 
 message ListNetworkPoliciesRequest {}

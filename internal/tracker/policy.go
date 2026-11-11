@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // Label contract for issue-triggered role agents (#2024; PRD
@@ -108,6 +109,9 @@ type Policy struct {
 	MaxDepth          int32
 	MaxChildrenPerRun int32
 	RunTimeout        time.Duration
+	// DispatchOnLabel: the tick starts runs from forge labels (#3569).
+	// False leaves only the sweep and projection retries to a tick.
+	DispatchOnLabel bool
 }
 
 // PolicyFromProto applies the documented defaults: a nil message or a
@@ -119,6 +123,9 @@ func PolicyFromProto(p *pb.TrackerPolicy) Policy {
 		MaxDepth:          DefaultMaxDepth,
 		MaxChildrenPerRun: DefaultMaxChildrenPerRun,
 		RunTimeout:        DefaultRunTimeout,
+		// Unset means on: connections stored before #3569 keep their
+		// label-driven behavior.
+		DispatchOnLabel: true,
 	}
 	if p == nil {
 		return out
@@ -127,6 +134,9 @@ func PolicyFromProto(p *pb.TrackerPolicy) Policy {
 		out.LabelAllowList = append([]string(nil), p.GetLabelAllowList()...)
 	}
 	out.AutoChain = p.GetAutoChain()
+	if p.DispatchOnLabel != nil {
+		out.DispatchOnLabel = *p.DispatchOnLabel
+	}
 	if p.GetMaxDepth() > 0 {
 		out.MaxDepth = p.GetMaxDepth()
 	}
@@ -233,4 +243,29 @@ func MatchLabelGlob(pattern, label string) bool {
 		return false // unreachable: every literal is QuoteMeta'd
 	}
 	return re.MatchString(label)
+}
+
+// StampDispatchOnLabel returns the policy to store for a
+// SetTrackerConnection request (#3569). An explicit dispatch_on_label is
+// always honored. Otherwise a new connection (existing == nil) is stamped
+// false — label-driven dispatch is opt-in — while a re-set of an existing
+// connection keeps the stored value (unset stays unset, i.e. on), so an
+// upgrade or a credential rotation never flips behavior. req is not
+// mutated.
+func StampDispatchOnLabel(req *pb.TrackerPolicy, existing *Connection) *pb.TrackerPolicy {
+	out := &pb.TrackerPolicy{}
+	if req != nil {
+		out = proto.Clone(req).(*pb.TrackerPolicy)
+	}
+	if out.DispatchOnLabel != nil {
+		return out
+	}
+	if existing == nil {
+		off := false
+		out.DispatchOnLabel = &off
+	} else if existing.Policy != nil && existing.Policy.DispatchOnLabel != nil {
+		kept := *existing.Policy.DispatchOnLabel
+		out.DispatchOnLabel = &kept
+	}
+	return out
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/coderun/engine"
 	"github.com/spf13/cobra"
@@ -28,6 +29,11 @@ var (
 	// #2193: --session resumes one SPECIFIC session id instead of --continue's
 	// "most recent" — mutually exclusive with it (validated in runCodeRun).
 	codeRunSession string
+
+	// #3322: --command runs a shell command in the engine's place, under
+	// --timeout; mutually exclusive with everything that means an engine.
+	codeRunCommand string
+	codeRunTimeout time.Duration
 )
 
 var codeRunCmd = &cobra.Command{
@@ -81,6 +87,17 @@ Claude Code setup for later runs; that is out of scope.) --approvals ask needs
 the daemon (--server). On an engine without a permission hook (pi, Codex) the
 run starts unchanged, with a warning. The default, --approvals deny, is today's behaviour.
 
+--run-token-file <path> starts the run through the daemon API (StartBoxRun)
+instead of over SSH, and sends the per-run token in that file with it. The
+file holds the token on one line; it is read, never printed, and the token is
+never an argument. The daemon must advertise the box_run_token capability; one
+that does not is refused, and no run is started. The capability is read with
+an admin-only call, so the flag needs an admin token: a non-admin box owner is
+refused (PermissionDenied from the capability check), and no run is started.
+It needs --server, and it does not combine with --approvals ask,
+--output-format-stream-json or --token-ttl.
+The run's output and exit status are followed as described above.
+
 Requires the box to already have a coding agent installed and credentialed —
 see 'containarium code install <box>'.`,
 	Args: cobra.ExactArgs(1),
@@ -124,8 +141,19 @@ stays on the box, readable via 'containarium code status' or another
 
 func runCodeRun(cmd *cobra.Command, args []string) error {
 	box := args[0]
+	// #3610: a per-run token selects the daemon-API path, for an agent run
+	// and a --command run alike. Without the flag nothing below changes.
+	if codeRunTokenFile != "" {
+		return runCodeRunWithToken(cmd, box)
+	}
+	if strings.TrimSpace(codeRunCommand) != "" {
+		return runCodeRunCommand(cmd, box)
+	}
+	if codeRunTimeout != 0 {
+		return fmt.Errorf("--timeout applies to --command only")
+	}
 	if strings.TrimSpace(codeRunPrompt) == "" {
-		return fmt.Errorf("--prompt is required")
+		return fmt.Errorf("--prompt is required (or --command, to run a shell command instead of the agent)")
 	}
 	if codeRunSession != "" && codeRunContinue {
 		return fmt.Errorf("--session and --continue are mutually exclusive (--session resumes one specific session; --continue resumes whichever the engine considers most recent)")
@@ -182,11 +210,10 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	// --session value and needs no discovery.
 	discover := codeRunSession == "" && snapshotSessionDirectory(ctx, sess, eng, name, diag)
 
-	started, err := sess.ProcessStart(ctx, name, command, "", coderun.CaptureModeFor(codeRunStreamJSON))
+	started, err := startCodeRun(ctx, sess, diag, box, name, command, coderun.CaptureModeFor(codeRunStreamJSON))
 	if err != nil {
 		return fmt.Errorf("start run on %q: %w", box, err)
 	}
-	fmt.Fprintf(diag, "✓ started %q (pid %d) on %s\n", started.Name, started.PID, box)
 	if approvalNote != "" {
 		journalApprovalNote(ctx, sess, name, approvalNote, diag)
 	}
@@ -207,6 +234,88 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 		defer startInlineAnswers(ctx, newRunInputsClient, box, started.Name, os.Stdin, diag)()
 	}
 	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, codeRunStreamJSON)
+}
+
+// runCodeRunCommand is `code run --command` (#3322): the box runs a shell
+// command under a timeout in the engine's place, detached and streamed exactly
+// like an agent run, with the same name, log and exit-code contract. Nothing
+// engine-related happens: code.json is not read, no gateway token is minted, no
+// session is discovered. Over SSH the command runs as the box's own user (the
+// daemon's StartBoxRun command mode is what applies the run user and its
+// tool-access level).
+func runCodeRunCommand(cmd *cobra.Command, box string) error {
+	timeoutSeconds, err := validateCommandModeFlags()
+	if err != nil {
+		return err
+	}
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	diag := cmd.ErrOrStderr()
+	name := codeRunName()
+	sess, err := resolveCodeSession(ctx, box, diag)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sess.Close() }()
+	command := coderun.BuildShellCommand(codeRunCommand, timeoutSeconds)
+	started, err := startCodeRun(ctx, sess, diag, box, name, command, coderun.CaptureModeFor(false))
+	if err != nil {
+		return fmt.Errorf("start command run on %q: %w", box, err)
+	}
+	return streamAndWait(ctx, sess, started.Name, started.LogPath, cmd.OutOrStdout(), diag, false)
+}
+
+// codeRunStarter is the part of a box's agent-box session a `code run` starts
+// its run through (*coderun.Session).
+type codeRunStarter interface {
+	ProcessStart(ctx context.Context, name, command, cwd, captureMode string) (*coderun.ProcessStartResult, error)
+}
+
+// startCodeRun starts the run on box and prints the start's report
+// (reportCodeRunStarted): every `code run` path starts here, so a note from
+// the start (#3529) reaches the person on each of them (#3540).
+func startCodeRun(ctx context.Context, sess codeRunStarter, diag io.Writer, box, name, command, captureMode string) (*coderun.ProcessStartResult, error) {
+	// The function the MCP code_run tool starts its run through too (#3610).
+	// No token here: this is the SSH path.
+	run, err := client.StartCodeRun(ctx, client.CodeRunStart{Session: sess, Name: name, Command: command, CaptureMode: captureMode})
+	if err != nil {
+		return nil, err
+	}
+	started := run.Process
+	reportCodeRunStarted(diag, started, box)
+	return started, nil
+}
+
+// reportCodeRunStarted prints a note from the start (started.Warning, #3529)
+// when there is one, then the started line.
+func reportCodeRunStarted(diag io.Writer, started *coderun.ProcessStartResult, box string) {
+	if started.Warning != "" {
+		fmt.Fprintf(diag, "warning: %s\n", started.Warning)
+	}
+	fmt.Fprintf(diag, "✓ started %q (pid %d) on %s\n", started.Name, started.PID, box)
+}
+
+// validateCommandModeFlags checks the flags of `code run --command` and returns
+// the timeout in whole seconds (0 for the default). --output-format-stream-json
+// is refused (#3425): it selects framed capture for a stream-json consumer, and
+// a shell command's output is not JSON.
+func validateCommandModeFlags() (int, error) {
+	if strings.TrimSpace(codeRunPrompt) != "" || codeRunSession != "" || codeRunContinue {
+		return 0, fmt.Errorf("--command is mutually exclusive with --prompt, --session and --continue")
+	}
+	if codeRunApprovals != string(coderun.ApprovalsDeny) {
+		return 0, fmt.Errorf("--approvals applies to an agent run, not to --command")
+	}
+	if codeRunStreamJSON {
+		return 0, fmt.Errorf("--output-format-stream-json applies to an agent run, not to --command (a shell command's output is not stream-json)")
+	}
+	secs, err := coderun.CommandTimeoutSeconds(codeRunTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("--timeout: %w", err)
+	}
+	return secs, nil
 }
 
 // sessionSidecarFor is where the run called name keeps its session sidecar:

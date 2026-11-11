@@ -270,7 +270,7 @@ func TestMinerSignatureRule_Matchers(t *testing.T) {
 				}
 				return
 			}
-			if len(got) != 1 || got[0].Subject != tt.wantSubject {
+			if len(got) != 1 || got[0].Subject != "container:box-1:"+tt.wantSubject {
 				t.Fatalf("findings %+v, want one with subject %q", got, tt.wantSubject)
 			}
 		})
@@ -323,7 +323,7 @@ func TestMinerSignatureRule_ArgvArgumentBoundaries(t *testing.T) {
 				}
 				return
 			}
-			if len(got) != 1 || got[0].Subject != tt.wantSubject {
+			if len(got) != 1 || got[0].Subject != "container:box-1:"+tt.wantSubject {
 				t.Fatalf("findings %+v, want one with subject %q", got, tt.wantSubject)
 			}
 		})
@@ -362,7 +362,7 @@ func TestMinerSignatureRule_MultiPartLiteral(t *testing.T) {
 				}
 				return
 			}
-			if len(got) != 1 || got[0].Subject != tt.wantSubject {
+			if len(got) != 1 || got[0].Subject != "container:box-1:"+tt.wantSubject {
 				t.Fatalf("findings %+v, want one with subject %q", got, tt.wantSubject)
 			}
 		})
@@ -383,7 +383,7 @@ func TestMinerSignatureRule_FindingCarriesExec(t *testing.T) {
 	}
 	f := got[0]
 	if f.Rule != pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE || f.Severity != pb.ThreatSeverity_THREAT_SEVERITY_HIGH ||
-		f.Container != "box-1" || f.TenantID != "t1" || f.Subject != "name:xmrig" {
+		f.Container != "box-1" || f.TenantID != "t1" || f.Subject != "container:box-1:name:xmrig" {
 		t.Fatalf("finding = %+v", f)
 	}
 	want := ExecEvidence{PID: 4242, StartTime: 987654, PPID: 1, UID: 1000, Comm: "xmrig", Filename: "/tmp/xmrig",
@@ -425,7 +425,7 @@ func TestMinerSignatureRule_SHA256Path(t *testing.T) {
 	hashed := clean
 	hashed.SHA256 = sum
 	got := r.OnExec(rc, hashed)
-	if len(got) != 1 || got[0].Subject != "sha256:"+sum || got[0].Evidence.Execs[0].SHA256 != sum {
+	if len(got) != 1 || got[0].Subject != "container:box-1:sha256:"+sum || got[0].Evidence.Execs[0].SHA256 != sum {
 		t.Fatalf("hashed delivery: %+v, want a sha256 finding carrying the hash", got)
 	}
 	if len(asked) != 1 {
@@ -453,7 +453,7 @@ func TestMinerSignatureRule_OperatorRoundTrip(t *testing.T) {
 	if _, err := r.AddSignature(ctx, pb.MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV, "--algo randomx", ""); err != nil {
 		t.Fatal(err)
 	}
-	if got := r.OnExec(RuleContext{}, execEv("/tmp/SRBMiner-MULTI", "SRBMiner-MULTI", "x")); len(got) != 1 || got[0].Subject != "name:srbminer*" {
+	if got := r.OnExec(RuleContext{}, execEv("/tmp/SRBMiner-MULTI", "SRBMiner-MULTI", "x")); len(got) != 1 || got[0].Subject != "container:box-1:name:srbminer*" {
 		t.Fatalf("operator name entry did not take effect: %+v", got)
 	}
 
@@ -521,5 +521,50 @@ func TestEngine_MinerSignatureRule_HashRedelivery(t *testing.T) {
 	if len(calls) != 1 || calls[0].Container != "box-1" || calls[0].TenantID != "t1" || calls[0].BackendID != "b1" ||
 		calls[0].Rule != pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE {
 		t.Fatalf("upserts = %+v", calls)
+	}
+}
+
+// #2778: the signature remains recognizable evidence, while the dedupe
+// subject identifies the box as well as the signature for every match path.
+func TestMinerSignatureRule_PerContainerSubject(t *testing.T) {
+	for _, kind := range []pb.MinerSignatureKind{
+		pb.MinerSignatureKind_MINER_SIGNATURE_KIND_NAME,
+		pb.MinerSignatureKind_MINER_SIGNATURE_KIND_ARGV,
+		pb.MinerSignatureKind_MINER_SIGNATURE_KIND_SHA256,
+	} {
+		t.Run(MinerSignatureKindName(kind), func(t *testing.T) {
+			r := newTestMinerSigRule(t, nil)
+			ev := execEv("/tmp/worker", "worker", "worker --donate-level 1")
+			matched := "argv:--donate-level"
+			switch kind {
+			case pb.MinerSignatureKind_MINER_SIGNATURE_KIND_NAME:
+				ev.Filename, ev.Comm = "/tmp/xmrig", "xmrig"
+				matched = "name:xmrig"
+			case pb.MinerSignatureKind_MINER_SIGNATURE_KIND_SHA256:
+				ev.SHA256 = strings.Repeat("ab", 32)
+				if _, err := r.AddSignature(context.Background(), kind, ev.SHA256, "test signature"); err != nil {
+					t.Fatal(err)
+				}
+				matched = "sha256:" + ev.SHA256
+			}
+			var previous string
+			for _, box := range []string{"box-a", "box-b"} {
+				ev.Container = box
+				got := r.OnExec(RuleContext{}, ev)
+				if len(got) != 1 {
+					t.Fatalf("%s: findings = %v", box, got)
+				}
+				if got[0].Subject != "container:"+box+":"+matched {
+					t.Errorf("subject = %q, want %q", got[0].Subject, "container:"+box+":"+matched)
+				}
+				if previous == got[0].Subject {
+					t.Error("two containers share the same dedupe subject")
+				}
+				previous = got[0].Subject
+				if got[0].Evidence.Execs[0].Matched != matched {
+					t.Error("evidence lost the signature-only identity")
+				}
+			}
+		})
 	}
 }

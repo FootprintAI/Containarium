@@ -40,6 +40,9 @@ type portDef struct {
 	// ExternalPort is the host-side port for a tcp/udp passthrough.
 	// Ignored for http. Zero defaults to ContainerPort at expose time.
 	ExternalPort int32 `yaml:"external_port,omitempty"`
+	// Role labels what the port is for: "" (unset) or "auth_proxy" (the
+	// port is fronted by the recipe's in-box auth proxy). See #3464.
+	Role string `yaml:"role,omitempty"`
 }
 
 // volumeDef mirrors pb.RecipeVolume for YAML decoding.
@@ -166,6 +169,7 @@ func (r *recipeDef) ToProto() *pb.Recipe {
 			Subdomain:     p.Subdomain,
 			Protocol:      portProtocolFromYAML(p.Protocol),
 			ExternalPort:  p.ExternalPort,
+			Role:          portRoleFromYAML(p.Role),
 		})
 	}
 	for _, v := range r.Volumes {
@@ -200,6 +204,15 @@ func portProtocolFromYAML(s string) pb.RouteProtocol {
 	default:
 		return pb.RouteProtocol_ROUTE_PROTOCOL_UNSPECIFIED
 	}
+}
+
+// portRoleFromYAML maps a portDef.Role string to its pb.RecipePortRole value.
+// validate rejects anything outside {"", "auth_proxy"} before ToProto runs.
+func portRoleFromYAML(s string) pb.RecipePortRole {
+	if s == "auth_proxy" {
+		return pb.RecipePortRole_RECIPE_PORT_ROLE_AUTH_PROXY
+	}
+	return pb.RecipePortRole_RECIPE_PORT_ROLE_UNSPECIFIED
 }
 
 type config struct {
@@ -278,6 +291,7 @@ func validate(r *recipeDef) error {
 	if r.Image == "" {
 		return fmt.Errorf("recipe %q is missing required field: image", r.ID)
 	}
+	authProxyPorts := 0
 	for _, p := range r.Ports {
 		if p.ContainerPort <= 0 || p.ContainerPort > 65535 {
 			return fmt.Errorf("recipe %q has invalid container_port: %d", r.ID, p.ContainerPort)
@@ -290,6 +304,21 @@ func validate(r *recipeDef) error {
 		}
 		if p.ExternalPort != 0 && (p.ExternalPort < 0 || p.ExternalPort > 65535) {
 			return fmt.Errorf("recipe %q port %d has invalid external_port: %d", r.ID, p.ContainerPort, p.ExternalPort)
+		}
+		switch p.Role {
+		case "":
+		case "auth_proxy":
+			if p.Protocol == "tcp" || p.Protocol == "udp" {
+				return fmt.Errorf("recipe %q port %d has role auth_proxy but protocol %q; the auth-proxy port must be HTTP-routed, not a TCP/UDP passthrough",
+					r.ID, p.ContainerPort, p.Protocol)
+			}
+			authProxyPorts++
+			if authProxyPorts > 1 {
+				return fmt.Errorf("recipe %q has more than one port with role auth_proxy (at most one is allowed)", r.ID)
+			}
+		default:
+			return fmt.Errorf("recipe %q port %d has unsupported role %q (must be auth_proxy or empty)",
+				r.ID, p.ContainerPort, p.Role)
 		}
 	}
 	if n := r.GuardrailGateNode; n.Kind != 0 {
@@ -358,3 +387,11 @@ func ResolveParameters(r *pb.Recipe, overrides map[string]string) (map[string]st
 func ParamEnvName(name string) string {
 	return "CONTAINARIUM_PARAM_" + strings.ToUpper(name)
 }
+
+// ReleaseEnvName is the environment variable a post_start command sees
+// holding the release tag of the daemon running it (#3542): "v" + the
+// daemon's version (version.ReleaseTag), e.g. "v0.129.0", or empty when the
+// daemon build is not a release. It is set by the daemon, never by a
+// parameter, so a recipe pins what must match its own OSS version (the
+// slides-agent image) with it instead of trusting a caller's `release`.
+const ReleaseEnvName = "CONTAINARIUM_RELEASE"

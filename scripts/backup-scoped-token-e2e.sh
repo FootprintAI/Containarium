@@ -59,7 +59,7 @@ backup_id=$(jq -er '.record.id' "$scratch_dir/create.json")
 
 # The exact documented invocation, including the non-admin role and 720h TTL.
 token=$("$bin" token generate --username "$tenant" --roles user \
-  --scopes backups:read,backups:write --expiry 720h \
+  --scopes backups:read,backups:verify --expiry 720h \
   --secret-file "$scratch_dir/jwt.secret" --raw)
 
 api 200 "$scratch_dir/list.json" -H "Authorization: Bearer $token" \
@@ -87,6 +87,38 @@ for path in '/v1/backups?username=other-tenant' '/v1/containers' "/v1/secrets/$t
   api 403 "$scratch_dir/denied.json" -H "Authorization: Bearer $token" "$server$path"
 done
 
+# The narrow verifier token must be refused on every RPC that creates,
+# restores, deletes or prunes (#3186). 403 is the daemon's PermissionDenied.
+create_req=$(jq -n --arg tenant "$tenant" '{username:$tenant,destination:"BACKUP_DESTINATION_LOCAL",connection:{database:"postgres",password:"lane-source-password"}}')
+api 403 "$scratch_dir/denied.json" -X POST -H "Authorization: Bearer $token" \
+  -H 'Content-Type: application/json' -d "$create_req" "$server/v1/backups"
+api 403 "$scratch_dir/denied.json" -X POST -H "Authorization: Bearer $token" \
+  -H 'Content-Type: application/json' -d '{}' "$server/v1/backups/$backup_id/restore"
+api 403 "$scratch_dir/denied.json" -X DELETE -H "Authorization: Bearer $token" \
+  "$server/v1/backups/$backup_id"
+api 403 "$scratch_dir/denied.json" -X POST -H "Authorization: Bearer $token" \
+  -H 'Content-Type: application/json' -d "{\"username\":\"$tenant\",\"keep\":1}" "$server/v1/backups/prune"
+# The backup must still exist after the refused delete/prune.
+api 200 "$scratch_dir/still.json" -H "Authorization: Bearer $token" "$server/v1/backups/$backup_id"
+
+# The v0.120.1 compatibility window has ended (#3219). Legacy verifier
+# tokens carrying backups:write must be refused with re-mint instructions.
+legacy=$("$bin" token generate --username "$tenant" --roles user \
+  --scopes backups:read,backups:write --expiry 5m \
+  --secret-file "$scratch_dir/jwt.secret" --raw)
+request=$(jq -n --arg tenant "$tenant" '{targetUsername:$tenant}')
+api 403 "$scratch_dir/legacy-verify.json" -H "Authorization: Bearer $legacy" \
+  -H 'Content-Type: application/json' -d "$request" "$server/v1/backups/$backup_id/verify"
+# The gateway's ErrorHandler keeps the HTTP status in "code" and the full
+# RPC error in "error", alongside the optional "message" and "details" fields.
+if ! jq -e '.code == 403 and (.error | contains("backups:verify") and
+  contains("containarium token generate") and contains("--scopes backups:read,backups:verify"))' \
+  "$scratch_dir/legacy-verify.json"; then
+  echo "Legacy verifier refusal is missing its HTTP error code or re-mint instructions; response body:" >&2
+  cat "$scratch_dir/legacy-verify.json" >&2
+  exit 1
+fi
+
 # Verification must leave the source database intact.
 test "$(incus exec "$source_name" -- runuser -u postgres -- psql -Atc 'SELECT count(*) FROM scope_contract')" = 1
-echo 'PASS: scoped token lists and verifies its own backup, denies other APIs, and cleans up its isolated target.'
+echo 'PASS: backups:verify token lists and verifies its own backup, is refused create/restore/delete/prune and other APIs, cleans up its isolated target, and legacy backups:write verifier tokens are refused with re-mint instructions.'

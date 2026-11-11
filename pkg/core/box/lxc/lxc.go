@@ -180,6 +180,7 @@ func (b *Backend) Metrics(_ context.Context, ref box.BoxRef) (*box.BoxMetrics, e
 func specToCreateOptions(spec box.BoxSpec) container.CreateOptions {
 	return container.CreateOptions{
 		Username:               spec.Ref.Tenant,
+		NetworkTenant:          spec.NetworkTenant,
 		Image:                  spec.Image,
 		CPU:                    spec.Resources.CPU,
 		Memory:                 spec.Resources.Memory,
@@ -210,8 +211,11 @@ func specToCreateOptions(spec box.BoxSpec) container.CreateOptions {
 
 // StatusFromInfo maps incus.ContainerInfo onto the runtime-neutral BoxStatus.
 func StatusFromInfo(info *incus.ContainerInfo) box.BoxStatus {
+	key, source := incus.NetworkTenantIdentity(info)
 	return box.BoxStatus{
 		Ref:                       box.BoxRef{Tenant: tenantOf(info), Name: info.Name},
+		NetworkTenant:             key,
+		NetworkTenantSource:       networkTenantSourceProto(source),
 		State:                     parseState(info.State),
 		IPAddress:                 info.IPAddress,
 		Resources:                 box.ResourceLimits{CPU: info.CPU, Memory: info.Memory, Disk: info.Disk},
@@ -268,4 +272,17 @@ func containerName(ref box.BoxRef) string {
 		return ref.Name
 	}
 	return ref.Tenant + "-container"
+}
+
+func networkTenantSourceProto(source incus.NetworkTenantSource) pb.NetworkTenantSource {
+	switch source {
+	case incus.NetworkTenantSourceNative:
+		return pb.NetworkTenantSource_NETWORK_TENANT_SOURCE_NATIVE
+	case incus.NetworkTenantSourceCloud:
+		return pb.NetworkTenantSource_NETWORK_TENANT_SOURCE_CLOUD_ORG_ID
+	case incus.NetworkTenantSourceName:
+		return pb.NetworkTenantSource_NETWORK_TENANT_SOURCE_NAME
+	default:
+		return pb.NetworkTenantSource_NETWORK_TENANT_SOURCE_UNSPECIFIED
+	}
 }

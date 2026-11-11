@@ -52,10 +52,13 @@ type glPipeline struct {
 // glMergeRequest mirrors GET /projects/{id}/merge_requests/{iid}.
 // HeadPipeline is null when no pipeline has ever run for this MR.
 type glMergeRequest struct {
-	IID          int64       `json:"iid"`
-	State        string      `json:"state"`
-	WebURL       string      `json:"web_url"`
-	HeadPipeline *glPipeline `json:"head_pipeline"`
+	IID             int64       `json:"iid"`
+	State           string      `json:"state"`
+	WebURL          string      `json:"web_url"`
+	HeadPipeline    *glPipeline `json:"head_pipeline"`
+	SourceBranch    string      `json:"source_branch"`
+	SourceProjectID int64       `json:"source_project_id"`
+	TargetProjectID int64       `json:"target_project_id"`
 }
 
 // GetIssue reads a single issue and its comments (two API calls: the
@@ -129,6 +132,7 @@ func (a *Adapter) GetChange(ctx context.Context, conn tracker.Conn, number int64
 		State:     mergeRequestStateToTracker(mr.State),
 		CIVerdict: pipelineToVerdict(mr.HeadPipeline),
 		URL:       mr.WebURL,
+		Branch:    mr.SourceBranch,
 	}, nil
 }
 

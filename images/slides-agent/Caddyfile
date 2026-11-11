@@ -1,0 +1,72 @@
+# In-box auth proxy for the slides-agent image (images/slides-agent/Dockerfile,
+# recipe `slides-agent` in pkg/core/recipes/recipes.yaml).
+#
+# Fronts EVERY path of the open-slide dev server on 127.0.0.1:5173, websockets
+# included. Two ways in:
+#   * the __Host-ws_session cookie, checked on every request against the login
+#     helper (images/slides-agent/wsauth, 127.0.0.1:9098) with forward_auth
+#     (the __Host- prefix: a sibling subdomain cannot plant one);
+#   * HTTP basic auth, for direct access.
+# Zero-click access (#3486): the daemon mints a single-use login token from the
+# helper and hands out /__ws_login#t=<token>. The token is in the URL fragment,
+# which a browser never sends; the helper's bootstrap page POSTs it, the helper
+# redeems it once and sets __Host-ws_session, a separate random value. A token
+# in the query string is burned, never redeemed. The session cookie is stripped
+# from every request proxied to the dev server; the app's own cookies pass.
+#
+# No `log` directive: Caddy writes no access log, and no request line carries a
+# token anyway.
+#
+# The dev server's own request guard compares the Origin header against the
+# scheme + host it was reached on, reading X-Forwarded-Proto first. The
+# platform edge terminates TLS and reaches this proxy over plain HTTP, so the
+# scheme is forced to https on every request proxied to the dev server; the
+# Host header passes through (allowedHosts is set in open-slide.config.ts).
+#
+# Values come from the environment the container is started with (the recipe
+# stages them in /opt/wsauth/env); nothing here is a credential.
+{
+	auto_https off
+	admin off
+}
+
+:8080 {
+	# Zero-click bootstrap, both the page (GET) and the redemption (POST), is
+	# the helper's. Exactly this path: the helper's other routes are not
+	# reachable through the proxy.
+	handle /__ws_login {
+		reverse_proxy 127.0.0.1:9098
+	}
+
+	# Cookie path, for requests without basic-auth credentials. The cookie's
+	# shape is matched here (anchored to the cookie name boundary); its
+	# validity is the helper's answer. A refused cookie gets the helper's 401:
+	# a basic-auth challenge plus the cookie cleared, so the browser's retry
+	# carries the password and takes the basic-auth path below.
+	@session {
+		header_regexp Cookie "(^|;\s*)__Host-ws_session=[A-Za-z0-9_-]{43}($|;)"
+		not header Authorization *
+	}
+	handle @session {
+		forward_auth 127.0.0.1:9098 {
+			uri /__session
+		}
+		reverse_proxy 127.0.0.1:5173 {
+			header_up X-Forwarded-Proto https
+			# The session cookie is the proxy's, not the app's: strip it.
+			header_up Cookie "__Host-ws_session=[^;]*;?\s*" ""
+		}
+	}
+
+	# Everything else: HTTP basic auth.
+	handle {
+		basic_auth {
+			{$SLIDES_AUTH_USER} {$SLIDES_AUTH_HASH}
+		}
+		reverse_proxy 127.0.0.1:5173 {
+			header_up X-Forwarded-Proto https
+			# The session cookie is the proxy's, not the app's: strip it.
+			header_up Cookie "__Host-ws_session=[^;]*;?\s*" ""
+		}
+	}
+}

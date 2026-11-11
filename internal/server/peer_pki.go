@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/limitio"
 	"github.com/footprintai/containarium/internal/sentinel"
 )
 
@@ -184,7 +184,7 @@ func FetchPeerPKI(ctx context.Context, sentinelBaseURL, peerID string, hmacSecre
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read peer-cert response: %w", err)
 	}

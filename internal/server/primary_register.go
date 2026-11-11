@@ -5,13 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/limitio"
 )
 
 // primaryRegisterTTL must align with sentinel.PrimaryTTL. Hardcoded here to
@@ -133,6 +133,11 @@ func (e *httpStatusError) Error() string {
 	return fmt.Sprintf("status=%d body=%q", e.code, e.body)
 }
 
+// maxRegisterErrorBodyBytes caps how much of a non-2xx sentinel response the
+// registration helpers keep for the error message (#3469). Same order as the
+// other error-body reads in the daemon (512 B to 4 KiB).
+const maxRegisterErrorBodyBytes = 4 << 10
+
 func postJSON(ctx context.Context, client *http.Client, url string, body any, secret []byte) error {
 	buf, err := json.Marshal(body)
 	if err != nil {
@@ -150,7 +155,7 @@ func postJSON(ctx context.Context, client *http.Client, url string, body any, se
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := limitio.ReadAll(resp.Body, maxRegisterErrorBodyBytes)
 		return &httpStatusError{code: resp.StatusCode, body: string(bodyBytes)}
 	}
 	return nil
@@ -178,7 +183,7 @@ func putRequest(ctx context.Context, client *http.Client, url string, body any, 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := limitio.ReadAll(resp.Body, maxRegisterErrorBodyBytes)
 		return &httpStatusError{code: resp.StatusCode, body: string(bodyBytes)}
 	}
 	return nil
@@ -196,7 +201,7 @@ func deleteRequest(ctx context.Context, client *http.Client, url string, secret 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusNotFound {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := limitio.ReadAll(resp.Body, maxRegisterErrorBodyBytes)
 		return &httpStatusError{code: resp.StatusCode, body: string(bodyBytes)}
 	}
 	return nil

@@ -91,6 +91,7 @@ containarium guardrail keygen --out ./tenant
 containarium guardrail scan   ./export [--engine host:port] [--kind pii,secret] [--json]
 containarium guardrail apply  ./export --out ./export-clean --sign-key ./tenant.key [--policy policy.json]
 containarium guardrail verify ./export-clean --attestation ./export-clean.attestation.json --public-key ./tenant.pub [--require-kind pii,secret]
+containarium guardrail verify ./export-clean --attestation ./export-clean.attestation.json --trust-bundle ./bundle.json [--require-kind pii,secret]
 ```
 
 `apply` writes the vault, the redaction key and the attestation **beside**
@@ -98,7 +99,10 @@ containarium guardrail verify ./export-clean --attestation ./export-clean.attest
 and the vault is the one thing that must not ship. `scan --json` prints
 offsets and types, never the flagged text, so it is safe to log. `apply`
 exits non-zero on FAIL but still writes the attestation, so a FAIL is on
-record.
+record. `verify --trust-bundle` takes the file from `guardrail signer
+bundle` in place of a single `--public-key`, so a rotated key still
+verifies and a revoked one fails naming the revocation; see "Signer
+rotation and revocation" in `guardrail-inbound-and-server-policy.md`.
 
 With no `--engine`, the in-tree **reference rules engine** runs: a handful
 of regular expressions (email, US phone, SSN, IPv4, Luhn-checked card

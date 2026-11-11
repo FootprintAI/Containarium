@@ -41,7 +41,7 @@ jobs:
       - name: Set up Go
         uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           cache-name: build-all
 
       - name: Install buf
@@ -70,11 +70,16 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
+          set -euo pipefail
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            echo "VERSION=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
+            version="${INPUT_VERSION}"
           else
-            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+            version="${GITHUB_REF#refs/tags/v}"
           fi
+          # Validate BEFORE the value reaches GITHUB_OUTPUT or any later step
+          # (#3344): a newline would forge extra outputs.
+          scripts/ci/validate-release-version.sh "${version}"
+          echo "VERSION=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Verify the release is described
         # Two release conventions this repo documents but has never enforced,
@@ -122,6 +127,14 @@ jobs:
           constant=$(grep -oE 'Version = "[^"]+"' pkg/version/version.go | head -1 | cut -d'"' -f2)
           if [ "${constant}" != "${VERSION}" ]; then
             echo "::error file=pkg/version/version.go::Version constant is \"${constant}\" but the tag is v${VERSION}. Bump it and re-tag."
+            failed=1
+          fi
+
+          # Fragments still present were never assembled into the section
+          # above (scripts/changelog-assemble.sh), so the notes omit them.
+          leftover=$(find changelog.d -maxdepth 1 -type f -name '*.md' ! -name README.md 2>/dev/null | sort || true)
+          if [ -n "${leftover}" ]; then
+            echo "::error file=changelog.d::Unassembled changelog fragments remain: $(echo "${leftover}" | tr '\n' ' ')- run scripts/changelog-assemble.sh ${VERSION} in the release commit and re-tag."
             failed=1
           fi
 
@@ -287,6 +300,54 @@ jobs:
           SYFT: ${{ steps.syft.outputs.cmd }}
         run: scripts/release/generate-sboms.sh bin
 
+      - name: Build the managed toolchain releases (#3164)
+        env:
+          SYFT: ${{ steps.syft.outputs.cmd }}
+          VERSION: ${{ steps.get_version.outputs.VERSION }}
+        run: |
+          for arch in amd64 arm64; do
+            bash scripts/toolchains/package.sh "v$VERSION" "$arch"
+          done
+
+      - name: Scan managed tools (amd64)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          # Reviewed, expiring exceptions only; see scripts/toolchains/trivy-exceptions.yaml.
+          TRIVY_IGNOREFILE: scripts/toolchains/trivy-exceptions.yaml
+        with:
+          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
+          scan-type: rootfs
+          scan-ref: dist/toolchains-amd64
+          scanners: vuln
+          format: json
+          output: bin/toolchains-linux-amd64.vulnerabilities.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Scan managed tools (arm64)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          # Reviewed, expiring exceptions only; see scripts/toolchains/trivy-exceptions.yaml.
+          TRIVY_IGNOREFILE: scripts/toolchains/trivy-exceptions.yaml
+        with:
+          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
+          scan-type: rootfs
+          scan-ref: dist/toolchains-arm64
+          scanners: vuln
+          format: json
+          output: bin/toolchains-linux-arm64.vulnerabilities.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Require executable scan coverage and checksum the reports
+        run: |
+          for arch in amd64 arm64; do
+            python3 scripts/toolchains/validate_scan.py "bin/toolchains-linux-$arch.vulnerabilities.json" "dist/toolchains-$arch/manifest.json"
+          done
+          (cd bin && sha256sum toolchains-linux-*.vulnerabilities.json >> SHA256SUMS.txt)
+
       - name: Generate changelog
         # The boilerplate below is identical on every release, so without
         # this a release page never says what actually changed in it (#1600).
@@ -406,6 +467,10 @@ jobs:
 
           Each Linux binary has an SPDX 2.3 SBOM next to it (`<binary>-linux-amd64.spdx.json`), generated from the shipped file and listed in `SHA256SUMS.txt`. The container images carry their own SBOM and provenance attestations.
 
+          ### Managed build tools
+
+          Each host installs one `toolchains-linux-<arch>.tar.gz` alongside its daemon release. The archive contains an installer, the pinned tool inventory, and the shared tools. Verify its signature and checksum before extracting, then run `sudo bash install.sh` from the extracted directory. See [managed toolchains](https://github.com/footprintai/containarium/blob/main/docs/MANAGED-TOOLCHAINS.md) for installation and rollback. Each architecture has an SPDX SBOM; the release build scans both trees.
+
           ### Signatures
 
           Every file on this page has a keyless cosign signature next to it, `<file>.sigstore.json`, made by this release workflow through GitHub OIDC. Verify with `cosign verify-blob --bundle <file>.sigstore.json --certificate-identity https://github.com/__RELEASE_REPOSITORY__/.github/workflows/release.yml@refs/tags/__RELEASE_REF__ --certificate-oidc-issuer https://token.actions.githubusercontent.com <file>`. See `docs/security/VERIFYING-RELEASES.md`.
@@ -499,8 +564,8 @@ jobs:
       - name: Create GitHub Release
         # Tag pushes only. A rehearsal builds every artifact above and stops
         # here — that is the whole point of the workflow_dispatch trigger.
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           tag_name: ${{ github.ref_name }}
           name: Containarium ${{ github.ref_name }}
@@ -532,6 +597,14 @@ jobs:
             bin/containarium-linux-amd64.spdx.json
             bin/mcp-server-linux-amd64.spdx.json
             bin/agent-box-linux-amd64.spdx.json
+            bin/toolchains-linux-amd64.tar.gz
+            bin/toolchains-linux-amd64.manifest.json
+            bin/toolchains-linux-amd64.spdx.json
+            bin/toolchains-linux-amd64.vulnerabilities.json
+            bin/toolchains-linux-arm64.tar.gz
+            bin/toolchains-linux-arm64.manifest.json
+            bin/toolchains-linux-arm64.spdx.json
+            bin/toolchains-linux-arm64.vulnerabilities.json
             bin/SHA256SUMS.txt
             LICENSE
             NOTICE
@@ -554,7 +627,7 @@ jobs:
         # So: strip any previously-generated block by its markers, keep
         # everything else the author put there, and append a fresh block.
         # Rerunning converges on the same body instead of growing it.
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
           # Untrusted: a tag name may contain shell metacharacters.
@@ -696,8 +769,8 @@ jobs:
         # Tag pushes only — same guard as the Release step in the job above.
         # Without it a rehearsal would still attempt a real upload, which is
         # exactly the accidental publish this trigger is designed to prevent.
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           tag_name: ${{ github.ref_name }}
           # append_files preserves the binary release uploaded above;
@@ -750,6 +823,7 @@ jobs:
           else
             version="${GITHUB_REF#refs/tags/v}"
           fi
+          scripts/ci/validate-release-version.sh "${version}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Package chart stamped with the release
@@ -765,7 +839,8 @@ jobs:
           VERSION: ${{ steps.v.outputs.version }}
         run: |
           rendered="$(helm template containarium "dist-chart/containarium-k8s-${VERSION}.tgz" \
-            --set gateway.upstreamKeySecret=release-render-check)"
+            --set gateway.upstreamKeySecret=release-render-check \
+            --set daemon.jwtSecret="$(openssl rand -hex 24)")"
           grep -q "image: ghcr.io/footprintai/containarium:v${VERSION}\$" <<<"$rendered" || {
             echo "::error::chart does not pin ghcr.io/footprintai/containarium:v${VERSION}"
             exit 1
@@ -776,14 +851,14 @@ jobs:
           }
 
       - name: Log in to GHCR
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_ACTOR: ${{ github.actor }}
         run: echo "${GH_TOKEN}" | helm registry login ghcr.io -u "${GH_ACTOR}" --password-stdin
 
       - name: Push chart (OCI) and attach to the release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         env:
           VERSION: ${{ steps.v.outputs.version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -804,7 +879,7 @@ jobs:
         # that claims to cover the release. Fetch, append, re-upload; the
         # build-and-release job is finished by now (needs:), so nothing else
         # is writing that file.
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         env:
           VERSION: ${{ steps.v.outputs.version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -831,7 +906,7 @@ jobs:
   # kind. The reusable workflow waits for the independently published daemon
   # image first. Rehearsals remain publish-free and do not exercise a fake tag.
   helm-install-upgrade:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: helm-chart
     permissions:
       contents: read
@@ -862,7 +937,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -878,6 +953,7 @@ jobs:
           else
             version="${GITHUB_REF#refs/tags/v}"
           fi
+          scripts/ci/validate-release-version.sh "${version}"
           # Minor-series moving tag: 0.53.0 -> v0.53
           minor="v$(echo "$version" | cut -d. -f1-2)"
           base="ghcr.io/footprintai/containarium-model-gateway"
@@ -902,7 +978,7 @@ jobs:
           file: ./images/model-gateway/Dockerfile
           platforms: linux/amd64
           # Push on tag only; a rehearsal builds the image and discards it.
-          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          push: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.tags.outputs.tags }}
           # Build provenance + SBOM, explicit so it's reviewable, matching
           # the daemon and sidecar image jobs. NOTE: this is why the Trivy
@@ -918,7 +994,7 @@ jobs:
       # a signature is a permanent public Rekor entry, and a rehearsal
       # pushes nothing to sign. See docs/security/VERIFYING-RELEASES.md.
       - name: Sign and verify the image (cosign keyless)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: ./.github/actions/sign-image
         with:
           image: ${{ steps.tags.outputs.image }}
@@ -929,13 +1005,14 @@ jobs:
       # on a real release tag — a workflow_dispatch rehearsal doesn't push,
       # so there's nothing to pull and scan.
       - name: Pull published image for scanning
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: docker pull ${{ steps.tags.outputs.scan_ref }}
 
       - name: Run Trivy vulnerability scanner (image)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # master
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
           image-ref: ${{ steps.tags.outputs.scan_ref }}
           format: 'sarif'
           output: 'trivy-model-gateway-results.sarif'
@@ -945,8 +1022,8 @@ jobs:
           exit-code: '1'
 
       - name: Upload Trivy SARIF results
-        if: always() && startsWith(github.ref, 'refs/tags/v')
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
         with:
           sarif_file: trivy-model-gateway-results.sarif
 
@@ -963,7 +1040,7 @@ jobs:
   # write a public Rekor entry for a build that is not a release, so it
   # stops before this job.
   sign-release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [build-and-release, helm-chart]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1014,7 +1091,7 @@ jobs:
   # Signs the air-gapped bundle and its .sha256 sidecar (#3118), separately
   # from sign-release so a slow bundle never holds up the binary's signature.
   sign-bundle:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [build-bundle]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1058,7 +1135,7 @@ jobs:
   # needs the bundle's signature too, so it runs after both signing jobs; the
   # binary's signature is already on the Release by then (#3118).
   verify-release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [sign-release, sign-bundle]
     runs-on: ubuntu-latest
     timeout-minutes: 30

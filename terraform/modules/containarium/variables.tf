@@ -587,18 +587,17 @@ variable "anon_daemon_url" {
   }
 }
 
-# Bridge DNS carve-outs for the backend daemon (#2232, #2189). With app
-# hosting on, the bridge resolves every name under base_domain to core-caddy;
-# names core-caddy does not serve — the control plane's API host, the
-# sentinel's SSH apex — must be carved out or boxes cannot reach them.
+# Deprecated and ignored (#2734): the daemon no longer writes a bridge DNS
+# record, so there is nothing to carve out. Kept so existing module calls that
+# set it still plan; removed together with the daemon flag in #2735.
 variable "dns_passthrough_hosts" {
-  description = "Hostnames under base_domain that boxes must resolve upstream instead of at core-caddy (rendered as one --dns-passthrough-host flag each), e.g. the control plane's hostname. Empty = only ssh_host is carved out."
+  description = "Deprecated, ignored (#2734). Was: hostnames carved out of the bridge DNS record (--dns-passthrough-host). The daemon no longer writes that record."
   type        = list(string)
   default     = []
 }
 
 variable "ssh_host" {
-  description = "The sentinel's public SSH hostname (rendered as --ssh-host): surfaced to clients as the host to dial, and carved out of the base-domain bridge record. Empty = direct mode, and the SSH apex is NOT carved out."
+  description = "The sentinel's public SSH hostname (rendered as --ssh-host): surfaced to clients as the host to dial. Empty = direct mode."
   type        = string
   default     = ""
 }

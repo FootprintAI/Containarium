@@ -218,6 +218,12 @@ func (d *Dispatcher) Tick(ctx context.Context, username, connection string) (Tic
 		return res, fmt.Errorf("list issues: %w", err)
 	}
 
+	if !policy.DispatchOnLabel {
+		// Label-driven dispatch is off (#3569): the sweep and projection
+		// retries above still ran; nothing starts from labels.
+		return res, nil
+	}
+
 	for _, issue := range issues {
 		// A cancelled tick stops here rather than failing every remaining
 		// issue's start for a reason that has nothing to do with it.

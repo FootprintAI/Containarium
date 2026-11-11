@@ -1,0 +1,165 @@
+name: slides-agent image
+
+# Builds the slides-agent recipe image (images/slides-agent/Dockerfile, #3434)
+# to validate the whole definition: the pinned open-slide fetch and lockfile
+# install, the Caddy config validation and the runtime stage. Build only (no
+# push); publishing to ghcr.io/footprintai/containarium-slides-agent happens in
+# sidecars.yml on release tags.
+on:
+  pull_request:
+    paths:
+      - 'images/slides-agent/**'
+      - '.github/workflows/slides-agent-image.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'images/slides-agent/**'
+      - '.github/workflows/slides-agent-image.yml'
+  schedule:
+    # Path filters above mean the Trivy scan only reruns when this image's own
+    # source changes — a CVE disclosed later against an unchanged base image or
+    # OS package would otherwise go undetected indefinitely. Weekly, same slot
+    # as security.yml's fs scan, so both scans age out at the same cadence.
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    permissions:
+      contents: read
+      security-events: write   # Trivy SARIF upload
+    name: build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Test the starter-deck labeller
+        run: node --test images/slides-agent/label-starter-deck.test.mjs
+      - name: Build slides-agent image
+        run: docker build -f images/slides-agent/Dockerfile -t containarium-slides-agent:ci .
+      - name: Smoke-check the image
+        # Everything a box start relies on must be in the image, and the
+        # entrypoint must refuse to start without auth material.
+        run: |
+          docker run --rm --entrypoint /bin/sh containarium-slides-agent:ci -c '
+            set -e
+            test -x /usr/local/bin/slides-agent-entrypoint
+            test -x /usr/local/bin/slides-print-pdf
+            test -x /usr/local/bin/slides-render
+            test -x /usr/local/bin/open-slide
+            test -x /usr/bin/caddy
+            test -x /usr/local/bin/slides-wsauth
+            command -v chromium
+            command -v node
+            test -f /opt/open-slide/app/node_modules/@open-slide/core/bin.js
+            test -f /opt/open-slide/template/.claude/skills/create-slide/SKILL.md
+            grep -q STARTER_DECK_LABEL /opt/open-slide/template/slides/getting-started/index.tsx
+            id -u | grep -qx 1000
+          '
+          if docker run --rm --network none containarium-slides-agent:ci; then
+            echo "entrypoint started without auth material" >&2; exit 1
+          fi
+
+      - name: Zero-click login through the running image (#3486)
+        # The image as a box runs it: entrypoint, login helper, proxy and dev
+        # server. A minted token redeems once for a session cookie distinct
+        # from it, the replay is refused, the cookie and basic auth both reach
+        # the dev server, a token sent in a query is burned, and nothing the
+        # container logs carries a token or the cookie.
+        run: |
+          set -euo pipefail
+          HASH=$(docker run --rm --entrypoint caddy containarium-slides-agent:ci hash-password --plaintext ci-pass)
+          # The deck tree is a bind mount on a box, as here.
+          mkdir -p "$RUNNER_TEMP/workspace" && chmod 0777 "$RUNNER_TEMP/workspace"
+          docker run -d --name slides-login -v "$RUNNER_TEMP/workspace:/workspace" \
+            -e SLIDES_AUTH_USER=ci -e SLIDES_AUTH_HASH="$HASH" containarium-slides-agent:ci >/dev/null
+          trap 'rc=$?; [ "$rc" = 0 ] || docker logs slides-login 2>&1 | tail -50; docker rm -f slides-login >/dev/null' EXIT
+          in_box() { docker exec -i slides-login "$@"; }
+          # code <path> [curl args...]: the proxy's status for a request.
+          code() { local p=$1; shift; in_box curl -s -o /dev/null -w '%{http_code}' "$@" "http://127.0.0.1:8080$p" || true; }
+          for _ in $(seq 1 60); do
+            [ "$(code /)" = "401" ] && break
+            sleep 1
+          done
+          [ "$(code /)" = "401" ]
+          TOK=$(in_box curl -s http://127.0.0.1:9099/__mint | jq -er .token)
+          SESS=$(printf '%s' "$TOK" | in_box curl -s -o /dev/null -D - --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login \
+            | sed -n 's/^[Ss]et-[Cc]ookie: __Host-ws_session=\([A-Za-z0-9_-]\{43\}\);.*/\1/p')
+          [ -n "$SESS" ] && [ "$SESS" != "$TOK" ]
+          REPLAY=$(printf '%s' "$TOK" | in_box curl -s -o /dev/null -w '%{http_code}' --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login)
+          [ "$REPLAY" = "403" ] || { echo "replayed token: $REPLAY, want 403" >&2; exit 1; }
+          for _ in $(seq 1 120); do
+            [ "$(code / -H "Cookie: __Host-ws_session=$SESS")" = "200" ] && break
+            sleep 1
+          done
+          [ "$(code / -H "Cookie: __Host-ws_session=$SESS")" = "200" ]
+          [ "$(code / -u ci:ci-pass)" = "200" ]
+          [ "$(code / -H "Cookie: __Host-ws_session=$TOK")" = "401" ]
+          # A planted duplicate ahead of the real cookie does not lock the user out.
+          [ "$(code / -H "Cookie: __Host-ws_session=$(printf 'B%.0s' $(seq 43)); __Host-ws_session=$SESS")" = "200" ]
+          TOK2=$(in_box curl -s http://127.0.0.1:9099/__mint | jq -er .token)
+          [ "$(code "/__ws_login?t=$TOK2")" = "400" ]
+          [ "$(printf '%s' "$TOK2" | in_box curl -s -o /dev/null -w '%{http_code}' --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login)" = "403" ]
+          if docker logs slides-login 2>&1 | grep -F -e "$TOK" -e "$SESS"; then
+            echo "the container's log carries a token or the session cookie" >&2; exit 1
+          fi
+
+      # The real Caddyfile in front of the helper, with this image's own caddy:
+      # images/slides-agent/wsauth's proxy-level test skips without a caddy
+      # on PATH, so it runs here.
+      - uses: ./.github/actions/setup-go-cached
+        with:
+          go-version: '1.26.11'
+          cache-name: shared
+      - name: Proxy-level login test with the image's caddy (#3486)
+        run: |
+          docker create --name caddy-src containarium-slides-agent:ci >/dev/null
+          docker cp caddy-src:/usr/bin/caddy "$RUNNER_TEMP/caddy"
+          docker rm caddy-src >/dev/null
+          PATH="$RUNNER_TEMP:$PATH" WSAUTH_REQUIRE_CADDY=1 go test -race -count=1 -run TestCaddyfileProxy -v ./images/slides-agent/wsauth/
+
+      # This is the image slides-agent boxes actually run — security.yml's Trivy job only
+      # scans source dependencies (scan-type: fs), it never looks at the built
+      # image, so an image-layer scan needs to live here instead.
+      #
+      # exit-code: '1' makes this blocking on CRITICAL/HIGH — unlike
+      # security.yml's fs scan (which only uploads SARIF, non-blocking), an
+      # unpatched CRITICAL/HIGH in the image those boxes actually run should
+      # stop the build, not just get logged.
+      #
+      # ignore-unfixed: 'true' — a live run against this Dockerfile's Debian
+      # base found 4 CRITICAL / 14 unique HIGH OS-package CVEs, every one of
+      # them with no fixed version published yet (perl-base, util-linux,
+      # zlib1g, ...). Without this flag the gate would fail every run
+      # indefinitely for reasons no one here can act on. Same rule
+      # security.yml's govulncheck job already applies: "Fail only on
+      # vulnerabilities that have a fix we have not applied."
+      # limit-severities-for-sarif: 'true' — without it, trivy-action's own
+      # entrypoint unsets TRIVY_SEVERITY entirely for `format: sarif` (see
+      # its "Building SARIF report with all severities" log line), so the
+      # severity filter below is silently ignored and *any* finding —
+      # including UNKNOWN-severity ones — can trigger exit-code: '1'. Caught
+      # in review (#2126): an UNKNOWN-severity tzdata advisory (DLA-4792-1)
+      # tripped the gate despite not being CRITICAL/HIGH.
+      - name: Run Trivy vulnerability scanner (image)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
+          image-ref: 'containarium-slides-agent:ci'
+          format: 'sarif'
+          output: 'trivy-slides-agent-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF results
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
+        if: always()
+        with:
+          sarif_file: trivy-slides-agent-results.sarif

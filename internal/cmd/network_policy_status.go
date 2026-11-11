@@ -92,6 +92,8 @@ var uncoveredPathText = map[pb.NetworkPolicyUncoveredPath]string{
 	pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG:          "domain refresh lag: egress domains are re-resolved at most every 60s, so an address change takes effect only after the next refresh",
 	pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED:          "kernel unsupported: this host's kernel cannot run egress enforcement",
 	pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE: "egress allow-list incomplete: the last pass failed to add or remove an entry, so the kernel list differs from the policy; it is retried every pass",
+	pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_POLICY_COMPILE_FAILED:       "DEGRADED, policy compile failed: an egress or deny rule could not be compiled (e.g. a non-IPv4 CIDR), so the last good egress and deny sets are kept; see the daemon log and fix the policy",
+	pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_OPERATOR_SIGNATURES_STALE:   "operator signatures stale: the signature store could not be read, so the last loaded signature set is kept until it answers",
 }
 
 // printStatus renders a tenant's applied state. Anything the daemon did not

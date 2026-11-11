@@ -253,7 +253,7 @@ func (s *ClusterServer) CreateCluster(ctx context.Context, req *pb.CreateCluster
 	if err := s.store.Create(ctx, c); err != nil {
 		return nil, storeErr(err)
 	}
-	log.Printf("[cluster] created owner=%s name=%s groups=%d isolation=%s", owner, req.Name, len(groups), isolation)
+	log.Printf("[cluster] created owner=%q name=%q groups=%d isolation=%s", owner, req.Name, len(groups), isolation)
 	return &pb.CreateClusterResponse{
 		Cluster: clusterToProto(c),
 		Message: "cluster recorded; provisioning runs asynchronously",
@@ -322,7 +322,7 @@ func (s *ClusterServer) DeleteCluster(ctx context.Context, req *pb.DeleteCluster
 		if err := s.store.SetState(ctx, owner, req.Name, cluster.StateDeleting, ""); err != nil {
 			return nil, storeErr(err)
 		}
-		log.Printf("[cluster] deletion requested owner=%s name=%s", owner, req.Name)
+		log.Printf("[cluster] deletion requested owner=%q name=%q", owner, req.Name)
 		return &pb.DeleteClusterResponse{Message: "cluster deletion in progress: " + req.Name}, nil
 	}
 	// No reconciler wired → nothing can have provisioned VMs, so
@@ -330,7 +330,7 @@ func (s *ClusterServer) DeleteCluster(ctx context.Context, req *pb.DeleteCluster
 	if err := s.store.Delete(ctx, owner, req.Name); err != nil {
 		return nil, storeErr(err)
 	}
-	log.Printf("[cluster] deleted owner=%s name=%s", owner, req.Name)
+	log.Printf("[cluster] deleted owner=%q name=%q", owner, req.Name)
 	return &pb.DeleteClusterResponse{Message: "cluster deleted: " + req.Name}, nil
 }
 
@@ -451,7 +451,7 @@ func (s *ClusterServer) UpdateClusterNodePool(ctx context.Context, req *pb.Updat
 	if err != nil {
 		return nil, storeErr(err)
 	}
-	log.Printf("[cluster] node pool updated owner=%s name=%s groups=%d", owner, req.Name, len(groups))
+	log.Printf("[cluster] node pool updated owner=%q name=%q groups=%d", owner, req.Name, len(groups))
 	return &pb.UpdateClusterNodePoolResponse{
 		Cluster: clusterToProto(c),
 		Message: "node pool updated; the reconciler converges counts asynchronously",

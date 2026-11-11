@@ -45,9 +45,10 @@ type SessionSource interface {
 	Boxes(ctx context.Context) ([]SessionBox, error)
 	// ReadSessions returns raw session-log text for a box.
 	ReadSessions(ctx context.Context, box SessionBox) (string, error)
-	// ParseLine extracts a successful login from a single line. fallback is
-	// used when the line carries no timestamp of its own.
-	ParseLine(line string, year int, fallback time.Time) (ts time.Time, user, source, method string, ok bool)
+	// ParseLine extracts a successful login from a single line. now is when
+	// the log was read and resolves the year a syslog-style stamp leaves out;
+	// fallback is used when the line carries no timestamp of its own.
+	ParseLine(line string, now, fallback time.Time) (ts time.Time, user, source, method string, ok bool)
 }
 
 // --- incus -----------------------------------------------------------
@@ -95,6 +96,6 @@ func (s *incusSessionSource) ReadSessions(_ context.Context, box SessionBox) (st
 	return stdout, nil
 }
 
-func (s *incusSessionSource) ParseLine(line string, year int, _ time.Time) (time.Time, string, string, string, bool) {
-	return parseAuthLogLine(line, year)
+func (s *incusSessionSource) ParseLine(line string, now, _ time.Time) (time.Time, string, string, string, bool) {
+	return parseAuthLogLine(line, now)
 }

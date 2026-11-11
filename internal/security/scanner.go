@@ -221,7 +221,7 @@ func (s *Scanner) worker(ctx context.Context, id int) {
 			continue
 		}
 
-		log.Printf("Scan worker %d: processing job %d (%s)", id, job.ID, job.ContainerName)
+		log.Printf("Scan worker %d: processing job %d (%q)", id, job.ID, job.ContainerName)
 		if err := s.ScanContainer(ctx, job.ContainerName, job.Username); err != nil {
 			log.Printf("Scan worker %d: job %d failed: %v", id, job.ID, err)
 			if failErr := s.store.FailJob(ctx, job.ID, err.Error()); failErr != nil {
@@ -273,11 +273,11 @@ func (s *Scanner) ScanContainer(ctx context.Context, containerName, username str
 	}
 	switch report.Status {
 	case ScanStatusInfected:
-		log.Printf("Security scan: %s (%s) INFECTED - %d findings", containerName, username, report.FindingsCount)
+		log.Printf("Security scan: %q (%q) INFECTED - %d findings", containerName, username, report.FindingsCount)
 	case ScanStatusClean:
-		log.Printf("Security scan: %s (%s) clean (self-reported, took %s)", containerName, username, report.ScanDuration)
+		log.Printf("Security scan: %q (%q) clean (self-reported, took %s)", containerName, username, report.ScanDuration)
 	default:
-		log.Printf("Security scan: %s (%s) %s - %s", containerName, username, strings.ToUpper(report.Status), report.Findings)
+		log.Printf("Security scan: %q (%q) %s - %s", containerName, username, strings.ToUpper(report.Status), report.Findings)
 	}
 	if s.onScanResult != nil {
 		s.onScanResult(containerName, username, report.Status)

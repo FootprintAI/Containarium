@@ -22,6 +22,13 @@ message RecipeResources {
   string disk = 3;
 }
 
+// RecipePortRole labels what a recipe port is for.
+enum RecipePortRole {
+  RECIPE_PORT_ROLE_UNSPECIFIED = 0;
+  // The port is fronted by the recipe's in-box authentication proxy.
+  RECIPE_PORT_ROLE_AUTH_PROXY = 1;
+}
+
 // RecipePort maps a container port to a public subdomain, or to a raw
 // TCP/UDP passthrough port for a wire protocol no HTTP client speaks
 // (e.g. Postgres wire, Redis, Kafka). See #1462.
@@ -45,6 +52,15 @@ message RecipePort {
   // so a deploy whose external_port is already claimed by a different
   // container fails loudly rather than silently stealing it.
   int32 external_port = 4;
+
+  // What this port is for. ROLE_UNSPECIFIED (the default) leaves routing
+  // exactly as it is today. RECIPE_PORT_ROLE_AUTH_PROXY marks the port that
+  // sits behind the recipe's own in-box authentication proxy, so a consumer
+  // can pick the gated entry point deterministically instead of guessing by
+  // position. At most one port per recipe may carry it, and it must be
+  // HTTP-routed (not TCP/UDP passthrough). Metadata only: it does not change
+  // how the daemon exposes the port. See #3464.
+  RecipePortRole role = 5;
 }
 
 // RecipeVolume is a named persistent volume mounted into the app container.
@@ -121,6 +137,9 @@ message Recipe {
   // Shell commands run inside the container after it is up (e.g. the
   // `podman run ...` that starts the app, plus model warm-up). Same trust
   // level as a stack's post_install: these ship in-tree and are reviewed.
+  // Besides CONTAINARIUM_PARAM_<NAME>, they see CONTAINARIUM_RELEASE: the
+  // deploying daemon's own release tag (e.g. "v0.129.0"), empty when the
+  // daemon build is not a release. No parameter sets it.
   repeated string post_start = 11;
 
   // When non-empty, the daemon brokers this recipe's model calls through the
@@ -231,6 +250,14 @@ message DeployRecipeRequest {
   // Required for such a recipe (absent is FAILED_PRECONDITION); ignored for
   // an ungated one. A gated recipe cannot be deployed async.
   GuardrailGateInput guardrail_input = 10;
+
+  // SSH public keys to authorize (optional, can be added later).
+  // Forwarded unchanged to the inner CreateContainer; same validation and
+  // limits (at most 32 keys, each at most 8 KiB, each a well-formed OpenSSH
+  // public key). An invalid or over-bound key refuses the whole deploy with
+  // INVALID_ARGUMENT before any container is created. Empty keeps the
+  // key-less behaviour: add keys later with AddSSHKey / SetSSHKeys.
+  repeated string ssh_keys = 11;
 }
 
 // DeployRecipeResponse is the result of a recipe deployment.
@@ -256,11 +283,16 @@ message GetWorkspaceAccessRequest {
 // GetWorkspaceAccessResponse carries a bootstrap URL the console can load in an
 // iframe to sign the user into the in-box workspace proxy without a prompt.
 message GetWorkspaceAccessResponse {
-  // The in-box auth proxy's per-box session token.
+  // The in-box login token: minted single-use per call where the box's login
+  // helper provides one (librechat, slides-agent), else the box's static
+  // per-box token.
   string token = 1;
 
-  // Ready-to-embed bootstrap URL (https://<workspace-domain>/__ws_login?t=...);
-  // loading it sets the session cookie and redirects to the workspace UI.
+  // Ready-to-embed bootstrap URL. For a slides-agent box it is
+  // https://<workspace-domain>/__ws_login#t=... (the token in the URL
+  // fragment, which the proxy's bootstrap page posts; a token sent in the
+  // query is refused); otherwise https://<workspace-domain>/__ws_login?t=....
+  // Loading it sets the session cookie and redirects to the workspace UI.
   string url = 2;
 }
 

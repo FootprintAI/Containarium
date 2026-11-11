@@ -7,15 +7,14 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"net"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/footprintai/containarium/internal/alert"
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/audit"
 	"github.com/footprintai/containarium/internal/auth"
@@ -54,6 +53,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -82,6 +82,7 @@ func (p *PendingCreation) active() bool { return p != nil && !p.Done && !p.Cance
 
 // ContainerServer implements the gRPC ContainerService
 type ContainerServer struct {
+	nativeTenantReady func() bool
 	pb.UnimplementedContainerServiceServer
 	// systemInfoFn overrides the local GetSystemInfo probe in ListBackends.
 	// Nil in production; a test seam for a wedged local incusd (#2318).
@@ -117,11 +118,18 @@ type ContainerServer struct {
 	// snapshots is the container-snapshot surface (#1160). nil when the
 	// storage backend is not ZFS, which the handlers report rather than
 	// panic on.
-	snapshots           *snapshotOps
-	collaboratorManager *container.CollaboratorManager
+	snapshots *snapshotOps
+	// collaboratorManager is installed at startup or, after a degraded
+	// start, by the late-install helper (#3330), so it is read through
+	// loadCollaboratorManager. collaboratorsPending is set while that
+	// install is pending: the collaborator RPCs answer UNAVAILABLE.
+	collaboratorManager  atomic.Pointer[container.CollaboratorManager]
+	collaboratorsPending atomic.Bool
 	// sshKeys is the ssh_keys registry the key write paths record into
-	// (#2517, ssh_key_registry.go). Nil when the daemon has no Postgres.
-	sshKeys sshauthz.KeyRegistry
+	// (#2517, ssh_key_registry.go), read through loadSSHKeyRegistry. Nil
+	// when the daemon has no Postgres; installed late after a degraded
+	// start (#3330).
+	sshKeys atomic.Pointer[sshKeyRegistryRef]
 	// collabAccess and hostSessionKill are test seams for
 	// TerminateUserSessions (terminate_user_sessions.go); nil means the
 	// collaborator store and container.TerminateJumpAccountSessions.
@@ -138,7 +146,10 @@ type ContainerServer struct {
 	boxRunExec         boxScriptFunc
 	boxRunCollaborator collaboratorCheckFunc
 	boxRunLogDir       string
-	boxRunPoll         time.Duration
+	// boxRunAuditDir is the box path of the run audit directory the command
+	// event feed is read from (#3582); empty means runhook.AuditDir.
+	boxRunAuditDir string
+	boxRunPoll     time.Duration
 	// boxRunStartExec is StartBoxRun's own exec seam (#2193), separate from
 	// boxRunExec: production needs to run AS the box's own Linux user (so the
 	// spawned engine reads that user's credentials and the files it creates
@@ -149,6 +160,15 @@ type ContainerServer struct {
 	// into, so it sets this directly to a plain `sh -c` runner, exactly like
 	// boxRunExec's existing tests do for List/Tail.
 	boxRunStartExec boxRunStartFunc
+
+	// WriteBoxFile (#3548, box_file_write.go). boxFileWrite is the file API
+	// seam (nil: the container manager's WriteFile) and boxFileStageDir where
+	// the root-made staging file goes (empty: /tmp); tests set both.
+	boxFileWrite    boxFileWriteFunc
+	boxFileStageDir string
+	// boxFileWriteStream is the streaming file API seam of WriteBoxFileStream
+	// (box_file_stream.go; nil: the container manager's WriteFileStream).
+	boxFileWriteStream boxFileStreamWriteFunc
 
 	// approvalSecret is what box approval keys are derived from (#2184,
 	// box_run_inputs.go): the daemon's JWT secret, set by DualServer. Nil
@@ -161,10 +181,37 @@ type ContainerServer struct {
 	// the default.
 	runInputJournalCap int64
 
+	// Per-run checkout sweep (#3296, box_run_checkout_sweep.go).
+	// runCheckoutMaxAge is --run-checkout-max-age (0 = off), meaningful only
+	// once SetRunCheckoutMaxAge set runCheckoutMaxAgeSet; unset means the
+	// default. The rest are test seams, nil in production: runCheckoutNow the
+	// clock, runCheckoutHomes the box users' home lookup, runCheckoutBoxes the
+	// box list (and per-box status), runCheckoutLog the logger.
+	runCheckoutMaxAge    time.Duration
+	runCheckoutMaxAgeSet bool
+	runCheckoutNow       func() time.Time
+	runCheckoutHomes     func(box string, users []string) (map[string]string, error)
+	runCheckoutBoxes     func(ctx context.Context) ([]box.BoxStatus, error)
+	runCheckoutLog       func(format string, args ...any)
+	runCheckoutLocks     sync.Map // key: box name -> *sync.Mutex
+
+	// Skill-set re-apply (#3374, box_run_skill_sets.go). boxSkillSetsInstall is
+	// the install step's seam: production runs the shared installer script as
+	// the box user through boxRunStartExec; tests run the real installer against
+	// a temp home. boxSkillSetLocks is the per-box gate (boxSkillSetGate): an
+	// apply holds it for writing, a run start for reading (#3510).
+	boxSkillSetsInstall boxSkillSetsInstallFunc
+	boxSkillSetLocks    sync.Map       // key: box name -> *sync.RWMutex
+	boxGateHolders      boxGateHolders // who holds each box's gate (run starts, an apply), for a refused apply's reason and message (#3530, #3537)
+	// skillSetsApplyLease overrides the apply marker's lease
+	// (sdlcskills.ApplyMarkerLease) for tests; 0 = the default (#3529).
+	skillSetsApplyLease time.Duration
+
 	// boxRunToolAccess overrides how StartBoxRun reads the tool-access level
 	// recorded for a box (#2944): "" = none recorded, so the run keeps the
 	// owner's identity. Tests set it; production reads the Incus config.
-	boxRunToolAccess func(ctx context.Context, username string) (string, error)
+	boxRunToolAccess      func(ctx context.Context, username string) (string, error)
+	boxRunEnsureToolchain func(username string) error // test seam; production uses manager
 	// boxRunLocks serializes StartBoxRun's check-then-write span (collision
 	// check through record write) per (box, name) (#2260 review: concurrent
 	// calls for the same not-yet-existing name could both pass the collision
@@ -180,9 +227,9 @@ type ContainerServer struct {
 	victoriaMetricsURL string
 	grafanaURL         string
 	// Alerting (set by DualServer after setup)
-	alertStore         *alert.Store
-	alertManager       *alert.Manager
-	alertDeliveryStore *alert.DeliveryStore
+	// alerts is the alert rule, manager and delivery family; installed at
+	// startup or late (#3334), read atomically on every call.
+	alerts             alertFamilyState
 	alertWebhookURL    string
 	alertWebhookSecret string
 	hostRelayURL       string                          // e.g. "http://10.100.0.1:8080/internal/alert-relay"
@@ -325,24 +372,37 @@ type ContainerServer struct {
 	// passthrough analog of routeStore above. nil on a daemon with no
 	// Postgres-backed passthrough store configured, in which case this
 	// cascade step is skipped (matching routeStore's own nil handling).
-	passthroughStore network.PassthroughStore
+	// Read through loadPassthroughStore: it can be installed while serving
+	// (#3333).
+	passthroughStore storeSlot[network.PassthroughStore]
+	// passthroughSkipped remembers the boxes deleted while the store was
+	// required but absent, so their routes are removed when it installs
+	// (#3407).
+	passthroughSkipped passthroughSkippedDeletes
 
 	// moveRunner shells out to `incus snapshot/copy/stop/start` for the
 	// MoveContainer migration flow. Nil on daemons that don't support
 	// migration (MoveContainer returns "not configured" then).
 	moveRunner incus.MigrationRunner
 
-	// secretsStore is the tenant-secrets backend. Nil on daemons
-	// that don't have Postgres wired up (--standalone); the
-	// SecretsService RPCs return Unavailable in that case.
+	// secretsStoreRef is the tenant-secrets backend, read through
+	// loadSecretsStore and written through SetSecretsStore. Nil on
+	// daemons that don't have Postgres wired up (--standalone), and
+	// after a degraded start until the late-install helper installs it
+	// (#3327) — atomic because that install lands while RPCs are
+	// served. While nil the SecretsService RPCs return Unavailable.
 	// CreateContainer / StartContainer call LoadAllForUser to
 	// stamp environment.<NAME>=<value> at LXC start time.
-	secretsStore *secrets.Store
+	secretsStoreRef atomic.Pointer[secrets.Store]
 
-	// trackerStore holds tracker connections (#1921). Nil on daemons that
-	// don't have Postgres wired up; the TrackerService RPCs return
-	// Unavailable in that case, same convention as secretsStore.
-	trackerStore *tracker.Store
+	// trackerStoreRef holds tracker connections (#1921), read through
+	// loadTrackerStore and written through SetTrackerStore. Nil on
+	// daemons that don't have Postgres wired up, and after a degraded
+	// start until the late-install helper installs it (#3329) — atomic
+	// because that install lands while RPCs are served. While nil the
+	// TrackerService RPCs return Unavailable, same convention as the
+	// secrets store.
+	trackerStoreRef atomic.Pointer[tracker.Store]
 
 	// trackerDescribers overrides provider -> ReaderProvider resolution
 	// (tests only — see SetTrackerDescribers). Nil in production;
@@ -369,10 +429,11 @@ type ContainerServer struct {
 	// the RPC returns Unavailable rather than racing unlocked.
 	claimLocks *tracker.ClaimLocks
 
-	// trackerRunStarter is how DispatchTrackerIssues (#2022) starts a
-	// run — the RunAgentSkill path, wired in dual_server.go. Nil keeps
-	// the RPC returning Unavailable.
-	trackerRunStarter tracker.RunStarter
+	// trackerRunStarterRef is how DispatchTrackerIssues (#2022) starts a
+	// run — the RunAgentSkill path, wired in dual_server.go with the
+	// tracker store, or by its late install (#3329). Read through
+	// loadTrackerRunStarter. Nil keeps the RPC returning Unavailable.
+	trackerRunStarterRef liveValue[tracker.RunStarter]
 
 	// submitBoxRunner overrides the box-exec/file-read backend
 	// SubmitTrackerChange uses to extract a bundle (#1923). Nil in
@@ -396,9 +457,11 @@ type ContainerServer struct {
 	submitFilePusher submit.FilePusher
 
 	// KMS status snapshot for the KmsService GetKMSStatus RPC.
-	// Set once at startup in dual_server.go alongside the secrets
-	// store. Read-only after wiring; reflects CONTAINARIUM_KMS_BACKEND
-	// + CONTAINARIUM_REQUIRE_ENVELOPE as resolved at boot.
+	// Set in dual_server.go alongside the secrets store: at startup,
+	// or by the secrets store's late install after a degraded start
+	// (#3327), so kmsMu guards it. Reflects CONTAINARIUM_KMS_BACKEND
+	// + CONTAINARIUM_REQUIRE_ENVELOPE as resolved by the last attempt.
+	kmsMu           sync.RWMutex
 	kmsBackend      string
 	kmsDescription  string
 	kmsConfigured   bool
@@ -431,6 +494,11 @@ type ContainerServer struct {
 	// Empty (direct mode / no sentinel) leaves ssh_host empty and clients fall
 	// back to network.ip_address.
 	sshHost string
+
+	// managedBackupKey is true when the backup service built a managed-key
+	// wrapper (CONTAINARIUM_BACKUP_KMS_KEY_NAME); GetSystemInfo reports it so
+	// `backup status` knows unregistered tenants are still encrypted (#3213).
+	managedBackupKey bool
 
 	// auditStore records admin-initiated operations (TriggerUpgrade, etc.).
 	// Nil on daemons without a Postgres pool; nil is safe (ops are logged but
@@ -604,6 +672,11 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
+	// Namespace normalization must not turn a caller's reused dry-run request
+	// into an apparently explicit assignment on the next call.
+	if req.NetworkTenant == "" && auth.RequireRole(ctx, auth.RoleAdmin) != nil && s.nativeTenantLocalLXC() {
+		req = proto.Clone(req).(*pb.CreateContainerRequest)
+	}
 	// Audit B-MED-1 / B-MED-2 / B-LOW-1: cap the unbounded
 	// repeated-string / map fields before any allocation-heavy
 	// work runs. Done after the tenant check (don't enumerate
@@ -624,6 +697,12 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 		if err := s.resolvePoolPlacement(req); err != nil {
 			return nil, err
 		}
+	}
+	if err := authorizeNetworkTenantCreate(ctx, req, s.nativeTenantLocalLXC() && !s.createTargetsPeer(req), accountTenancyArmed()); err != nil {
+		return nil, err
+	}
+	if req.NetworkTenant != "" && (s.nativeTenantReady == nil || !s.nativeTenantReady()) {
+		return nil, status.Error(codes.FailedPrecondition, "native network Tenant requires ready enforced local LXC Guard")
 	}
 	// Unknown stack (#2860, #2952): refuse before any allocation. The catalog
 	// that counts is the one of the backend that will create the box: this
@@ -790,6 +869,7 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// Build the runtime-neutral box spec
 	spec := box.BoxSpec{
 		Ref:                    box.BoxRef{Tenant: req.Username},
+		NetworkTenant:          req.NetworkTenant,
 		Image:                  req.Image,
 		SSHKeys:                req.SshKeys,
 		Labels:                 req.Labels,
@@ -1068,7 +1148,7 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 			s.pendingMu.Unlock()
 
 			if cancelled {
-				log.Printf("Async container creation for %s cancelled by delete request (provisioning aborted; any error above is a consequence of the delete, not a creation failure)", req.Username)
+				log.Printf("Async container creation for %q cancelled by delete request (provisioning aborted; any error above is a consequence of the delete, not a creation failure)", req.Username)
 				// The delete can land in the narrow window before the
 				// instance exists, in which case it deleted nothing and
 				// this goroutine went on to finish the box. Reap it —
@@ -1076,9 +1156,9 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 				// container it asked to remove.
 				if err == nil && info != nil {
 					if delErr := s.manager.Delete(req.Username, true); delErr != nil {
-						log.Printf("Async container creation for %s completed after its delete; removing it failed: %v", req.Username, delErr)
+						log.Printf("Async container creation for %q completed after its delete; removing it failed: %v", req.Username, delErr)
 					} else {
-						log.Printf("Async container creation for %s completed after its delete; removed the late box", req.Username)
+						log.Printf("Async container creation for %q completed after its delete; removed the late box", req.Username)
 					}
 				}
 				return
@@ -1094,7 +1174,7 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 			s.platformStats.RecordProvisionAttempt(platformstats.OperationCreate, err == nil, time.Since(provisionStart))
 
 			if err != nil {
-				log.Printf("Async container creation failed for %s: %v", req.Username, err)
+				log.Printf("Async container creation failed for %q: %v", req.Username, err)
 			}
 
 			// Emit event on success
@@ -1200,11 +1280,11 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 	// create, and RefreshSecrets is the retry). Runs after the box exists,
 	// which on K8s matters: the Secret lands in the tenant namespace, and
 	// that namespace is created with the box.
-	if s.secretsStore != nil {
+	if s.loadSecretsStore() != nil {
 		if n, err := s.stampSecrets(ctx, req.Username); err != nil {
-			log.Printf("[secrets] failed to stamp on %s: %v (continuing)", info.Ref.Name, err)
+			log.Printf("[secrets] failed to stamp on %q: %v (continuing)", info.Ref.Name, err)
 		} else if n > 0 {
-			log.Printf("[secrets] stamped %d secret(s) on %s at create time", n, info.Ref.Name)
+			log.Printf("[secrets] stamped %d secret(s) on %q at create time", n, info.Ref.Name)
 		}
 	}
 
@@ -1249,10 +1329,10 @@ func (s *ContainerServer) createContainerAuthorized(ctx context.Context, req *pb
 		resp.SshCommand = sshCommandFor(req.Username, protoContainer.SshHost, info.IPAddress)
 		go func() {
 			if err := container.EnsureJumpServerAccount(req.Username); err != nil {
-				log.Printf("Warning: failed to create jump server account for %s: %v", req.Username, err)
+				log.Printf("Warning: failed to create jump server account for %q: %v", req.Username, err)
 				return
 			}
-			log.Printf("Jump server account ensured for %s", req.Username)
+			log.Printf("Jump server account ensured for %q", req.Username)
 
 			// Write the create-request ssh_keys to the HOST-SIDE
 			// authorized_keys (the jump-server account's file), the same
@@ -1532,7 +1612,7 @@ func (s *ContainerServer) GetContainer(ctx context.Context, req *pb.GetContainer
 
 	if hasPending && pending.Done && pending.Error != nil {
 		// Creation failed - return ERROR state with error details
-		log.Printf("Async creation failed for %s: %v", req.Username, pending.Error)
+		log.Printf("Async creation failed for %q: %v", req.Username, pending.Error)
 		return &pb.GetContainerResponse{
 			Container: &pb.Container{
 				Name:     fmt.Sprintf("%s-container", req.Username),
@@ -1629,7 +1709,7 @@ func (s *ContainerServer) DeleteContainer(ctx context.Context, req *pb.DeleteCon
 	// misleading exec errors are produced by the delete itself.
 	cancelledCreate := s.cancelPendingCreation(req.Username)
 	if cancelledCreate {
-		log.Printf("Delete for %s arrived while its creation was still provisioning; cancelling the create", req.Username)
+		log.Printf("Delete for %q arrived while its creation was still provisioning; cancelling the create", req.Username)
 	}
 
 	// Before deleting, deregister Guacamole connection if this is a Windows VM
@@ -1781,21 +1861,21 @@ func (s *ContainerServer) cascadeContainerCleanup(ctx context.Context, container
 	if s.routeStore != nil {
 		routes, err := s.routeStore.ListByContainer(ctx, containerName)
 		if err != nil {
-			log.Printf("[delete-cascade] list routes for %s failed: %v", containerName, err)
+			log.Printf("[delete-cascade] list routes for %q failed: %v", containerName, err)
 		}
 		for _, r := range routes {
 			if err := s.routeStore.Delete(ctx, r.FullDomain); err != nil {
-				log.Printf("[delete-cascade] delete route %s failed: %v", r.FullDomain, err)
+				log.Printf("[delete-cascade] delete route %q failed: %v", r.FullDomain, err)
 				continue
 			}
-			log.Printf("[delete-cascade] removed route %s (RouteSyncJob will reap Caddy entry)", r.FullDomain)
+			log.Printf("[delete-cascade] removed route %q (RouteSyncJob will reap Caddy entry)", r.FullDomain)
 
 			// 2. TLS subject: only if we also have a proxy manager.
 			if s.proxyManager != nil {
 				if err := s.proxyManager.RemoveTLSSubject(r.FullDomain); err != nil {
-					log.Printf("[delete-cascade] remove TLS subject %s failed: %v", r.FullDomain, err)
+					log.Printf("[delete-cascade] remove TLS subject %q failed: %v", r.FullDomain, err)
 				} else {
-					log.Printf("[delete-cascade] removed TLS automation subject %s", r.FullDomain)
+					log.Printf("[delete-cascade] removed TLS automation subject %q", r.FullDomain)
 				}
 			}
 		}
@@ -1806,28 +1886,29 @@ func (s *ContainerServer) cascadeContainerCleanup(ctx context.Context, container
 	//     forever — a later recipe deploy wanting that same port fails with
 	//     a stale "already claimed" conflict against a container that no
 	//     longer exists.
-	if s.passthroughStore != nil {
-		routes, err := s.passthroughStore.ListByContainer(ctx, containerName)
-		if err != nil {
-			log.Printf("[delete-cascade] list passthrough routes for %s failed: %v", containerName, err)
-		}
-		for _, r := range routes {
-			if err := s.passthroughStore.Delete(ctx, r.ExternalPort, r.Protocol); err != nil {
-				log.Printf("[delete-cascade] delete passthrough route %d/%s failed: %v", r.ExternalPort, r.Protocol, err)
-				continue
-			}
-			log.Printf("[delete-cascade] removed passthrough route %d/%s (sync job will reap the iptables rule)",
-				r.ExternalPort, r.Protocol)
-		}
+	//     While the store is required but absent (degraded start, #3333)
+	//     the box is remembered and this step runs when it installs (#3407).
+	if pt := s.passthroughStoreForCascade(containerName); pt != nil {
+		cascadePassthroughRoutes(ctx, pt, containerName)
 	}
 
 	// 3. Host user. DeleteJumpServerAccount is idempotent (no-op if the
 	//    user doesn't exist), so calling it when there isn't one is fine.
 	if err := container.DeleteJumpServerAccount(username, false); err != nil {
-		log.Printf("[delete-cascade] delete host user %s failed: %v (manual: sudo userdel -r %s)", username, err, username)
+		log.Printf("[delete-cascade] delete host user %q failed: %v (manual cleanup: run userdel -r for the account named above)", username, err)
 	} else {
-		log.Printf("[delete-cascade] removed host user %s", username)
+		log.Printf("[delete-cascade] removed host user %q", username)
 	}
+}
+
+// lifecycleError wraps a start/stop failure with a gRPC code so the gateway
+// stops reporting every failure as Unknown (#3242): a missing instance is
+// NotFound, anything else gets fallback. The message keeps the original text.
+func lifecycleError(fallback codes.Code, msg string, cause error) error {
+	if incus.IsNotFound(cause) {
+		return status.Error(codes.NotFound, msg)
+	}
+	return status.Error(fallback, msg)
 }
 
 // StartContainer starts a stopped container
@@ -1842,6 +1923,7 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		return nil, err
 	}
 
+	alreadyRunning := false
 	if bb, isK8s := s.k8sBoxes(); isK8s {
 		// K8s runtime: resume the Sandbox (operatingMode=Running); the
 		// agent-sandbox controller recreates the pod with the retained PVC.
@@ -1855,7 +1937,9 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		if err := s.encryption.PreStart(ctx, req.Username+"-container"); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 		}
-		if err := s.manager.Start(req.Username); err != nil {
+		if c, err := s.manager.StartIfStopped(req.Username); err == nil {
+			alreadyRunning = !c
+		} else {
 			// Try peer
 			if s.peerPool != nil {
 				authToken := extractAuthToken(ctx)
@@ -1864,7 +1948,7 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 					// #1905: don't report "failed to start" (which reads as
 					// "no such container") when the container may actually
 					// be sitting on a backend we just couldn't reach.
-					return nil, fmt.Errorf("cannot start %s: %d backend(s) unreachable (%s)",
+					return nil, status.Errorf(codes.Unavailable, "cannot start %s: %d backend(s) unreachable (%s)",
 						req.Username, len(unreachablePeers), unreachablePeers[0].Reason)
 				}
 				if peer != nil {
@@ -1884,7 +1968,7 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 						// stamp: a failure here just means one extra
 						// wake→sleep flap, not a broken start.
 						if err := s.manager.SetConfig(req.Username+"-container", incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
-							log.Printf("[autosleep] failed to stamp %s on %s after peer-forward: %v (continuing)", incus.LastStartedAtKey, req.Username, err)
+							log.Printf("[autosleep] failed to stamp %s on %q after peer-forward: %v (continuing)", incus.LastStartedAtKey, req.Username, err)
 						}
 						return &pb.StartContainerResponse{
 							Message: fmt.Sprintf("Container for user %s started on backend %s", req.Username, peer.ID),
@@ -1892,7 +1976,23 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 					}
 				}
 			}
-			return nil, fmt.Errorf("failed to start container: %w", err)
+			return nil, lifecycleError(codes.Internal, fmt.Sprintf("failed to start container: %v", err), err)
+		}
+
+		// #3242: the end state already held; nothing changed, so skip the
+		// start-time stamps, secret re-delivery and the started event.
+		if alreadyRunning {
+			info, gerr := s.boxes().Get(ctx, box.BoxRef{Tenant: req.Username})
+			if gerr != nil {
+				return nil, fmt.Errorf("container already running but failed to get info: %w", gerr)
+			}
+			resp := &pb.StartContainerResponse{
+				Message: fmt.Sprintf("Container for user %s was already running", req.Username),
+			}
+			if info != nil {
+				resp.Container = toProtoContainer(info)
+			}
+			return resp, nil
 		}
 
 		// Stamp last-start timestamp so the Phase 2 auto-sleep ticker can
@@ -1901,7 +2001,7 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		// the container is already running, and the worst case is one
 		// extra wake → sleep flap.
 		if err := s.manager.SetConfig(req.Username+"-container", incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
-			log.Printf("[autosleep] failed to stamp %s on %s: %v (continuing)", incus.LastStartedAtKey, req.Username, err)
+			log.Printf("[autosleep] failed to stamp %s on %q: %v (continuing)", incus.LastStartedAtKey, req.Username, err)
 		}
 
 		// Two-phase reaping (#525): the box is running again, so clear stopped_at.
@@ -1910,18 +2010,18 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		// its window does. Best-effort + idempotent (UnsetConfig of an absent key
 		// is a no-op).
 		if err := s.manager.UnsetConfig(req.Username+"-container", incus.StoppedAtKey); err != nil {
-			log.Printf("[ttl] failed to clear %s on %s: %v (continuing)", incus.StoppedAtKey, req.Username, err)
+			log.Printf("[ttl] failed to clear %s on %q: %v (continuing)", incus.StoppedAtKey, req.Username, err)
 		}
 
 		// Re-deliver tenant secrets from the current DB state. Picks up
 		// any rotations that happened while the box was stopped; existing
 		// processes won't see the change (POSIX inherit-at-fork), but new
 		// execs and new sessions will.
-		if s.secretsStore != nil {
+		if s.loadSecretsStore() != nil {
 			if n, err := s.stampSecrets(ctx, req.Username); err != nil {
-				log.Printf("[secrets] failed to re-deliver on start of %s's box: %v (continuing)", req.Username, err)
+				log.Printf("[secrets] failed to re-deliver on start of %q's box: %v (continuing)", req.Username, err)
 			} else if n > 0 {
-				log.Printf("[secrets] re-delivered %d secret(s) to %s's box at start time", n, req.Username)
+				log.Printf("[secrets] re-delivered %d secret(s) to %q's box at start time", n, req.Username)
 			}
 		}
 	}
@@ -1955,10 +2055,10 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		containerName := req.Username + "-container"
 		routes, err := s.routeStore.ListByContainer(ctx, containerName)
 		if err != nil {
-			log.Printf("[wake] list routes for %s: %v (skipping swap-to-direct)", containerName, err)
+			log.Printf("[wake] list routes for %q: %v (skipping swap-to-direct)", containerName, err)
 		} else if len(routes) > 0 {
 			if err := s.wakeRouter.SwapToDirect(ctx, containerName, routes); err != nil {
-				log.Printf("[wake] swap-to-direct %s: %v", containerName, err)
+				log.Printf("[wake] swap-to-direct %q: %v", containerName, err)
 			}
 		}
 	}
@@ -1975,13 +2075,11 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 	}, nil
 }
 
-// waitForContainerReady polls a TCP dial against the container's
-// primary exposed port until it accepts or the deadline elapses.
-// Returns true when the probe timed out. A nil routeStore, an absent
-// route record, an empty container IP, or a non-positive port all
-// short-circuit to "ready immediately" — the probe is opportunistic.
+// waitForContainerReady polls the first routed TCP port using the Box's
+// current IP, rather than the possibly stale IP captured just after start.
+// No configured route means there is no application port to wait for.
 func (s *ContainerServer) waitForContainerReady(ctx context.Context, username, containerIP string, total time.Duration) bool {
-	if s.routeStore == nil || containerIP == "" {
+	if s.routeStore == nil {
 		return false
 	}
 	containerName := username + "-container"
@@ -1990,25 +2088,29 @@ func (s *ContainerServer) waitForContainerReady(ctx context.Context, username, c
 		return false
 	}
 	port := routes[0].TargetPort
+	// Only an internal HTTP wake may select the already-authorized
+	// triggering route, rather than the first route in the store.
+	if wakePort, ok := ctx.Value(wakeTargetPortKey{}).(int); ok && wakePort > 0 {
+		port = wakePort
+	}
 	if port <= 0 {
 		return false
 	}
 
-	addr := net.JoinHostPort(containerIP, strconv.Itoa(port))
-	deadline := time.Now().Add(total)
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			return false
+	// Test-only servers without a Box backend retain the supplied IP.
+	// Real backends always re-read it, including the K8s implementation.
+	readIP := func() string {
+		if s.manager == nil && s.boxBackend == nil {
+			return containerIP
 		}
-		select {
-		case <-ctx.Done():
-			return true
-		case <-time.After(250 * time.Millisecond):
+		info, err := s.boxes().Get(ctx, box.BoxRef{Tenant: username})
+		if err != nil || info == nil {
+			return ""
 		}
+		return info.IPAddress
 	}
-	return true
+	_, ready := awaitWakeEndpoint(ctx, total, port, readIP)
+	return !ready
 }
 
 // StopContainer stops a running container
@@ -2023,13 +2125,14 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 		return nil, err
 	}
 
+	alreadyStopped := false
 	if bb, isK8s := s.k8sBoxes(); isK8s {
 		// K8s runtime: suspend the Sandbox (operatingMode=Suspended); the
 		// controller deletes only the pod — PVC + Service + identity persist.
 		if err := bb.Stop(ctx, box.BoxRef{Tenant: req.Username}, req.Force); err != nil {
 			return nil, fmt.Errorf("failed to stop container: %w", err)
 		}
-	} else if err := s.manager.Stop(req.Username, req.Force); err != nil {
+	} else if c, err := s.manager.StopIfRunning(req.Username, req.Force); err != nil {
 		// Try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
@@ -2037,7 +2140,7 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 			if peer == nil && len(unreachablePeers) > 0 {
 				// #1905: don't report "failed to stop" as if the container
 				// didn't exist when its backend was merely unreachable.
-				return nil, fmt.Errorf("cannot stop %s: %d backend(s) unreachable (%s)",
+				return nil, status.Errorf(codes.Unavailable, "cannot stop %s: %d backend(s) unreachable (%s)",
 					req.Username, len(unreachablePeers), unreachablePeers[0].Reason)
 			}
 			if peer != nil {
@@ -2050,7 +2153,26 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 				}
 			}
 		}
-		return nil, fmt.Errorf("failed to stop container: %w", err)
+		return nil, lifecycleError(codes.Internal, fmt.Sprintf("failed to stop container: %v", err), err)
+	} else if !c {
+		// #3242: the end state already held. Nothing changed, so none of the
+		// post-stop work runs: re-stamping stopped_at would keep postponing the
+		// stopped->delete timer (#525) on every redundant stop.
+		alreadyStopped = true
+	}
+
+	if alreadyStopped {
+		info, err := s.boxes().Get(ctx, box.BoxRef{Tenant: req.Username})
+		if err != nil {
+			return nil, fmt.Errorf("container already stopped but failed to get info: %w", err)
+		}
+		resp := &pb.StopContainerResponse{
+			Message: fmt.Sprintf("Container for user %s was already stopped", req.Username),
+		}
+		if info != nil {
+			resp.Container = toProtoContainer(info)
+		}
+		return resp, nil
 	}
 
 	// Post-stop hook (#1201): drop the encryption key so the stopped
@@ -2081,7 +2203,7 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 	// stopped→delete rule isn't modeled on the k8s runtime yet.
 	if _, isK8s := s.k8sBoxes(); !isK8s {
 		if serr := s.manager.SetConfig(info.Ref.Name, incus.StoppedAtKey, time.Now().UTC().Format(time.RFC3339)); serr != nil {
-			log.Printf("[ttl] failed to stamp %s on %s: %v (stopped→delete timer not started)", incus.StoppedAtKey, info.Ref.Name, serr)
+			log.Printf("[ttl] failed to stamp %s on %q: %v (stopped→delete timer not started)", incus.StoppedAtKey, info.Ref.Name, serr)
 		}
 	}
 
@@ -2106,7 +2228,7 @@ func (s *ContainerServer) StopForAutoSleep(ctx context.Context, username, reason
 	// Autosleep is daemon-internal — promote the context to the system
 	// identity so the StopContainer authz check passes.
 	ctx = auth.ContextWithSystemIdentity(ctx)
-	log.Printf("[autosleep] stopping username=%s reason=%q idle_minutes=%d", username, reason, idleMinutes)
+	log.Printf("[autosleep] stopping username=%q reason=%q idle_minutes=%d", username, reason, idleMinutes)
 
 	// Swap Caddy routes to the wake handler BEFORE stopping the
 	// container. Doing the swap first means any request arriving in
@@ -2120,10 +2242,10 @@ func (s *ContainerServer) StopForAutoSleep(ctx context.Context, username, reason
 		containerName := username + "-container"
 		routes, err := s.routeStore.ListByContainer(ctx, containerName)
 		if err != nil {
-			log.Printf("[autosleep] list routes for %s: %v (skipping swap-to-wake)", containerName, err)
+			log.Printf("[autosleep] list routes for %q: %v (skipping swap-to-wake)", containerName, err)
 		} else if len(routes) > 0 {
 			if err := s.wakeRouter.SwapToWake(ctx, containerName, routes); err != nil {
-				log.Printf("[autosleep] swap-to-wake %s: %v", containerName, err)
+				log.Printf("[autosleep] swap-to-wake %q: %v", containerName, err)
 				// Don't fail the stop — RouteSyncJob will re-converge.
 			}
 		}
@@ -2217,7 +2339,7 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 		// Container not found locally — check peers
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
-			log.Printf("[resize] container %s not local, searching peers (token len=%d)", containerName, len(authToken))
+			log.Printf("[resize] container %q not local, searching peers (token len=%d)", containerName, len(authToken))
 			peer, unreachablePeers := s.peerPool.FindContainerPeer(req.Username, authToken)
 			if peer == nil && len(unreachablePeers) > 0 {
 				// #1905: don't report "failed to resize" as if the
@@ -2227,7 +2349,7 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 					req.Username, len(unreachablePeers), unreachablePeers[0].Reason)
 			}
 			if peer != nil {
-				log.Printf("[resize] found %s on peer %s, forwarding", containerName, peer.ID)
+				log.Printf("[resize] found %q on peer %s, forwarding", containerName, peer.ID)
 				body, _ := json.Marshal(map[string]string{
 					"cpu":           req.Cpu,
 					"memory":        req.Memory,
@@ -2270,6 +2392,9 @@ func (s *ContainerServer) ResizeContainer(ctx context.Context, req *pb.ResizeCon
 
 // CleanupDisk frees disk space inside a container
 func (s *ContainerServer) CleanupDisk(ctx context.Context, req *pb.CleanupDiskRequest) (*pb.CleanupDiskResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
@@ -2335,6 +2460,9 @@ func (s *ContainerServer) CleanupDisk(ctx context.Context, req *pb.CleanupDiskRe
 
 // InstallStack installs a software stack or base script on a running container
 func (s *ContainerServer) InstallStack(ctx context.Context, req *pb.InstallStackRequest) (*pb.InstallStackResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
@@ -2423,6 +2551,9 @@ func (s *ContainerServer) ListStacks(ctx context.Context, req *pb.ListStacksRequ
 // container is a no-op; etc. So a transient network failure
 // mid-adoption can be safely re-driven.
 func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.AdoptMigratedContainerRequest) (*pb.AdoptMigratedContainerResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.Username == "" {
 		return nil, fmt.Errorf("username is required")
 	}
@@ -2478,15 +2609,15 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 			)
 			for k, v := range envVars {
 				if err := s.manager.SetEnv(containerName, k, v); err != nil {
-					log.Printf("[adopt] failed to re-stamp %s on %s: %v (continuing — partial OTel beats none)", k, containerName, err)
+					log.Printf("[adopt] failed to re-stamp %s on %q: %v (continuing — partial OTel beats none)", k, containerName, err)
 				}
 			}
 			// Re-drop the dotenv file at the destination too, so
 			// docker apps pick up the new collector endpoint. #370.
 			if err := s.manager.WriteOTelEnvFile(containerName, envVars); err != nil {
-				log.Printf("[adopt] failed to write env file on %s: %v (continuing)", containerName, err)
+				log.Printf("[adopt] failed to write env file on %q: %v (continuing)", containerName, err)
 			}
-			log.Printf("[adopt] re-stamped OTel env vars on %s for destination collector", containerName)
+			log.Printf("[adopt] re-stamped OTel env vars on %q for destination collector", containerName)
 		}
 	}
 
@@ -2498,17 +2629,21 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 		}
 	}
 
-	// Get the new IP. The box backend's Get() reads from the substrate.
-	info, err := s.boxes().Get(ctx, box.BoxRef{Tenant: req.Username})
+	// Get the new IP. The box backend's Get() reads from the substrate. The
+	// container is running as soon as Start returns, but its DHCP lease can
+	// take a moment, so wait for the address instead of reading it once.
+	newIP, err := waitForContainerIP(ctx, func() (string, error) {
+		info, err := s.boxes().Get(ctx, box.BoxRef{Tenant: req.Username})
+		if err != nil {
+			return "", fmt.Errorf("get adopted container info: %w", err)
+		}
+		if info == nil {
+			return "", nil
+		}
+		return info.IPAddress, nil
+	}, adoptIPWait, time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("get adopted container info: %w", err)
-	}
-	newIP := ""
-	if info != nil {
-		newIP = info.IPAddress
-	}
-	if newIP == "" {
-		return nil, fmt.Errorf("adopted container has no IP address yet (still initializing?)")
+		return nil, err
 	}
 
 	// The adopted container now lives on this VM under a new IP —
@@ -2529,7 +2664,7 @@ func (s *ContainerServer) AdoptMigratedContainer(ctx context.Context, req *pb.Ad
 	// destination to be authoritative over its own route store, the
 	// data is already on the wire.
 	if len(req.SourceRoutes) > 0 {
-		log.Printf("[adopt] %s arriving with %d source routes (source owns the swap)", req.Username, len(req.SourceRoutes))
+		log.Printf("[adopt] %q arriving with %d source routes (source owns the swap)", req.Username, len(req.SourceRoutes))
 	}
 
 	return &pb.AdoptMigratedContainerResponse{
@@ -2618,7 +2753,7 @@ func (s *ContainerServer) ToggleMonitoring(ctx context.Context, req *pb.ToggleMo
 		// via `env_file:`. Best-effort — the Incus-config env above
 		// already covers native-LXC apps. See #370.
 		if err := s.manager.WriteOTelEnvFile(containerName, envVars); err != nil {
-			log.Printf("[togglemonitor] %s: failed to write env file: %v (native-LXC env still stamped)", containerName, err)
+			log.Printf("[togglemonitor] %q: failed to write env file: %v (native-LXC env still stamped)", containerName, err)
 		}
 	} else {
 		for _, k := range otelEnvKeys {
@@ -2627,7 +2762,7 @@ func (s *ContainerServer) ToggleMonitoring(ctx context.Context, req *pb.ToggleMo
 			}
 		}
 		if err := s.manager.RemoveOTelEnvFile(containerName); err != nil {
-			log.Printf("[togglemonitor] %s: failed to remove env file: %v", containerName, err)
+			log.Printf("[togglemonitor] %q: failed to remove env file: %v", containerName, err)
 		}
 	}
 
@@ -2637,7 +2772,7 @@ func (s *ContainerServer) ToggleMonitoring(ctx context.Context, req *pb.ToggleMo
 	wasRunning := info.State == pb.ContainerState_CONTAINER_STATE_RUNNING
 	if wasRunning {
 		if err := s.manager.Stop(req.Username, false); err != nil {
-			log.Printf("[togglemonitor] %s stop returned %v (continuing)", containerName, err)
+			log.Printf("[togglemonitor] %q stop returned %v (continuing)", containerName, err)
 		}
 		if err := s.manager.Start(req.Username); err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to start container after env update: %v", err)
@@ -2706,6 +2841,29 @@ func (s *ContainerServer) ToggleAutoSleep(ctx context.Context, req *pb.ToggleAut
 		effectiveThreshold = incus.DefaultIdleThresholdMinutes
 	}
 
+	// A newly created Running box can have no last-start stamp: Create
+	// starts the workload without calling StartContainer. The auto-sleep
+	// ticker then sees neither a start nor network activity and will never
+	// stop it. Arm the clock before accepting opt-in; on failure do not
+	// enable a timer that the ticker cannot evaluate.
+	if req.Enabled && info.State == pb.ContainerState_CONTAINER_STATE_RUNNING {
+		// Re-enabling an already armed policy must not indefinitely
+		// extend the anti-thrash window. Repair legacy opt-ins when
+		// their last-start clock is still absent.
+		needsClock := !info.AutoSleepEnabled
+		if !needsClock {
+			current, getErr := s.manager.Get(req.Username)
+			if getErr != nil {
+				return nil, status.Errorf(codes.Internal, "failed to read auto-sleep clock: %v", getErr)
+			}
+			needsClock = current == nil || current.LastStartedAt.IsZero()
+		}
+		if needsClock {
+			if err := s.manager.SetConfig(containerName, incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to arm auto-sleep clock: %v", err)
+			}
+		}
+	}
 	enabledStr := "false"
 	if req.Enabled {
 		enabledStr = "true"
@@ -2787,7 +2945,7 @@ func (s *ContainerServer) AddSSHKey(ctx context.Context, req *pb.AddSSHKeyReques
 	if err != nil {
 		// Counting failed but the add succeeded — return success with
 		// zero so the caller still knows the add went through.
-		log.Printf("[add-ssh-key] count after add failed for %s: %v", req.Username, err)
+		log.Printf("[add-ssh-key] count after add failed for %q: %v", req.Username, err)
 		total = 0
 	}
 
@@ -2811,9 +2969,11 @@ var setSSHKeysRegistryTimeout = 10 * time.Second
 // with no change. Platform-managed lines (the sentinel's upstream key) are
 // preserved by the file layer and never revoked, so a caller cannot lock the
 // platform out. Keys dropped by the call are revoked in the ssh_keys
-// registry exactly as RemoveSSHKey does (for every account holding them);
-// kept keys are registered like AddSSHKey does. An empty list is accepted
-// only with allow_empty, so an omitted field cannot wipe a box.
+// registry exactly as RemoveSSHKey does (only the entries this account owns,
+// #3187), except that a key another account still holds is dropped from this
+// account's file without being revoked (#3222). Kept keys are registered like
+// AddSSHKey does. An empty list is accepted only with allow_empty, so an
+// omitted field cannot wipe a box.
 func (s *ContainerServer) SetSSHKeys(ctx context.Context, req *pb.SetSSHKeysRequest) (*pb.SetSSHKeysResponse, error) {
 	if err := auth.RequireScope(ctx, auth.ScopeSSHWrite); err != nil {
 		return nil, err
@@ -2868,7 +3028,14 @@ func (s *ContainerServer) SetSSHKeys(ctx context.Context, req *pb.SetSSHKeysRequ
 			rctx, cancel := context.WithTimeout(ctx, setSSHKeysRegistryTimeout)
 			defer cancel()
 			for _, k := range drop {
-				if err := s.revokeSSHKey(rctx, req.Username, k); err != nil {
+				err := s.revokeSSHKey(rctx, req.Username, k)
+				if errors.Is(err, sshauthz.ErrKeyHeldByOtherAccount) {
+					// Another account still holds this key: this call only
+					// removes this account's entry (#3222). The registry row
+					// stays active for the other holder.
+					continue
+				}
+				if err != nil {
 					return registryError("set ssh keys", err)
 				}
 			}
@@ -2915,18 +3082,28 @@ func (s *ContainerServer) RemoveSSHKey(ctx context.Context, req *pb.RemoveSSHKey
 		return nil, err
 	}
 
+	// Revoke before the file changes, as SetSSHKeys does: a registry failure
+	// leaves the key in place and is reported, so the caller's retry repeats
+	// the revocation. Only the entry this account owns is revoked (#3187), and
+	// not while another account still holds the key (#3222).
+	if err := s.revokeSSHKey(ctx, req.Username, req.SshPublicKey); err != nil {
+		if !errors.Is(err, sshauthz.ErrKeyHeldByOtherAccount) {
+			return nil, registryError("remove ssh key", err)
+		}
+		// Another account still holds this key: only this account's entry is
+		// removed and the registry row stays active for the other holder
+		// (#3222), as SetSSHKeys does. The response does not name the holder; an
+		// unreadable account fails the call with ErrHolderUnknown, which names
+		// no account either (the daemon log does).
+		log.Printf("[remove-ssh-key] %q dropped a key another account still holds; registry entry left active", req.Username)
+	}
 	if err := s.authorizedKeys.removeKey(req.Username, req.SshPublicKey); err != nil {
 		return nil, fmt.Errorf("remove authorized key: %w", err)
-	}
-	// A removed key is revoked for every account that holds it (#2517
-	// decision: fails closed). A failure is reported so the caller retries.
-	if err := s.revokeSSHKey(ctx, req.Username, req.SshPublicKey); err != nil {
-		return nil, registryError("remove ssh key", err)
 	}
 
 	total, err := s.authorizedKeys.countKeys(req.Username)
 	if err != nil {
-		log.Printf("[remove-ssh-key] count after remove failed for %s: %v", req.Username, err)
+		log.Printf("[remove-ssh-key] count after remove failed for %q: %v", req.Username, err)
 		total = 0
 	}
 
@@ -3056,6 +3233,9 @@ var daemonReleaseChecker = releasecheck.New()
 // Best-effort: a failed/rate-limited GitHub lookup yields an empty
 // latest_release (and update_available=false) rather than an error. #354.
 func (s *ContainerServer) GetLatestRelease(ctx context.Context, req *pb.GetLatestReleaseRequest) (*pb.GetLatestReleaseResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -3099,6 +3279,9 @@ func (s *ContainerServer) upgradeTargetVersion(ctx context.Context, githubTag st
 // own host; a peer backend_id forwards to that peer's daemon, which runs the
 // same check locally on its host. See #316.
 func (s *ContainerServer) ValidateGPU(ctx context.Context, req *pb.ValidateGPURequest) (*pb.ValidateGPUResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -3252,7 +3435,7 @@ func (s *ContainerServer) TriggerUpgrade(ctx context.Context, req *pb.TriggerUpg
 
 	subject, _, _ := auth.SubjectFromGRPCContext(ctx)
 	if usingGitHub {
-		log.Printf("[upgrade] triggered by %q on backend %q (from %s, github_tag=%s, force=%v, job=%s)", subject, backendKey, current, req.GithubTag, req.Force, id)
+		log.Printf("[upgrade] triggered by %q on backend %q (from %s, github_tag=%q, force=%v, job=%s)", subject, backendKey, current, req.GithubTag, req.Force, id)
 	} else {
 		log.Printf("[upgrade] triggered by %q on backend %q (from %s, force=%v, job=%s)", subject, backendKey, current, req.Force, id)
 	}
@@ -3347,6 +3530,9 @@ func (s *ContainerServer) GetUpgradeStatus(ctx context.Context, req *pb.GetUpgra
 
 // GetSystemInfo gets information about the Incus host
 func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemInfoRequest) (*pb.GetSystemInfoResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	// Admin-only: exposes fleet-internal details (hostname, OS,
 	// Incus version, container counts across tenants). A user
 	// token has no legitimate reason to read this — they care
@@ -3425,6 +3611,8 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 		// direct/in-network mode — so an agent can tell from get_system_info
 		// whether an external SSH/deploy entrypoint exists. See #1011.
 		SshIngressHost: s.sshHost,
+		// How this daemon's peer calls are secured (#3079).
+		PeerTransport: peerTransportOf(s.peerPool),
 		// Tenant-committed CPU cores on this host — pairs with TotalCpus to
 		// answer "is this host over its CPU overcommit ceiling right now"
 		// (#1580). Reuses the same containers list already fetched above,
@@ -3443,6 +3631,7 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 	info.CoreCommittedCpuCores = budget.CoreCommittedCores
 	info.CpuAdmissionMode = cpuAdmissionModeToProto(budget.AdmissionMode)
 	info.CpuOvercommitFactor = budget.OvercommitFactor
+	s.withBackupKeyInfo(info)
 
 	// The storage pool backing this backend's containers, and whether it
 	// isolates tenant volumes (#1209). Left null when the pool can't be read:
@@ -3515,6 +3704,9 @@ func (s *ContainerServer) GetSystemInfo(ctx context.Context, req *pb.GetSystemIn
 // GPU inventory), which is operator-grade, not tenant-grade. The cloud
 // control plane redacts it per-tenant at its own boundary.
 func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRequest) (*pb.ListBackendsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -3837,6 +4029,9 @@ func headroomToProto(h capacity.Headroom) *pb.CapacityHeadroom {
 // control plane, bounded by the supplied local policy. The advertisement is
 // surfaced through ListBackends. Admin-only. See #680.
 func (s *ContainerServer) AdvertiseCapacity(ctx context.Context, req *pb.AdvertiseCapacityRequest) (*pb.AdvertiseCapacityResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -3872,6 +4067,9 @@ func (s *ContainerServer) AdvertiseCapacity(ctx context.Context, req *pb.Adverti
 // the drainer coalesces an overlapping drain rather than stacking a second one.
 // See #680, #682.
 func (s *ContainerServer) WithdrawCapacity(ctx context.Context, req *pb.WithdrawCapacityRequest) (*pb.WithdrawCapacityResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -3933,6 +4131,9 @@ func (s *ContainerServer) WithdrawCapacity(ctx context.Context, req *pb.Withdraw
 // GetCapacityHeadroom returns this backend's current advertisement with spare
 // figures recomputed against the live host snapshot. Admin-only. See #680.
 func (s *ContainerServer) GetCapacityHeadroom(ctx context.Context, _ *pb.GetCapacityHeadroomRequest) (*pb.GetCapacityHeadroomResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -4089,6 +4290,9 @@ func profileToProto(p capabilities.Profile) *pb.CapabilityProfile {
 // Admin-only. An empty (or local) backend_id profiles this daemon; a peer
 // backend_id forwards to that peer, which profiles itself. See #681.
 func (s *ContainerServer) ProfileBackend(ctx context.Context, req *pb.ProfileBackendRequest) (*pb.ProfileBackendResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -4139,6 +4343,9 @@ func (s *ContainerServer) ProfileBackend(ctx context.Context, req *pb.ProfileBac
 // forwards to that peer. Returns a null profile when nothing has been recorded
 // yet. See #681.
 func (s *ContainerServer) GetCapabilityProfile(ctx context.Context, req *pb.GetCapabilityProfileRequest) (*pb.GetCapabilityProfileResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -4182,6 +4389,9 @@ func (s *ContainerServer) GetCapabilityProfile(ctx context.Context, req *pb.GetC
 // itself). Admin-only. The control plane verifies the measurement to detect
 // tampering; the verification half lives elsewhere. See #683.
 func (s *ContainerServer) GetSelfMeasurement(ctx context.Context, req *pb.GetSelfMeasurementRequest) (*pb.GetSelfMeasurementResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -4560,9 +4770,11 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 	}
 
 	pc := &pb.Container{
-		Name:     st.Ref.Name,
-		Username: st.Ref.Tenant,
-		State:    st.State,
+		Name:                st.Ref.Name,
+		NetworkTenant:       st.NetworkTenant,
+		NetworkTenantSource: st.NetworkTenantSource,
+		Username:            st.Ref.Tenant,
+		State:               st.State,
 		Resources: &pb.ResourceLimits{
 			Cpu:           st.Resources.CPU,
 			Memory:        st.Resources.Memory,
@@ -4678,6 +4890,17 @@ func (s *ContainerServer) SetCapabilityIdentity(region, reportedClass string) {
 func (s *ContainerServer) SetCPUOvercommitPolicy(factor float64, enforce bool) {
 	s.cpuOvercommitFactor = factor
 	s.cpuOvercommitEnforce = enforce
+}
+
+// SetManagedBackupKeyConfigured records whether this daemon has a managed
+// backup key, for SystemInfo.managed_backup_key_configured (#3213).
+func (s *ContainerServer) SetManagedBackupKeyConfigured(configured bool) {
+	s.managedBackupKey = configured
+}
+
+// withBackupKeyInfo stamps the managed-backup-key report onto info.
+func (s *ContainerServer) withBackupKeyInfo(info *pb.SystemInfo) {
+	info.ManagedBackupKeyConfigured = s.managedBackupKey
 }
 
 // SetSSHHost wires the public SSH host clients dial to reach this daemon's
@@ -4944,8 +5167,10 @@ func (s *ContainerServer) localBackendHealthy() bool {
 // SetRouteCleanupDeps wires the route store + proxy manager so
 // DeleteContainer can cascade-clean a container's routes + TLS
 // subjects. Both may be nil if the daemon was started without
-// --app-hosting; the cascade will skip those steps gracefully.
-func (s *ContainerServer) SetRouteCleanupDeps(routeStore *app.RouteStore, proxyManager *app.ProxyManager) {
+// --app-hosting; the cascade will skip those steps gracefully. The store
+// is the live accessor (#3331): one installed after a degraded start is
+// read on the next call.
+func (s *ContainerServer) SetRouteCleanupDeps(routeStore routeLister, proxyManager *app.ProxyManager) {
 	s.routeStore = routeStore
 	s.proxyManager = proxyManager
 }
@@ -4954,13 +5179,42 @@ func (s *ContainerServer) SetRouteCleanupDeps(routeStore *app.RouteStore, proxyM
 // cascade-clean a container's TCP/UDP passthrough routes (#1462), mirroring
 // SetRouteCleanupDeps above. store may be nil if the daemon has no
 // Postgres-backed passthrough store configured; the cascade skips gracefully.
+// Safe while serving: a late install (#3333) calls it after startup.
 func (s *ContainerServer) SetPassthroughCleanupDep(store network.PassthroughStore) {
-	s.passthroughStore = store
+	s.installPassthroughStore(context.Background(), store)
 }
 
 // SetCollaboratorManager sets the collaborator manager for handling collaborator operations
 func (s *ContainerServer) SetCollaboratorManager(cm *container.CollaboratorManager) {
-	s.collaboratorManager = cm
+	s.collaboratorManager.Store(cm)
+}
+
+// loadCollaboratorManager returns the installed collaborator manager, or nil.
+func (s *ContainerServer) loadCollaboratorManager() *container.CollaboratorManager {
+	return s.collaboratorManager.Load()
+}
+
+// collaboratorStoreService is the collaborator family's grpc.health.v1
+// readiness entry (#3330, collaborator_store_recovery.go).
+const collaboratorStoreService = "containarium.collaborators"
+
+// errCollaboratorsNotInstalled is the collaborator RPCs' answer while the
+// late install is pending.
+var errCollaboratorsNotInstalled = status.Error(codes.Unavailable,
+	"collaborator store is not available yet (Postgres unavailable at startup); it installs in-process once Postgres answers — readiness "+collaboratorStoreService)
+
+// errCollaboratorsNotEnabled is the answer with no collaborator store
+// configured (and no peer that has the box).
+var errCollaboratorsNotEnabled = errors.New("collaborator management not enabled")
+
+// collaboratorsMissing is the answer when no collaborator manager is
+// installed: UNAVAILABLE while the late install is pending (#3330), else
+// "not enabled".
+func (s *ContainerServer) collaboratorsMissing() error {
+	if s.collaboratorsPending.Load() {
+		return errCollaboratorsNotInstalled
+	}
+	return errCollaboratorsNotEnabled
 }
 
 // AddCollaborator adds a collaborator to a container
@@ -4979,6 +5233,9 @@ func collaboratorKeysFromRequest(req *pb.AddCollaboratorRequest) []string {
 }
 
 func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollaboratorRequest) (*pb.AddCollaboratorResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.OwnerUsername == "" {
 		return nil, fmt.Errorf("owner_username is required")
 	}
@@ -4995,7 +5252,8 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 		return nil, err
 	}
 
-	if s.collaboratorManager == nil {
+	collabMgr := s.loadCollaboratorManager()
+	if collabMgr == nil {
 		// No local collaborator manager — try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
@@ -5040,10 +5298,10 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 				}, nil
 			}
 		}
-		return nil, fmt.Errorf("collaborator management not enabled")
+		return nil, s.collaboratorsMissing()
 	}
 
-	collab, err := s.collaboratorManager.AddCollaborator(req.OwnerUsername, req.CollaboratorUsername, sshKeys, req.GrantSudo, req.GrantContainerRuntime)
+	collab, err := collabMgr.AddCollaborator(req.OwnerUsername, req.CollaboratorUsername, sshKeys, req.GrantSudo, req.GrantContainerRuntime)
 	if err != nil {
 		return nil, fmt.Errorf("failed to add collaborator: %w", err)
 	}
@@ -5052,12 +5310,15 @@ func (s *ContainerServer) AddCollaborator(ctx context.Context, req *pb.AddCollab
 	return &pb.AddCollaboratorResponse{
 		Message:      fmt.Sprintf("Collaborator %s added to %s-container", req.CollaboratorUsername, req.OwnerUsername),
 		Collaborator: collaboratorToProto(collab),
-		SshCommand:   s.collaboratorManager.GenerateSSHCommand(req.OwnerUsername, req.CollaboratorUsername, "jumpserver"),
+		SshCommand:   collabMgr.GenerateSSHCommand(req.OwnerUsername, req.CollaboratorUsername, "jumpserver"),
 	}, nil
 }
 
 // RemoveCollaborator removes a collaborator from a container
 func (s *ContainerServer) RemoveCollaborator(ctx context.Context, req *pb.RemoveCollaboratorRequest) (*pb.RemoveCollaboratorResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersWrite); err != nil {
+		return nil, err
+	}
 	if req.OwnerUsername == "" {
 		return nil, fmt.Errorf("owner_username is required")
 	}
@@ -5068,7 +5329,8 @@ func (s *ContainerServer) RemoveCollaborator(ctx context.Context, req *pb.Remove
 		return nil, err
 	}
 
-	if s.collaboratorManager == nil {
+	collabMgr := s.loadCollaboratorManager()
+	if collabMgr == nil {
 		// No local collaborator manager — try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
@@ -5092,10 +5354,10 @@ func (s *ContainerServer) RemoveCollaborator(ctx context.Context, req *pb.Remove
 				}, nil
 			}
 		}
-		return nil, fmt.Errorf("collaborator management not enabled")
+		return nil, s.collaboratorsMissing()
 	}
 
-	if err := s.collaboratorManager.RemoveCollaborator(req.OwnerUsername, req.CollaboratorUsername); err != nil {
+	if err := collabMgr.RemoveCollaborator(req.OwnerUsername, req.CollaboratorUsername); err != nil {
 		return nil, fmt.Errorf("failed to remove collaborator: %w", err)
 	}
 
@@ -5106,6 +5368,9 @@ func (s *ContainerServer) RemoveCollaborator(ctx context.Context, req *pb.Remove
 
 // ListCollaborators lists all collaborators for a container
 func (s *ContainerServer) ListCollaborators(ctx context.Context, req *pb.ListCollaboratorsRequest) (*pb.ListCollaboratorsResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeContainersRead); err != nil {
+		return nil, err
+	}
 	if req.OwnerUsername == "" {
 		return nil, fmt.Errorf("owner_username is required")
 	}
@@ -5113,7 +5378,8 @@ func (s *ContainerServer) ListCollaborators(ctx context.Context, req *pb.ListCol
 		return nil, err
 	}
 
-	if s.collaboratorManager == nil {
+	collabMgr := s.loadCollaboratorManager()
+	if collabMgr == nil {
 		// No local collaborator manager — try peer
 		if s.peerPool != nil {
 			authToken := extractAuthToken(ctx)
@@ -5139,10 +5405,10 @@ func (s *ContainerServer) ListCollaborators(ctx context.Context, req *pb.ListCol
 				return &pb.ListCollaboratorsResponse{}, nil
 			}
 		}
-		return nil, fmt.Errorf("collaborator management not enabled")
+		return nil, s.collaboratorsMissing()
 	}
 
-	collaborators, err := s.collaboratorManager.ListCollaborators(req.OwnerUsername)
+	collaborators, err := collabMgr.ListCollaborators(req.OwnerUsername)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list collaborators: %w", err)
 	}
@@ -5209,11 +5475,11 @@ func (s *ContainerServer) registerGuacamoleConnection(containerName, hostname, r
 		Password: rdpPassword,
 	})
 	if err != nil {
-		log.Printf("Warning: Failed to register Guacamole connection for %s: %v", containerName, err)
+		log.Printf("Warning: Failed to register Guacamole connection for %q: %v", containerName, err)
 		return ""
 	}
 
-	log.Printf("Guacamole RDP connection registered for %s (id=%s)", containerName, connID)
+	log.Printf("Guacamole RDP connection registered for %q (id=%s)", containerName, connID)
 	return connID
 }
 
@@ -5245,5 +5511,5 @@ func (s *ContainerServer) deregisterGuacamoleConnection(username string) {
 		return
 	}
 
-	log.Printf("Guacamole RDP connection removed for %s (id=%s)", username, connID)
+	log.Printf("Guacamole RDP connection removed for %q (id=%s)", username, connID)
 }

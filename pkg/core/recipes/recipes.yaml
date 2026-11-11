@@ -8,6 +8,16 @@
 # Deploy-time parameters are exported to post_start as
 # CONTAINARIUM_PARAM_<UPPER_NAME> environment variables.
 #
+# The daemon also exports CONTAINARIUM_RELEASE: its own release tag ("v" +
+# its version, e.g. v0.129.0), or empty when the daemon build is not a
+# release. No parameter can set it. Use it for what must match the OSS
+# version running post_start (slides-agent's image); a caller's `release`
+# parameter is for what the caller pins on purpose (agent-box, skills).
+#
+# A deploy's ssh_keys are authorized when the box is created, before
+# post_start runs. A post_start that writes authorized_keys must append to
+# it, never replace it, or it removes the deploying user's keys.
+#
 # These recipes ship in-tree and are reviewed; post_start runs with the same
 # trust level as a stack's post_install. Remote/community catalogs are a
 # separate, signed mechanism (not loaded here).
@@ -106,13 +116,29 @@ recipes:
         description: GitHub owner/repo the release artifacts live in.
         type: string
         default: FootprintAI/Containarium
+      # toolchains (#3491) is opt-in: empty (the default, and what the daemon
+      # passes when a skill run provisions the box) installs exactly what the
+      # box always had. "python" adds python3-venv, python3-pip and
+      # python3-pytest; the agent-python helper (shipped in the agent-runtime
+      # bundle) installs a checkout's declared dependencies and runs its tests.
+      # Any other value fails post_start before anything is installed.
+      - name: toolchains
+        label: Language toolchains
+        description: Comma-separated language toolchains to install for skills to build and test with. Supported - python (venv, pip, pytest and the agent-python helper). Empty installs none.
+        type: string
     post_start:
+      # First, before any download: refuse an unknown toolchain. set -f keeps
+      # a value such as "*" from expanding to file names.
+      - '( set -f; for t in $(printf "%s" "${CONTAINARIUM_PARAM_TOOLCHAINS:-}" | tr "," " "); do case "$t" in python) ;; *) echo "agent-runtime: unsupported toolchain \"$t\" in toolchains=\"${CONTAINARIUM_PARAM_TOOLCHAINS:-}\" (supported: python)" >&2; exit 1 ;; esac; done )'
       - mkdir -p /etc/containarium/agent
       - 'curl -fsSL https://deb.nodesource.com/setup_20.x | bash -'
       - DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
       # Best-effort assembly: never fail provisioning if the release lacks the
       # artifacts (|| echo keeps the line green under `set -e`).
       - 'if [ -n "$CONTAINARIUM_PARAM_RELEASE" ]; then curl -fsSL "https://raw.githubusercontent.com/$CONTAINARIUM_PARAM_REPO/$CONTAINARIUM_PARAM_RELEASE/scripts/install-agent-runtime.sh" | REPO="$CONTAINARIUM_PARAM_REPO" RELEASE="$CONTAINARIUM_PARAM_RELEASE" bash || echo "agent-runtime assembly skipped/failed for release=$CONTAINARIUM_PARAM_RELEASE; box runs without the in-box loop"; fi'
+      # The Python toolchain, after the assembly that ships agent-python. Not
+      # best-effort: a box that asked for python and cannot have it fails.
+      - 'if printf "%s" "${CONTAINARIUM_PARAM_TOOLCHAINS:-}" | tr "," "\n" | tr -d " \t" | grep -qx python; then apt-get update -q || { echo "agent-runtime: python toolchain: apt-get update failed" >&2; exit 1; }; DEBIAN_FRONTEND=noninteractive apt-get install -y python3-venv python3-pip python3-pytest || { echo "agent-runtime: python toolchain: apt-get install python3-venv python3-pip python3-pytest failed" >&2; exit 1; }; command -v agent-python >/dev/null || { echo "agent-runtime: python toolchain: the agent-python helper is not installed; it ships with the in-box loop assembly, so set the release parameter to a release whose agent-runtime bundle includes it" >&2; exit 1; }; echo "agent-runtime: python toolchain installed ($(python3 --version 2>&1), agent-python)"; fi'
 
   # coding-agent is a box with the coding-agent toolchain and NO credential of
   # any kind: agent-box + mcp-server from a Containarium release, plus Claude
@@ -136,20 +162,24 @@ recipes:
       memory: 4GB
       disk: 20GB
     parameters:
-      - name: release
+      - &coding_agent_param_release
+        name: release
         label: Release tag
         description: Containarium release tag to pull agent-box + mcp-server from, v-prefixed (e.g. v0.27.0).
         type: string
         required: true
-      - name: claude_code_version
+      - &coding_agent_param_claude_code_version
+        name: claude_code_version
         label: Claude Code version
         description: Version passed to the Claude Code installer. Empty installs the latest.
         type: string
-      - name: bootstrap_url
+      - &coding_agent_param_bootstrap_url
+        name: bootstrap_url
         label: Bootstrap bundle URL
         description: Optional one-shot URL of a tar.gz bundle; extracted under the box user's home and its apply.sh run as that user. Empty skips.
         type: string
-      - name: box_user
+      - &coding_agent_param_box_user
+        name: box_user
         label: Box user
         description: Unprivileged user Claude Code and the bootstrap bundle are installed for. Must already exist in the image.
         type: string
@@ -159,16 +189,17 @@ recipes:
         description: 'Deprecated, removed after one release: use skill_sets. "true" is skill_sets=all and "false" is skill_sets=none; skill_sets wins when both are set. A release that predates the skills asset is skipped with a message.'
         type: string
         default: "true"
-      - name: skill_sets
+      - &coding_agent_param_skill_sets
+        name: skill_sets
         label: Skill sets
         description: 'Which pinned open-sdlc-skills sets to install into the box user''s ~/.claude/skills: a comma-separated list of set ids (the control plane sends sdlc and qa), "all", or the literal "none" (empty means unset, so none cannot be spelled as empty). Empty falls back to sdlc_skills, whose default installs everything. An unknown id fails the step and names the known ids; narrowing the list on a redeploy removes the dropped sets. Which namespaces a set covers is defined in pkg/core/sdlcskills/sdlc-skills.lock.'
         type: string
     post_start:
-      - 'curl -fsSL "https://raw.githubusercontent.com/FootprintAI/Containarium/$CONTAINARIUM_PARAM_RELEASE/scripts/install-agent-runtime.sh" | RELEASE="$CONTAINARIUM_PARAM_RELEASE" PREFIX=/usr/local/bin bash -s -- --no-agent-runtime'
-      - 'BOX_HOME="$(getent passwd "$CONTAINARIUM_PARAM_BOX_USER" | cut -d: -f6)"; [ -n "$BOX_HOME" ] || { echo "box user $CONTAINARIUM_PARAM_BOX_USER not found" >&2; exit 1; }'
-      - '# shellcheck disable=SC2016  # the inner script is single-quoted on purpose'
-      - 'runuser -u "$CONTAINARIUM_PARAM_BOX_USER" -- env HOME="$BOX_HOME" bash -c ''set -euo pipefail; curl -fsSL https://claude.ai/install.sh | bash -s -- ${1:+"$1"}'' _ "$CONTAINARIUM_PARAM_CLAUDE_CODE_VERSION"'
-      - |
+      - &coding_agent_step_install_runtime 'curl -fsSL "https://raw.githubusercontent.com/FootprintAI/Containarium/$CONTAINARIUM_PARAM_RELEASE/scripts/install-agent-runtime.sh" | RELEASE="$CONTAINARIUM_PARAM_RELEASE" PREFIX=/usr/local/bin bash -s -- --no-agent-runtime'
+      - &coding_agent_step_box_home 'BOX_HOME="$(getent passwd "$CONTAINARIUM_PARAM_BOX_USER" | cut -d: -f6)"; [ -n "$BOX_HOME" ] || { echo "box user $CONTAINARIUM_PARAM_BOX_USER not found" >&2; exit 1; }'
+      - &coding_agent_step_shellcheck_note '# shellcheck disable=SC2016  # the inner script is single-quoted on purpose'
+      - &coding_agent_step_install_claude 'runuser -u "$CONTAINARIUM_PARAM_BOX_USER" -- env HOME="$BOX_HOME" bash -c ''set -euo pipefail; curl -fsSL https://claude.ai/install.sh | bash -s -- ${1:+"$1"}'' _ "$CONTAINARIUM_PARAM_CLAUDE_CODE_VERSION"'
+      - &coding_agent_step_install_skills |
         # SDLC role skills (#2065), pinned in pkg/core/sdlcskills/sdlc-skills.lock and
         # shipped as a release asset. Installed AS the box user into its own
         # ~/.claude/skills. A hash mismatch or unsafe archive fails the deploy; a
@@ -212,7 +243,7 @@ recipes:
           esac
           rm -f "$tmp"
         '
-      - |
+      - &coding_agent_step_bootstrap |
         # shellcheck disable=SC2016  # the inner script is single-quoted on purpose
         if [ -n "$CONTAINARIUM_PARAM_BOOTSTRAP_URL" ]; then
           runuser -u "$CONTAINARIUM_PARAM_BOX_USER" -- env HOME="$BOX_HOME" bash -c '
@@ -224,6 +255,178 @@ recipes:
             sh "$dir/apply.sh"
           ' _ "$CONTAINARIUM_PARAM_BOOTSTRAP_URL"
         fi
+
+  # slides-agent (#3434) is coding-agent plus a slide framework: the same box
+  # user, release artifacts, Claude Code installer, SDLC skills and bootstrap
+  # bundle (the shared steps are YAML anchors, so the two recipes cannot
+  # drift), and next to them a PREBAKED image that runs the framework's dev
+  # server behind an in-box auth proxy. Node, open-slide (MIT, pinned by
+  # commit in images/slides-agent/Dockerfile) with its dependencies, a
+  # headless Chromium for PDF export and the proxy are all in the image, so a
+  # box start fetches nothing from a package registry: the image pull (from
+  # the operator's registry or mirror) and coding-agent's own release/installer
+  # fetches are the only network the recipe needs.
+  #
+  # Layout: the deck tree (slides/<id>/, themes/, assets/) and the agent files
+  # (AGENTS.md, .claude/skills) live on the box disk under the box user's
+  # ~/slides, bind-mounted into the container at /workspace and owned by the
+  # box user, so an idle-stop and restart resumes the deck and Claude Code
+  # edits the same files the dev server hot-reloads. node_modules, package.json
+  # and open-slide.config.ts stay in the image. The container runs on the box's
+  # host network as the box user: the dev server binds 127.0.0.1:5173 and the
+  # proxy is the only listener on the box address (:8080, exposed as
+  # <name>-workspace).
+  #
+  # Auth: HTTP basic auth (bcrypt hash computed at deploy) or the session
+  # cookie of a zero-click login (#3486). The image's login helper mints a
+  # single-use, 120-second token on 127.0.0.1:9099/__mint, which
+  # GetWorkspaceAccess fetches per call and hands out as /__ws_login#t=<token>
+  # (the token in the URL fragment, never in a request line); the helper
+  # redeems it once and sets a separate random session cookie, which the proxy
+  # checks with the helper on every request. The proxy fronts EVERY path: the
+  # dev server's own request guard compares Origin against X-Forwarded-Proto +
+  # Host (so the proxy forwards X-Forwarded-Proto: https and the config sets
+  # allowedHosts), and its in-app agent route is gated only on a loopback
+  # peer, which every proxied request is on the host network, so that route is
+  # disabled in the image's open-slide.config.ts. A deploy ends with an
+  # unauthenticated probe that must be refused and a zero-click login whose
+  # replay must be refused, or the deploy fails.
+  #
+  # Builds and exports run inside the container; the box user reaches it
+  # through the box's NOPASSWD sudo:
+  #   sudo podman exec slides-agent open-slide build                              # dist on the box disk at ~/slides/dist
+  #   sudo podman exec slides-agent slides-print-pdf /workspace/dist /workspace/<id>.pdf   # one 1920x1080 page per slide page
+  #   sudo podman exec slides-agent slides-render png http://127.0.0.1:5173/s/<id> /workspace/<id>.png
+  # Publishing the image is the image pipeline's job (images/slides-agent/);
+  # slides_image overrides the reference for mirrors and rehearsals.
+  - id: slides-agent
+    name: Slides agent (open-slide + Claude Code)
+    description: Coding-agent box plus a prebaked open-slide dev server (Node, pinned framework, headless Chromium) behind an in-box auth proxy; decks persist under the box user's ~/slides.
+    image: images:ubuntu/24.04
+    requires_gpu: false
+    resources:
+      cpu: "4"
+      memory: 8GB
+      disk: 40GB
+    ports:
+      # The in-box auth proxy; the dev server itself stays on 127.0.0.1.
+      - container_port: 8080
+        subdomain: workspace
+        role: auth_proxy
+    parameters:
+      - *coding_agent_param_release
+      - *coding_agent_param_claude_code_version
+      - *coding_agent_param_bootstrap_url
+      - *coding_agent_param_box_user
+      - *coding_agent_param_skill_sets
+      - name: auth_password
+        label: Workspace password
+        description: Password for the in-box basic-auth proxy in front of the slides dev server. Required; the box is never exposed without it.
+        type: password
+        required: true
+      - name: auth_user
+        label: Workspace username
+        description: Username for the in-box basic-auth proxy.
+        type: string
+        default: admin
+      - name: slides_image
+        label: Slides image
+        description: OCI reference of the prebaked slides-agent image. Empty uses the image published with the deploying daemon's own release (ghcr.io/footprintai/containarium-slides-agent:<daemon release>), whatever `release` is; set it for a registry mirror or a rehearsal build, or on a daemon build that is not a release.
+        type: string
+      - name: allowed_hosts
+        label: Allowed hosts
+        description: Comma-separated hostnames the dev server accepts behind the proxy. Empty accepts any host; the proxy, not the host check, is the access control.
+        type: string
+    post_start:
+      - *coding_agent_step_install_runtime
+      - *coding_agent_step_box_home
+      - *coding_agent_step_shellcheck_note
+      - *coding_agent_step_install_claude
+      - *coding_agent_step_install_skills
+      - *coding_agent_step_bootstrap
+      - |
+        # The prebaked image (#3542): tagged with the DAEMON's own release
+        # (CONTAINARIUM_RELEASE), not the caller's `release`. The checks below
+        # assert this image's protocol, so it must be the one published with
+        # the recipe that runs them; `release` only picks agent-box and the
+        # skills bundle. slides_image points at a mirror or a rehearsal build.
+        # A daemon build that is not a release has no published image: say so
+        # rather than guess a tag.
+        IMAGE="${CONTAINARIUM_PARAM_SLIDES_IMAGE:-}"
+        if [ -z "$IMAGE" ]; then
+          [ -n "${CONTAINARIUM_RELEASE:-}" ] || { echo "slides-agent: this daemon build has no release tag, so there is no published slides image to default to; set slides_image" >&2; exit 1; }
+          IMAGE="ghcr.io/footprintai/containarium-slides-agent:$CONTAINARIUM_RELEASE"
+        fi
+        podman pull "$IMAGE" >/dev/null || { echo "slides-agent: podman pull $IMAGE failed" >&2; exit 1; }
+      - |
+        # Auth material for the proxy, staged under /opt/wsauth (root, 0600):
+        # the bcrypt hash of the password (computed by the image's own caddy,
+        # so no second image is pulled) in the env file the container reads.
+        # The plaintext password is never written. There is no static
+        # zero-click token: the login helper mints one per access (#3486), and
+        # a static token left by an earlier image is removed so the daemon
+        # never hands it out. Fail loudly rather than start with a degenerate
+        # auth config.
+        WSAUTH=/opt/wsauth
+        umask 077
+        mkdir -p "$WSAUTH"
+        rm -f "$WSAUTH/token"
+        WS_HASH=$(podman run --rm --entrypoint caddy "$IMAGE" hash-password --plaintext "$CONTAINARIUM_PARAM_AUTH_PASSWORD")
+        [ -n "$CONTAINARIUM_PARAM_AUTH_USER" ] && [ -n "$WS_HASH" ] || { echo "slides-agent: empty auth user/hash; aborting" >&2; exit 1; }
+        printf 'SLIDES_AUTH_USER=%s\nSLIDES_AUTH_HASH=%s\nSLIDES_ALLOWED_HOSTS=%s\n' \
+          "$CONTAINARIUM_PARAM_AUTH_USER" "$WS_HASH" "${CONTAINARIUM_PARAM_ALLOWED_HOSTS:-}" > "$WSAUTH/env"
+        chmod 600 "$WSAUTH/env"
+      - |
+        # The deck tree on the box disk, owned by the box user; the container
+        # runs as that user so Claude Code and the dev server share the files.
+        BOX_UID="$(id -u "$CONTAINARIUM_PARAM_BOX_USER")"
+        BOX_GID="$(id -g "$CONTAINARIUM_PARAM_BOX_USER")"
+        SLIDES_HOME="$BOX_HOME/slides"
+        mkdir -p "$SLIDES_HOME"
+        chown "$BOX_UID:$BOX_GID" "$SLIDES_HOME"
+        # Idempotent: a re-run of post_start (retry, re-deploy) must not abort
+        # under `set -e` on "name already in use".
+        podman rm -f slides-agent >/dev/null 2>&1 || true
+        podman run -d --name slides-agent --restart=always --network host \
+          --user "$BOX_UID:$BOX_GID" \
+          --env-file /opt/wsauth/env \
+          -v "$SLIDES_HOME:/workspace" \
+          "$IMAGE" >/dev/null
+      - |
+        # Readiness gate, then the checks the recipe promises. First the
+        # proxy: an unauthenticated request is refused (401); anything else
+        # fails the deploy. Then the zero-click login end to end: the helper
+        # mints a token, the proxy redeems it for a session cookie, and a
+        # replay of the token is refused (403). Then the dev server behind it:
+        # the proxy answers as soon as Caddy is up, before the dev server
+        # listens, so a request carrying the session cookie must get 200
+        # within the budget, or the box would be marked provisioned while
+        # unusable. Token and cookie go to curl on stdin, not argv.
+        for _ in $(seq 1 90); do
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ || true)
+          [ "$CODE" = "000" ] || break
+          sleep 1
+        done
+        [ "$CODE" = "401" ] || { echo "slides-agent: expected 401 from the proxy without credentials, got '$CODE'" >&2; exit 1; }
+        TOK=""
+        for _ in $(seq 1 30); do
+          TOK=$(curl -s --max-time 3 http://127.0.0.1:9099/__mint | sed -n 's/^{"token":"\([A-Za-z0-9_-]\{43\}\)"}$/\1/p' || true)
+          [ -n "$TOK" ] && break
+          sleep 1
+        done
+        [ -n "$TOK" ] || { echo "slides-agent: the login helper did not mint a token" >&2; exit 1; }
+        SESS=$(printf '%s' "$TOK" | curl -s -o /dev/null -D - --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login \
+          | sed -n 's/^[Ss]et-[Cc]ookie: __Host-ws_session=\([A-Za-z0-9_-]\{43\}\);.*/\1/p' || true)
+        [ -n "$SESS" ] || { echo "slides-agent: the proxy did not redeem a fresh login token" >&2; exit 1; }
+        REPLAY=$(printf '%s' "$TOK" | curl -s -o /dev/null -w '%{http_code}' --data-urlencode 't@-' http://127.0.0.1:8080/__ws_login || true)
+        [ "$REPLAY" = "403" ] || { echo "slides-agent: a replayed login token was not refused (got '$REPLAY')" >&2; exit 1; }
+        for _ in $(seq 1 120); do
+          AUTHED=$(printf 'Cookie: __Host-ws_session=%s' "$SESS" | curl -s -o /dev/null -w '%{http_code}' -H @- http://127.0.0.1:8080/ || true)
+          [ "$AUTHED" = "200" ] && break
+          sleep 1
+        done
+        [ "$AUTHED" = "200" ] || { echo "slides-agent: the dev server did not answer through the proxy (last status '$AUTHED'); see podman logs slides-agent" >&2; exit 1; }
+        echo "slides-agent: dev server up behind the auth proxy on box port 8080; decks under $SLIDES_HOME"
 
   # agent-runtime-browser is agent-runtime plus a headless Chromium (via
   # Playwright), for skills that need to drive or inspect a live web UI
@@ -310,6 +513,7 @@ recipes:
       # conversation list). OpenHands itself stays on 127.0.0.1.
       - container_port: 8080
         subdomain: workspace
+        role: auth_proxy
     parameters:
       - name: auth_password
         label: Workspace password
@@ -443,6 +647,7 @@ recipes:
       # the proxy as a fallback.
       - container_port: 8080
         subdomain: chat
+        role: auth_proxy
     parameters:
       - name: auth_email
         label: Owner email

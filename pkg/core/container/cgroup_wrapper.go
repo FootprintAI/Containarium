@@ -252,14 +252,14 @@ func (m *Manager) UpgradeCgroupWrappers() (int, error) {
 
 		// Try both podman and docker; installCgroupWrappers checks test -x internally
 		if err := m.installCgroupWrappers(c.Name, true, true); err != nil {
-			log.Printf("Warning: failed to install cgroup wrappers on %s: %v", c.Name, err)
+			log.Printf("Warning: failed to install cgroup wrappers on %q: %v", c.Name, err)
 			continue
 		}
 
 		// Install OCI runtime for containers with Docker (catches Compose v2)
 		if err := m.incus.Exec(c.Name, []string{"test", "-x", "/usr/bin/docker"}); err == nil {
 			if err := m.installDockerOCIRuntime(c.Name); err != nil {
-				log.Printf("Warning: failed to install OCI runtime on %s: %v", c.Name, err)
+				log.Printf("Warning: failed to install OCI runtime on %q: %v", c.Name, err)
 			}
 		}
 

@@ -2,11 +2,15 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/url"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -16,11 +20,13 @@ import (
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
 	"github.com/footprintai/containarium/internal/guardrailrate"
 	"github.com/footprintai/containarium/internal/guardrailstage"
+	"github.com/footprintai/containarium/internal/limitio"
 	"github.com/footprintai/containarium/internal/modelgateway"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/recipes"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
+	"github.com/footprintai/containarium/pkg/version"
 )
 
 // recipeBaseImage is the LXC image a recipe's dedicated container is built
@@ -56,6 +62,14 @@ type RecipeServer struct {
 	gateway    *recipeGateway // nil unless the daemon serves the model-gateway
 	boxes      recipeBoxes    // nil = the ContainerServer; tests substitute a fake
 
+	// postStartLocks is one lock per box name, held by deploy from before
+	// it creates the box until its post_start is done (sync and async), and
+	// by rerunPendingPostStart while it reads and re-runs a box's unfinished
+	// post_start (#3546, #3555). So two post_starts never run in one box at
+	// once, and a run that would reuse a box waits for its preparation
+	// instead of reading a mark that is about to change.
+	postStartLocks boxLocks
+
 	// The guardrail deploy gate (#2368, recipe_guardrail_gate.go). nil
 	// provider or "" root: a gated recipe is refused; ungated recipes are
 	// unaffected.
@@ -75,9 +89,21 @@ type RecipeServer struct {
 type recipeBoxes interface {
 	CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*pb.CreateContainerResponse, error)
 	Exec(containerName string, command []string) error
+	// ExecWithExitCode runs a command in the box and reports its exit status
+	// as data. post_start runs through it (#3542): Exec reports success
+	// whatever the command's exit status, so a failed post_start went
+	// unreported.
+	ExecWithExitCode(containerName string, command []string) (stdout, stderr string, exitCode int, err error)
+	// ExecWithOutput runs a command in the box and returns its stdout and
+	// stderr (GetWorkspaceAccess reads the box's login token with it).
+	ExecWithOutput(containerName string, command []string) (string, string, error)
 	// PushFile streams a file into the box (never buffering it whole).
 	PushFile(containerName, path string, content io.ReadSeeker, mode string) error
 	Get(username string) (*incus.ContainerInfo, error)
+	// SetConfig and UnsetConfig write and remove one Incus config key on the
+	// box. deploy records with them whether post_start completed (#3546).
+	SetConfig(containerName, key, value string) error
+	UnsetConfig(containerName, key string) error
 }
 
 // containerServerBoxes is recipeBoxes over the daemon's ContainerServer.
@@ -94,11 +120,23 @@ func (c containerServerBoxes) CreateContainer(ctx context.Context, req *pb.Creat
 func (c containerServerBoxes) Exec(name string, command []string) error {
 	return c.s.manager.Exec(name, command)
 }
+func (c containerServerBoxes) ExecWithExitCode(name string, command []string) (string, string, int, error) {
+	return c.s.manager.ExecWithExitCode(name, command)
+}
+func (c containerServerBoxes) ExecWithOutput(name string, command []string) (string, string, error) {
+	return c.s.manager.ExecWithOutput(name, command)
+}
 func (c containerServerBoxes) PushFile(name, path string, content io.ReadSeeker, mode string) error {
 	return c.s.manager.PushFile(name, path, content, mode)
 }
 func (c containerServerBoxes) Get(username string) (*incus.ContainerInfo, error) {
 	return c.s.manager.Get(username)
+}
+func (c containerServerBoxes) SetConfig(name, key, value string) error {
+	return c.s.manager.SetConfig(name, key, value)
+}
+func (c containerServerBoxes) UnsetConfig(name, key string) error {
+	return c.s.manager.UnsetConfig(name, key)
 }
 
 func (s *RecipeServer) boxOps() recipeBoxes {
@@ -193,7 +231,7 @@ func recipeKeyOwner(labels map[string]string, boxName string) string {
 		if err := modelgateway.ValidateKeyOwner(owner); err == nil {
 			return owner
 		}
-		log.Printf("[recipe] cloud_org_id label %q on %s does not form a valid key_owner; falling back to the self-hosted username", orgID, boxName)
+		log.Printf("[recipe] cloud_org_id label %q on %q does not form a valid key_owner; falling back to the self-hosted username", orgID, boxName)
 	}
 	owner := modelgateway.UserKeyOwner(boxName)
 	if err := modelgateway.ValidateKeyOwner(owner); err != nil {
@@ -224,7 +262,7 @@ func (s *RecipeServer) gatewayEnvForRecipe(recipe *pb.Recipe, boxName, provider,
 		KeyOwner: keyOwner,
 	}, recipeGatewayTokenTTL)
 	if err != nil {
-		log.Printf("[recipe] mint gateway token for %s failed (box runs unmanaged): %v", boxName, err)
+		log.Printf("[recipe] mint gateway token for %q failed (box runs unmanaged): %v", boxName, err)
 		return ""
 	}
 	return gatewayRecipeEnvExports(provider, s.gateway.httpPort, tok)
@@ -263,12 +301,40 @@ func (s *RecipeServer) GetRecipe(ctx context.Context, req *pb.GetRecipeRequest) 
 	return &pb.GetRecipeResponse{Recipe: r}, nil
 }
 
+// workspaceMint is the body the slides-agent login helper answers /__mint with
+// (images/slides-agent/wsauth). A JSON object, where the librechat helper
+// prints the bare token, marks a box whose proxy takes the token in the URL
+// fragment (#3486).
+type workspaceMint struct {
+	Token string `json:"token"`
+}
+
+// fragmentTokenPattern is the slides-agent helper's token shape (32 random
+// bytes, unpadded base64url): safe in a URL fragment without escaping.
+var fragmentTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+
+// bareTokenPattern is the shape a bare-token /__mint body must have to be
+// used: the chat workspace helper's secrets.token_urlsafe(24) is 32
+// base64url characters. Anything else (an error message, an HTML page) is a
+// failed probe, never a token in a URL.
+var bareTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{32,128}$`)
+
+// parseWorkspaceMint returns the token of a slides-agent /__mint body, or ""
+// when the body is not one.
+func parseWorkspaceMint(body string) string {
+	var m workspaceMint
+	if json.Unmarshal([]byte(body), &m) != nil || !fragmentTokenPattern.MatchString(m.Token) {
+		return ""
+	}
+	return m.Token
+}
+
 // GetWorkspaceAccess returns a zero-click bootstrap URL for a workspace box
-// (librechat or agent-workspace): it obtains the box's in-box auth token —
-// minted single-use by the librechat helper, or read from the static
-// /opt/wsauth/token for agent-workspace — and composes the /__ws_login URL the
-// console embeds in an iframe to authenticate the workspace UI without showing a
-// sign-in prompt.
+// (librechat, slides-agent or agent-workspace): it obtains the box's in-box
+// auth token — minted single-use by the librechat or slides-agent helper, or
+// read from the static /opt/wsauth/token for agent-workspace — and composes the
+// /__ws_login URL the console embeds in an iframe to authenticate the workspace
+// UI without showing a sign-in prompt.
 func (s *RecipeServer) GetWorkspaceAccess(ctx context.Context, req *pb.GetWorkspaceAccessRequest) (*pb.GetWorkspaceAccessResponse, error) {
 	// containers:write, not read: this mints an interactive-access credential
 	// (the in-box session token + a zero-click /__ws_login URL), so it is a
@@ -285,25 +351,41 @@ func (s *RecipeServer) GetWorkspaceAccess(ctx context.Context, req *pb.GetWorksp
 
 	containerName := req.Name + "-container"
 
-	// Two workspace flavours expose a /__ws_login bootstrap, with different
+	// Three workspace flavours expose a /__ws_login bootstrap, with different
 	// token semantics:
 	//   * librechat: an in-box helper mints a SINGLE-USE, short-lived token on
 	//     127.0.0.1:9099/__mint and does a fresh LibreChat login per access
 	//     (LibreChat rotates its refresh token, so a session can't be replayed).
-	//     Its exposed subdomain is "<name>-chat".
-	//   * agent-workspace: a STATIC per-box token in /opt/wsauth/token (the
-	//     proxy IS the auth). Its subdomain is "<name>-workspace".
+	//     It prints the bare token; the URL carries it as ?t=. Its exposed
+	//     subdomain is "<name>-chat".
+	//   * slides-agent: an in-box helper on the same port and path mints a
+	//     SINGLE-USE, 120 s token and answers {"token":"..."}. The URL carries
+	//     it in the fragment (#t=), which a browser never sends; the proxy's
+	//     bootstrap page posts it. Its subdomain is "<name>-workspace".
+	//   * agent-workspace (and slides-agent boxes from before #3486): a STATIC
+	//     per-box token in /opt/wsauth/token (the proxy IS the auth), as ?t=.
+	//     Its subdomain is "<name>-workspace".
 	// Probe the helper first (preferred, single-use); fall back to the static
-	// token so both recipe shapes work without the daemon tracking the recipe.
+	// token so every recipe shape works without the daemon tracking the recipe.
+	// curl -f: an HTTP error from a helper (e.g. 503 at its pending-token cap)
+	// is a failed probe, and a 2xx body that is not a well-formed token is
+	// treated the same; neither ever becomes a URL.
 	var token, subdomain string
-	if out, _, err := s.containers.manager.ExecWithOutput(containerName,
-		[]string{"curl", "-s", "--max-time", "3", "http://127.0.0.1:9099/__mint"}); err == nil {
-		if t := strings.TrimSpace(out); t != "" {
+	inFragment := false
+	if out, _, err := s.boxOps().ExecWithOutput(containerName,
+		[]string{"curl", "-sf", "--max-time", "3", "http://127.0.0.1:9099/__mint"}); err == nil {
+		t := strings.TrimSpace(out)
+		switch {
+		case strings.HasPrefix(t, "{"):
+			if ft := parseWorkspaceMint(t); ft != "" {
+				token, subdomain, inFragment = ft, req.Name+"-workspace", true
+			}
+		case bareTokenPattern.MatchString(t):
 			token, subdomain = t, req.Name+"-chat"
 		}
 	}
 	if token == "" {
-		out, _, err := s.containers.manager.ExecWithOutput(containerName, []string{"cat", "/opt/wsauth/token"})
+		out, _, err := s.boxOps().ExecWithOutput(containerName, []string{"cat", "/opt/wsauth/token"})
 		if err != nil {
 			return nil, status.Errorf(codes.NotFound,
 				"no workspace access on %s (is this a workspace box?): %v", containerName, err)
@@ -321,8 +403,11 @@ func (s *RecipeServer) GetWorkspaceAccess(ctx context.Context, req *pb.GetWorksp
 	// cloud the ossshim passthrough rebuilds the URL with the box's managed
 	// subdomain; this URL is for self-hosted OSS.)
 	if s.network != nil && s.network.baseDomain != "" {
-		resp.Url = "https://" + resolveFullDomain(subdomain, s.network.baseDomain) +
-			"/__ws_login?t=" + url.QueryEscape(token)
+		login := "/__ws_login?t=" + url.QueryEscape(token)
+		if inFragment {
+			login = "/__ws_login#t=" + token
+		}
+		resp.Url = "https://" + resolveFullDomain(subdomain, s.network.baseDomain) + login
 	}
 	return resp, nil
 }
@@ -397,6 +482,13 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 			req.BackendId)
 	}
 
+	// SSH keys (#3514): an invalid or over-bound key refuses the whole
+	// deploy here, before the guardrail gate snapshots anything and before
+	// the container exists. The inner create re-checks the same rules.
+	if err := validateRecipeSSHKeys(req.SshKeys); err != nil {
+		return nil, err
+	}
+
 	// Guardrail gate (#2368): verified BEFORE the container exists, so a
 	// refused deploy leaves nothing behind. dataset is the verified
 	// snapshot; it is what gets copied into the box below.
@@ -418,30 +510,67 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	//    Caller labels (e.g. a control plane's tenant-attribution labels) are
 	//    forwarded so a recipe-deployed box is labeled the same as a plain
 	//    CreateContainer — otherwise a label-filtering front-end can't see it.
+	//    Caller SSH keys (#3514) take the plain create's path too: seeded
+	//    into the guest's authorized_keys and mirrored to the jump account
+	//    and key registry while the box is brought up, before post_start.
 	createReq := &pb.CreateContainerRequest{
 		Username:     req.Name,
 		Image:        recipeBaseImage,
 		EnablePodman: true,
 		Resources:    resourceLimits(recipe, req.ResourceOverrides),
 		Labels:       req.Labels,
+		SshKeys:      req.SshKeys,
 	}
 	// A recipe requests a single GPU device; map it onto the container's
 	// repeated `gpus` (the singular `gpu` is no longer honored — #673).
 	if req.Gpu != "" {
 		createReq.Gpus = []string{req.Gpu}
 	}
+
+	// Hold the box's post_start lock from before the box exists until its
+	// post_start is done (#3555): a skill or crew run that finds the box in
+	// the meantime waits in rerunPendingPostStart, then reads the mark this
+	// deploy left, instead of running a second post_start at the same time
+	// or clearing the mark while this one still runs. Released on every
+	// return below, a panic included; the async path hands it to its
+	// goroutine instead.
+	//
+	// The lock is only tried, never waited for: a second deploy of a name
+	// that is still being prepared would fail on "already exists" anyway, so
+	// it fails at once instead of after the first post_start. A skill run
+	// that loses this race waits for the box and reuses it (provisionBoxOnly).
+	release := func() {}
+	if len(recipe.PostStart) > 0 {
+		unlock, ok := s.postStartLocks.tryAcquire(req.Name)
+		if !ok {
+			return nil, &boxBeingPreparedError{containerName: req.Name + "-container"}
+		}
+		release = unlock
+	}
+	defer func() { release() }()
+
 	if _, err := s.boxOps().CreateContainer(ctx, createReq); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to provision container: %v", err)
 	}
 
 	containerName := req.Name + "-container"
 
+	// Record that the box is not prepared yet BEFORE anything else runs in
+	// it (#3546). Only a post_start that succeeds removes the mark, so a
+	// failed post_start, or a daemon that stops while it runs, leaves the box
+	// marked, and a skill or crew run that would reuse it runs post_start
+	// again (rerunPendingPostStart) instead of skipping it.
+	var markErr error
+	if len(recipe.PostStart) > 0 {
+		markErr = markPostStartPending(s.boxOps(), containerName)
+	}
+
 	// Gated: place exactly the verified bytes at dataset_path before
 	// post_start. (Async is refused for a gated recipe, so this always
 	// precedes post_start.)
 	if dataset != nil {
 		if err := deliverGuardrailDataset(s.boxOps(), containerName, recipe.GetGuardrailGate().GetDatasetPath(), dataset.Dir); err != nil {
-			log.Printf("[recipe] guardrail gate: deliver dataset to %s: %v", containerName, err)
+			log.Printf("[recipe] guardrail gate: deliver dataset to %q: %v", containerName, err)
 			return nil, status.Errorf(codes.Internal, "could not deliver the verified dataset to %s", containerName)
 		}
 	}
@@ -461,17 +590,24 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	// context and return the freshly-created box now (state CREATING). The box
 	// becomes fully functional once post_start completes; the caller polls.
 	if req.Async {
+		unlock := release
+		release = func() {} // the goroutine releases it now
 		go func() {
+			defer unlock()
 			bg := context.WithoutCancel(ctx)
 			if len(recipe.PostStart) > 0 {
 				script := buildPostStartScript(recipe, params, gatewayEnv)
-				if err := s.boxOps().Exec(containerName, []string{"bash", "-c", script}); err != nil {
-					log.Printf("[recipe] async post_start failed on %s (recipe %q): %v", containerName, recipe.Id, err)
+				if err := completePostStart(s.boxOps(), containerName, script); err != nil {
+					note := ""
+					if len(recipe.Ports) > 0 {
+						note = "; ports were not exposed"
+					}
+					log.Printf("[recipe] async post_start failed on %q (recipe %q): %v%s", containerName, recipe.Id, err, note)
 					return
 				}
 			}
 			if _, _, warnings := s.exposePorts(bg, recipe, req.Name); len(warnings) > 0 {
-				log.Printf("[recipe] async expose warnings on %s: %s", containerName, strings.Join(warnings, "; "))
+				log.Printf("[recipe] async expose warnings on %q: %q", containerName, strings.Join(warnings, "; "))
 			}
 		}()
 		info, _ := s.boxOps().Get(req.Name)
@@ -480,21 +616,29 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 			st := boxlxc.StatusFromInfo(info)
 			container = toProtoContainer(&st)
 		}
-		return &pb.DeployRecipeResponse{
-			Container: container,
-			Message:   fmt.Sprintf("Recipe %q deploying as %s (post_start running in background)", recipe.Id, containerName),
-		}, nil
+		msg := fmt.Sprintf("Recipe %q deploying as %s (post_start running in background)", recipe.Id, containerName)
+		if markErr != nil {
+			// The outcome is not known yet, so say what it means if it fails.
+			msg += "; warning: " + unmarkedNote(containerName, markErr)
+		}
+		return &pb.DeployRecipeResponse{Container: container, Message: msg}, nil
 	}
 
 	// 2. Run the recipe's post_start commands inside the container, with env
 	//    and parameters exported. Same trust level as a stack's post_install.
 	if len(recipe.PostStart) > 0 {
 		script := buildPostStartScript(recipe, params, gatewayEnv)
-		if err := s.boxOps().Exec(containerName, []string{"bash", "-c", script}); err != nil {
+		if err := completePostStart(s.boxOps(), containerName, script); err != nil {
+			if markErr != nil {
+				return nil, status.Errorf(codes.Internal, "post_start failed on %s: %v; %s", containerName, err, unmarkedNote(containerName, markErr))
+			}
 			return nil, status.Errorf(codes.Internal, "post_start failed on %s: %v", containerName, err)
 		}
 	}
 
+	// A failed post_start returned above, so no route is exposed for a
+	// workload that did not finish starting (fail closed, #3545).
+	//
 	// 3. Expose configured ports (best-effort: a routing failure leaves the
 	//    workload running and reachable on the LAN; surface it as a warning).
 	url, endpoints, warnings := s.exposePorts(ctx, recipe, req.Name)
@@ -514,6 +658,181 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 		container = toProtoContainer(&st)
 	}
 	return &pb.DeployRecipeResponse{Container: container, Url: url, Message: msg}, nil
+}
+
+// markPostStartPending sets the post_start-pending mark on a box (#3546). A
+// failure to write it is logged and returned, and the deploy goes on with
+// post_start: refusing here would leave a box that exists, is unmarked and
+// never ran post_start, which is the state the mark exists to prevent. The
+// box is not deleted. deploy reports the failure to its caller (#3555): in
+// the post_start error when post_start then fails, and as a warning in an
+// async deploy's message. A post_start that succeeds needs no mark, so then
+// the failure is only logged.
+func markPostStartPending(boxes recipeBoxes, containerName string) error {
+	if err := boxes.SetConfig(containerName, incus.PostStartPendingKey, incus.PostStartPendingValue); err != nil {
+		log.Printf("[recipe] could not mark %q as not prepared before post_start: %v", containerName, err)
+		return err
+	}
+	return nil
+}
+
+// unmarkedNote says what a failed mark write means for the caller (#3555).
+func unmarkedNote(containerName string, markErr error) string {
+	return fmt.Sprintf("%s could not be marked as not prepared (%v), so if its post_start does not complete, a later skill or crew run reuses it without running post_start again; delete the box to provision a fresh one",
+		containerName, markErr)
+}
+
+// boxBeingPreparedError is deploy's error when another deploy or re-run is
+// still preparing the box (#3555). It is a gRPC FailedPrecondition; the
+// skill run path tells it apart with errors.As and waits for the box.
+type boxBeingPreparedError struct{ containerName string }
+
+func (e *boxBeingPreparedError) GRPCStatus() *status.Status {
+	return status.Newf(codes.FailedPrecondition,
+		"box %s is already being prepared by another deploy or run; retry once it has finished", e.containerName)
+}
+
+func (e *boxBeingPreparedError) Error() string { return e.GRPCStatus().Err().Error() }
+
+// preparationWaitErr is the error of a call whose context ended while it
+// waited for another call preparing box name (#3555): Canceled or
+// DeadlineExceeded, from the context.
+func preparationWaitErr(name string, err error) error {
+	return status.Errorf(status.FromContextError(err).Code(),
+		"stopped waiting for an earlier preparation of %s-container to finish: %v", name, err)
+}
+
+// completePostStart runs post_start and, only when it succeeds, removes the
+// post_start-pending mark (#3546). A failure to remove the mark is logged and
+// not returned: post_start did complete, and a mark left behind costs one
+// extra post_start run on the box's next skill run, not a wrong result.
+func completePostStart(boxes recipeBoxes, containerName, script string) error {
+	if err := runPostStart(boxes, containerName, script); err != nil {
+		return err
+	}
+	if err := boxes.UnsetConfig(containerName, incus.PostStartPendingKey); err != nil {
+		log.Printf("[recipe] post_start completed on %q but its not-prepared mark could not be removed: %v", containerName, err)
+	}
+	return nil
+}
+
+// rerunPendingPostStart is the reuse half of the post_start-pending mark
+// (#3546). A skill or crew run that is about to reuse box name (the
+// daemon-provisioned agent-<skill> box) calls it, whether or not it saw the
+// mark: it first waits for any deploy or re-run still preparing the box
+// (#3555), then reads the box again. When the box still carries
+// the mark, the recipe's post_start runs again with the parameters the first
+// deploy used, and the mark is removed only if it succeeds. A box without the
+// mark (prepared, or one deploy never marked) is left alone. When post_start
+// fails again the box is kept for debugging and the run fails with
+// FailedPrecondition naming the box; deleting the box makes the next run
+// provision a fresh one.
+//
+// A guardrail-gated recipe is not re-run: its dataset is verified and
+// delivered as part of a deploy, and re-running post_start over whatever is
+// in the box now would skip that check. The run fails with the same advice.
+//
+// It returns the box as read under the lock, or after the re-run when one
+// ran (nil when that read failed; the caller keeps its own).
+func (s *RecipeServer) rerunPendingPostStart(ctx context.Context, recipeID, name string, parameters map[string]string) (*incus.ContainerInfo, error) {
+	// Wait for a deploy or another re-run that is preparing the box (#3555),
+	// for as long as this run's own context allows.
+	unlock, err := s.postStartLocks.acquire(ctx, name)
+	if err != nil {
+		return nil, preparationWaitErr(name, err)
+	}
+	defer unlock()
+
+	// Re-read under the lock: a concurrent run may have finished it.
+	info, err := s.boxOps().Get(name)
+	if err != nil || info == nil {
+		return nil, nil
+	}
+	if !info.PostStartPending {
+		return info, nil
+	}
+	reread := func() *incus.ContainerInfo {
+		if after, err := s.boxOps().Get(name); err == nil {
+			return after
+		}
+		return nil
+	}
+	containerName := name + "-container"
+	notPrepared := func(format string, args ...any) error {
+		return status.Errorf(codes.FailedPrecondition,
+			"box %s is not fully prepared: its recipe post_start did not complete on an earlier run and %s; the box is kept for debugging, delete it to provision a fresh one",
+			containerName, fmt.Sprintf(format, args...))
+	}
+	recipe, err := s.catalog.Get(recipeID)
+	if err != nil {
+		return nil, notPrepared("its recipe %q is no longer in the catalog", recipeID)
+	}
+	if recipe.GetGuardrailGate() != nil {
+		return nil, notPrepared("recipe %q is guardrail-gated, so post_start is not re-run on an existing box", recipeID)
+	}
+	params, err := recipes.ResolveParameters(recipe, parameters)
+	if err != nil {
+		return nil, notPrepared("its parameters no longer resolve: %v", err)
+	}
+	if len(recipe.PostStart) == 0 {
+		// Nothing left to run: the recipe no longer has a post_start.
+		if err := s.boxOps().UnsetConfig(containerName, incus.PostStartPendingKey); err != nil {
+			log.Printf("[recipe] could not remove the not-prepared mark from %q: %v", containerName, err)
+		}
+		return reread(), nil
+	}
+	provider, keyOwner := resolveRecipeGatewayProvider(recipe, name, params, nil)
+	script := buildPostStartScript(recipe, params, s.gatewayEnvForRecipe(recipe, name, provider, keyOwner))
+	log.Printf("[recipe] %q was not fully prepared by an earlier run; running post_start again", containerName)
+	if err := completePostStart(s.boxOps(), containerName, script); err != nil {
+		return nil, notPrepared("running it again failed: %v", err)
+	}
+	// The first deploy returned before exposing ports; finish that too.
+	if _, _, warnings := s.exposePorts(ctx, recipe, name); len(warnings) > 0 {
+		log.Printf("[recipe] expose warnings on %q after re-running post_start: %q", containerName, strings.Join(warnings, "; "))
+	}
+	return reread(), nil
+}
+
+// runPostStart runs a post_start script in the box and fails on a non-zero
+// exit (#3542). Its output is not returned or logged: a step may print what
+// a deploy supplied. Output past the exec capture cap is not a failure on its
+// own; the exit status decides. It is tolerated only when it is the only
+// problem: the exec path joins a wait/transport error with the cap error and
+// reports exit 0 then, so errors.Is alone would hide a timeout (#3545).
+func runPostStart(boxes recipeBoxes, containerName, script string) error {
+	_, _, code, err := boxes.ExecWithExitCode(containerName, []string{"bash", "-c", script})
+	if err != nil && !onlyOutputCapErr(err) {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("exit status %d", code)
+	}
+	return nil
+}
+
+// onlyOutputCapErr reports whether every leaf of err (descending through
+// errors.Join and %w wrapping) matches limitio.ErrTooLarge. The exec path
+// returns *limitio.TooLargeError, which matches the sentinel through its Is
+// method and has no Unwrap, so each leaf is compared with errors.Is.
+func onlyOutputCapErr(err error) bool {
+	if err == nil {
+		return true
+	}
+	switch e := err.(type) {
+	case interface{ Unwrap() []error }:
+		children := e.Unwrap()
+		for _, c := range children {
+			if !onlyOutputCapErr(c) {
+				return false
+			}
+		}
+		return len(children) > 0
+	case interface{ Unwrap() error }:
+		return e.Unwrap() != nil && onlyOutputCapErr(e.Unwrap())
+	default:
+		return errors.Is(err, limitio.ErrTooLarge)
+	}
 }
 
 // resourceLimits merges the recipe's defaults with deploy-time overrides.
@@ -543,7 +862,8 @@ func resourceLimits(recipe *pb.Recipe, override *pb.RecipeResources) *pb.Resourc
 // Values are single-quote escaped to prevent shell injection from parameters.
 // gatewayEnv, when non-empty, is the managed model-gateway export snippet
 // (gatewayEnvForRecipe) prepended before the recipe's own env so post_start
-// sees CONTAINARIUM_MODEL_GATEWAY_URL/_TOKEN.
+// sees CONTAINARIUM_MODEL_GATEWAY_URL/_TOKEN. The daemon's release tag is
+// exported as recipes.ReleaseEnvName.
 func buildPostStartScript(recipe *pb.Recipe, params map[string]string, gatewayEnv string) string {
 	var b strings.Builder
 	b.WriteString("set -euo pipefail\n")
@@ -556,6 +876,10 @@ func buildPostStartScript(recipe *pb.Recipe, params map[string]string, gatewayEn
 	for name, v := range params {
 		fmt.Fprintf(&b, "export %s=%s\n", recipes.ParamEnvName(name), shellSingleQuote(v))
 	}
+	// The daemon's own release (#3542), after the recipe's env so nothing a
+	// deploy supplies can stand in for it. Always exported, empty on a
+	// non-release build, so `set -u` steps can test it.
+	fmt.Fprintf(&b, "export %s=%s\n", recipes.ReleaseEnvName, shellSingleQuote(version.ReleaseTag()))
 	for _, line := range recipe.PostStart {
 		b.WriteString(line)
 		b.WriteString("\n")
@@ -665,4 +989,89 @@ func (s *RecipeServer) exposePassthroughPort(ctx context.Context, recipe *pb.Rec
 		host = "<this host>"
 	}
 	return fmt.Sprintf("%s:%d/%s", host, externalPort, protocolLabel), nil
+}
+
+// boxLocks is one lock per box name (#3555). Unlike a sync.Mutex, a waiter
+// gives up when its context ends. An entry exists only while some call holds
+// or waits for that box's lock, so the map never grows past the number of
+// boxes being prepared at once.
+type boxLocks struct {
+	mu    sync.Mutex
+	locks map[string]*boxLock
+}
+
+type boxLock struct {
+	held chan struct{} // capacity 1: full while the lock is held
+	refs int           // holders and waiters; the entry goes at 0
+}
+
+// acquire takes name's lock, waiting until it is free or ctx ends (then it
+// returns ctx's error). A free lock is taken even when ctx has already
+// ended, which tryAcquire relies on. release is safe to call more than once.
+func (l *boxLocks) acquire(ctx context.Context, name string) (release func(), err error) {
+	l.mu.Lock()
+	if l.locks == nil {
+		l.locks = map[string]*boxLock{}
+	}
+	bl := l.locks[name]
+	if bl == nil {
+		bl = &boxLock{held: make(chan struct{}, 1)}
+		l.locks[name] = bl
+	}
+	bl.refs++
+	l.mu.Unlock()
+
+	select {
+	case bl.held <- struct{}{}:
+	default:
+		select {
+		case bl.held <- struct{}{}:
+		case <-ctx.Done():
+			l.drop(name, bl)
+			return nil, ctx.Err()
+		}
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			<-bl.held
+			l.drop(name, bl)
+		})
+	}, nil
+}
+
+func (l *boxLocks) drop(name string, bl *boxLock) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	bl.refs--
+	if bl.refs == 0 {
+		delete(l.locks, name)
+	}
+}
+
+// tryAcquire takes name's lock only when it is free right now; ok is false
+// when another call holds it.
+func (l *boxLocks) tryAcquire(name string) (release func(), ok bool) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	release, err := l.acquire(ctx, name)
+	return release, err == nil
+}
+
+// wait returns once name's lock is free (taking and releasing it), or with
+// ctx's error when ctx ends first.
+func (l *boxLocks) wait(ctx context.Context, name string) error {
+	release, err := l.acquire(ctx, name)
+	if err != nil {
+		return err
+	}
+	release()
+	return nil
+}
+
+// len is the number of boxes whose lock is held or waited for.
+func (l *boxLocks) len() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.locks)
 }

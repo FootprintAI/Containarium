@@ -24,6 +24,22 @@ def run_text(job):
 
 
 class ReleaseWorkflowTest(unittest.TestCase):
+
+    def test_managed_toolchain_release_contains_inventory_and_scans(self):
+        job = self.jobs["build-and-release"]
+        text = run_text(job)
+        self.assertIn("scripts/toolchains/package.sh", text)
+        self.assertIn("amd64 arm64", text)
+        scans = [s for s in job["steps"] if s.get("uses", "").startswith("aquasecurity/trivy-action")]
+        self.assertEqual({s["with"]["scan-ref"] for s in scans}, {"dist/toolchains-amd64", "dist/toolchains-arm64"})
+        for scan in scans:
+            self.assertEqual(scan["with"]["scan-type"], "rootfs")
+            self.assertEqual(scan["with"]["exit-code"], "1")
+        self.assertIn("scripts/toolchains/validate_scan.py", text)
+        uploads = "\n".join(str(s.get("with", {}).get("files", "")) for s in job["steps"])
+        for arch in ("amd64", "arm64"):
+            for suffix in ("tar.gz", "manifest.json", "spdx.json"):
+                self.assertIn(f"bin/toolchains-linux-{arch}.{suffix}", uploads)
     @classmethod
     def setUpClass(cls):
         cls.jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
@@ -78,7 +94,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
         # signing job (no always()/failure() override, no continue-on-error),
         # and the docs must name it.
         job = self.jobs["verify-release"]
-        self.assertEqual(self.jobs["verify-release"].get("if"), "startsWith(github.ref, 'refs/tags/v')")
+        self.assertEqual(self.jobs["verify-release"].get("if"), "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')")
         self.assertTrue({"sign-release", "sign-bundle"} <= set(needs(job)))
         self.assertNotIn("continue-on-error", job)
         for step in job["steps"]:
@@ -93,7 +109,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
     def test_signing_runs_on_tags_only(self):
         for name in ("sign-release", "sign-bundle", "verify-release"):
             with self.subTest(job=name):
-                self.assertEqual(self.jobs[name].get("if"), "startsWith(github.ref, 'refs/tags/v')")
+                self.assertEqual(self.jobs[name].get("if"), "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')")
 
     def test_only_signing_jobs_get_an_oidc_token(self):
         for name in ("sign-release", "sign-bundle"):

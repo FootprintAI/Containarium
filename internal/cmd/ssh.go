@@ -14,6 +14,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/internal/credentials"
 	"github.com/footprintai/containarium/internal/sshconfig"
 	"github.com/footprintai/containarium/internal/sshkey"
@@ -597,6 +598,12 @@ func runSSHList(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(out, "No SSH keys registered. Run `containarium ssh setup` to add one.")
 		return nil
 	}
+	return printSSHKeys(out, keys)
+}
+
+// printSSHKeys renders the `ssh list` table; key names are user-chosen
+// labels (#3453).
+func printSSHKeys(out io.Writer, keys []sshkey.SSHKey) error {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tFINGERPRINT\tCREATED")
 	for _, k := range keys {
@@ -612,7 +619,7 @@ func runSSHList(cmd *cobra.Command, args []string) error {
 				fp = f
 			}
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", k.Name, fp, created)
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", escapeControl(k.Name), fp, created)
 	}
 	return tw.Flush()
 }
@@ -773,23 +780,4 @@ func validateKeyName(name string) error {
 // (no '@' or '.') because box names go into Linux usernames upstream.
 // Keep in sync with internal/server/create_bounds.go if it changes
 // there.
-func validateBoxName(name string) error {
-	n := strings.TrimSpace(name)
-	if n == "" {
-		return fmt.Errorf("box name is empty")
-	}
-	if len(n) > 32 {
-		return fmt.Errorf("box name %q exceeds 32 characters", n)
-	}
-	for _, r := range n {
-		switch {
-		case r >= 'a' && r <= 'z',
-			r >= '0' && r <= '9',
-			r == '-', r == '_':
-			continue
-		default:
-			return fmt.Errorf("box name %q contains disallowed character %q (allowed: lowercase, digits, '-', '_')", n, r)
-		}
-	}
-	return nil
-}
+func validateBoxName(name string) error { return client.ValidateBoxName(name) }

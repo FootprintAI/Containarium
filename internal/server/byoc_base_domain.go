@@ -21,8 +21,8 @@ import (
 // ProxyManager strips the base domain to form a route's ID, so routes the
 // cloud pushed while a value was stored live under those IDs. Keeping the
 // stored value for naming means existing routes are neither duplicated nor
-// orphaned. The bridge-DNS wildcard is not handled here: #2263 removes it
-// for every host.
+// orphaned. The bridge-DNS wildcard is not handled here: current daemons write
+// none and remove a leftover one on start (#2732, #2734).
 
 // The three places that act on it: managementRouteDomains (no apex route),
 // dropStaleManagementRoutes (removes the apex route saved before the host was

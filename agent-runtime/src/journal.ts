@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Engine, EngineConfig, EngineResult } from "./engine.js";
 import type { JournalEvent } from "./journal.schema.js";
 import { runWithFinalJsonReprompt } from "./reprompt.js";
+import { correctionText, reconcileTestsRun, TestRunWatch } from "./tests-run.js";
 
 // The per-run journal (#2095): an append-only JSON-lines file per run per
 // member box at /var/log/agent-runtime/runs/<run_id>/<skill_id>.jsonl, written
@@ -198,12 +199,20 @@ export function journalSecrets(env: Readonly<Record<string, string | undefined>>
 // (0 on success; on failure the error is journaled first, exit=1, and the
 // error is rethrown). A run that changed files but returned no final message
 // is re-prompted once inside the bracket (runWithFinalJsonReprompt, #2513).
+// The artifact's tests_run is set from the test-command executions observed
+// in the run, both turns included (reconcileTestsRun, #3491); a replaced value
+// is journaled as a status line.
 export async function runJournaled(engine: Engine, task: string, cfg: EngineConfig, journal: JournalSink): Promise<EngineResult> {
   journal.append({ kind: "status", text: "run started" });
   try {
-    const res = await runWithFinalJsonReprompt(engine, task, cfg, journal);
+    const watch = new TestRunWatch(journal);
+    const res = await runWithFinalJsonReprompt(engine, task, cfg, watch);
+    const reconciled = reconcileTestsRun(res.outputJson, task, watch.observed);
+    if (reconciled.outputJson !== res.outputJson) {
+      journal.append({ kind: "status", text: correctionText(watch.observed, watch.executions.length, reconciled.reported) });
+    }
     journal.append({ kind: "status", text: "run ended exit=0" });
-    return res;
+    return { ...res, outputJson: reconciled.outputJson };
   } catch (e) {
     journal.append({ kind: "error", text: e instanceof Error ? e.message : String(e) });
     journal.append({ kind: "status", text: "run ended exit=1" });

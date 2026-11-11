@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/footprintai/containarium/pkg/core/incus"
 	"io"
 	"log"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/client"
+	"github.com/footprintai/containarium/internal/limitio"
 	"github.com/footprintai/containarium/internal/runlog"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
@@ -173,7 +175,9 @@ func (c *Client) doRequest(method, path string, body interface{}) ([]byte, error
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	// Capped (#3469): the whole body is held in memory and handed to the
+	// agent, so an endless response must not grow this process unbounded.
+	respBody, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -187,6 +191,16 @@ func (c *Client) doRequest(method, path string, body interface{}) ([]byte, error
 
 // CreateContainer creates a new container
 func (c *Client) CreateContainer(req CreateContainerRequest) (*CreateContainerResponse, error) {
+	if req.NetworkTenant != "" {
+		caps, err := c.GetNetworkTenantCapabilities()
+		if err != nil {
+			return nil, fmt.Errorf("native Tenant capability check: %w", err)
+		}
+		if caps.Contract != incus.NativeTenantContractID || caps.BackendScope != incus.NativeTenantBackendScope || !caps.NativeMembershipRead || !caps.SharedTenantCreate {
+			return nil, fmt.Errorf("provider does not advertise ready native network Tenant creation")
+		}
+	}
+
 	respBody, err := c.doRequest("POST", "/v1/containers", req)
 	if err != nil {
 		return nil, err
@@ -266,6 +280,7 @@ type DeployRecipeRequest struct {
 	Pool           string                 `json:"pool,omitempty"`
 	Parameters     map[string]string      `json:"parameters,omitempty"`
 	GuardrailInput *pb.GuardrailGateInput `json:"guardrail_input,omitempty"`
+	SSHKeys        []string               `json:"ssh_keys,omitempty"`
 }
 
 // DeployRecipeContainer is the deployed container's MCP summary.
@@ -295,7 +310,14 @@ func (c *Client) DeployRecipe(req DeployRecipeRequest) (*DeployRecipeResponse, e
 	if err != nil {
 		return nil, err
 	}
-	resp, err := typed.DeployRecipe(req.RecipeID, req.Name, req.GPU, req.BackendID, req.Pool, req.Parameters, req.GuardrailInput)
+	resp, err := typed.DeployRecipe(req.RecipeID, req.Name, client.DeployRecipeOptions{
+		GPU:            req.GPU,
+		BackendID:      req.BackendID,
+		Pool:           req.Pool,
+		Parameters:     req.Parameters,
+		GuardrailInput: req.GuardrailInput,
+		SSHKeys:        req.SSHKeys,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -486,6 +508,9 @@ type RunCrewRequest struct {
 	BackendID string `json:"backend_id,omitempty"`
 	Pool      string `json:"pool,omitempty"`
 	InputJSON string `json:"input_json,omitempty"`
+	// ModelOverrides maps skill_id -> model id (#3259), passed through as is;
+	// the daemon refuses the unusable ones.
+	ModelOverrides map[string]string `json:"model_overrides,omitempty"`
 }
 
 // RunCrewResponse is the result of a crew run.
@@ -533,7 +558,7 @@ func (c *Client) ListBoxRuns(username string) ([]*pb.BoxRun, error) {
 		return nil, err
 	}
 	out := &pb.ListBoxRunsResponse{}
-	if err := protojson.Unmarshal(respBody, out); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, out); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	return out.GetRuns(), nil
@@ -546,7 +571,7 @@ func (c *Client) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogR
 		return nil, err
 	}
 	out := &pb.TailBoxRunLogResponse{}
-	if err := protojson.Unmarshal(respBody, out); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, out); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	return out, nil
@@ -559,7 +584,7 @@ func (c *Client) ListRunInputs(req *pb.ListRunInputsRequest) (*pb.ListRunInputsR
 		return nil, err
 	}
 	out := &pb.ListRunInputsResponse{}
-	if err := protojson.Unmarshal(respBody, out); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, out); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	return out, nil
@@ -576,7 +601,7 @@ func (c *Client) AnswerRunInput(req *pb.AnswerRunInputRequest) (*pb.AnswerRunInp
 		return nil, err
 	}
 	out := &pb.AnswerRunInputResponse{}
-	if err := protojson.Unmarshal(respBody, out); err != nil {
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, out); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	return out, nil
@@ -615,6 +640,10 @@ type CreateBackupRequest struct {
 	// (what protojson decodes). Empty is omitted, which the daemon reads
 	// as opaque.
 	HookFormat string `json:"hook_format,omitempty"`
+
+	// #3214: refuse (FAILED_PRECONDITION) a backup that would be stored
+	// unencrypted; mirrors `backup create --require-encryption` (#3169).
+	RequireEncryption bool `json:"require_encryption,omitempty"`
 }
 
 // BackupRecord mirrors the proto BackupRecord on the response side
@@ -2042,17 +2071,22 @@ func (c *Client) InstallClamav(containerName string) (*InstallClamavResponse, er
 // API Request/Response types
 
 type CreateContainerRequest struct {
-	Username     string            `json:"username"`
-	Resources    *ResourceLimits   `json:"resources,omitempty"`
-	SSHKeys      []string          `json:"sshKeys,omitempty"`
-	Labels       map[string]string `json:"labels,omitempty"`
-	Image        string            `json:"image,omitempty"`
-	EnablePodman bool              `json:"enablePodman,omitempty"`
+	NetworkTenant string            `json:"networkTenant,omitempty"`
+	Username      string            `json:"username"`
+	Resources     *ResourceLimits   `json:"resources,omitempty"`
+	SSHKeys       []string          `json:"sshKeys,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	Image         string            `json:"image,omitempty"`
+	EnablePodman  bool              `json:"enablePodman,omitempty"`
 
 	// DisableAutoSleep asks for a box with no auto-sleep timer (#2759). Only
 	// meaningful on a hosted platform that defaults some orgs to auto-sleep; a
 	// standalone daemon ignores it.
 	DisableAutoSleep bool `json:"disableAutoSleep,omitempty"`
+
+	// IdleStopMinutes opts a newly-created Box into the daemon's birth
+	// idle-stop policy. Zero (or omitted) preserves the default-off behavior.
+	IdleStopMinutes int32 `json:"idleStopMinutes,omitempty"`
 
 	// GPU is the legacy single-GPU field. Prefer GPUs. When GPUs is set it
 	// supersedes this on the daemon side.
@@ -2378,12 +2412,14 @@ type ListPassthroughRoutesResponse struct {
 }
 
 type Container struct {
-	Name      string          `json:"name"`
-	Username  string          `json:"username"`
-	State     string          `json:"state"`
-	Resources *ResourceLimits `json:"resources,omitempty"`
-	SSHKeys   []string        `json:"sshKeys,omitempty"`
-	Network   *NetworkInfo    `json:"network,omitempty"`
+	NetworkTenant       string          `json:"networkTenant"`
+	NetworkTenantSource string          `json:"networkTenantSource"`
+	Name                string          `json:"name"`
+	Username            string          `json:"username"`
+	State               string          `json:"state"`
+	Resources           *ResourceLimits `json:"resources,omitempty"`
+	SSHKeys             []string        `json:"sshKeys,omitempty"`
+	Network             *NetworkInfo    `json:"network,omitempty"`
 	// CreatedAt / UpdatedAt come back as JSON strings from the platform's
 	// grpc-gateway HTTP layer — int64 protobuf scalars are emitted as
 	// strings to avoid JavaScript number-precision loss. The `,string`

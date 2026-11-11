@@ -61,8 +61,27 @@ var toolAccessGetCmd = &cobra.Command{
 	RunE:  runToolAccessGet,
 }
 
+var toolAccessRunUserCmd = &cobra.Command{
+	Use:   "run-user <username>",
+	Short: "Show whether a box's run user is signed in",
+	Long: `Show whether the unprivileged run user (#2944) on a box has a usable agent
+sign-in: the same check 'StartBoxRun' applies before it refuses a platform run,
+without starting one (#3274). Prints the credential source's name only, never a
+value, and does not create the run user.
+
+States: interactive and api-key mean a run would proceed; none means the run
+user has never signed in (or does not exist yet); expired means it must sign in
+again. A box with no tool-access level recorded runs as its owner, so there is
+no run user to check.
+
+Examples:
+  containarium tool-access run-user alice`,
+	Args: cobra.ExactArgs(1),
+	RunE: runToolAccessRunUser,
+}
+
 func init() {
-	toolAccessCmd.AddCommand(toolAccessSetCmd, toolAccessClearCmd, toolAccessGetCmd)
+	toolAccessCmd.AddCommand(toolAccessSetCmd, toolAccessClearCmd, toolAccessGetCmd, toolAccessRunUserCmd)
 	rootCmd.AddCommand(toolAccessCmd)
 }
 
@@ -173,4 +192,49 @@ func setContainerToolAccessViaServer(username string, level pb.BoxToolAccess) er
 	defer func() { _ = gc.Close() }()
 	_, err = gc.SetContainerToolAccess(username, level)
 	return err
+}
+
+func runToolAccessRunUser(cmd *cobra.Command, args []string) error {
+	username := args[0]
+	if serverAddr == "" {
+		return fmt.Errorf("--server is required (tool access is a server-side feature)")
+	}
+	var resp *pb.GetBoxRunUserStatusResponse
+	var err error
+	if httpMode {
+		hc, e := client.NewHTTPClient(serverAddr, authToken)
+		if e != nil {
+			return e
+		}
+		defer func() { _ = hc.Close() }()
+		resp, err = hc.GetBoxRunUserStatus(username)
+	} else {
+		gc, e := client.NewGRPCClient(serverAddr, certsDir, insecure)
+		if e != nil {
+			return e
+		}
+		defer func() { _ = gc.Close() }()
+		resp, err = gc.GetBoxRunUserStatus(username)
+	}
+	if isUnimplemented(err) {
+		fmt.Printf("⚠ Run-user status not yet supported by this server (daemon does not implement GetBoxRunUserStatus).\n")
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to get the run user status of %s: %w", username, err)
+	}
+	fmt.Print(renderRunUserStatus(username, resp))
+	return nil
+}
+
+// renderRunUserStatus is the human form of the run-user status: one line, the
+// credential source's name only.
+func renderRunUserStatus(username string, r *pb.GetBoxRunUserStatusResponse) string {
+	if !r.GetToolAccessRecorded() {
+		return fmt.Sprintf("%s: no tool-access level recorded; platform runs use the owner's identity (no run user)\n", username)
+	}
+	if !r.GetRunUserExists() {
+		return fmt.Sprintf("%s: run user %s does not exist yet (created by the first platform run); sign-in: %s\n", username, r.GetRunUser(), credentialSourceDisplay(r.GetState()))
+	}
+	return fmt.Sprintf("%s: run user %s sign-in: %s\n", username, r.GetRunUser(), credentialSourceDisplay(r.GetState()))
 }

@@ -32,10 +32,15 @@
 .github/workflows/sidecars.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
 .github/workflows/sidecars.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
 .github/workflows/sidecars.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
+.github/workflows/sidecars.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
 .github/workflows/ssh-approval-spike.yml	git clone	ef6dbf43ff6c	git clone --depth 1 --branch v1.6.1 https://github.com/tg123/sshpiper 
 .github/workflows/tenant-guard-e2e.yml	curl	d4caf07f25aa	curl -fsSL https://pkgs.zabbly.com/key.asc | sudo gpg --dearmor -o /us
 .github/workflows/workflow-lint.yml	curl	afe7011db51b	curl -fsSL -o "$RUNNER_TEMP/actionlint.tgz" "https://github.com/rhysd/
 .github/workflows/workflow-lint.yml	curl	f2fe9668674b	curl -fsSL -o "$RUNNER_TEMP/zizmor.tgz" "https://github.com/zizmorcore
+images/slides-agent/Dockerfile	xcaddy build	8fb9d2589a79	xcaddy build "${CADDY_VERSION}" --replace golang.org/x/net=golang.org/
+images/slides-agent/Dockerfile	npm install	40c10a38c595	npm install -g "pnpm@${PNPM_VERSION}"
+images/slides-agent/Dockerfile	npm install	449e79fe8ad7	pnpm install --frozen-lockfile --ignore-scripts --filter @open-slide/c
+images/slides-agent/Dockerfile	curl	b291dd43fbea	curl chromium fonts-liberation fonts-noto-core fonts-noto-color-emoji 
 images/sshpiper/Dockerfile	git clone	9fc3df4fdd85	git clone --depth 1 --branch "${SSHPIPER_VERSION}" https://github.com/
 internal/runner/install_script_payload.sh	curl	28f0e70f78b3	curl jq git build-essential libicu-dev sudo
 internal/runner/install_script_payload.sh	curl	7cfda140d680	curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | ta
@@ -62,6 +67,8 @@ scripts/bundle/download-deps.sh	wget	6780eacc506b	wget gnupg ca-certificates sof
 scripts/ci/check-licenses.sh	go install	6d695ea3e06f	go install github.com/google/go-licenses@v1.6.0" >&2; exit 2; }
 scripts/ci/npm-licenses.sh	npm ci	e195c096bf6a	npm ci --omit=dev --ignore-scripts --no-audit --no-fund >/dev/null 2>&
 scripts/ci/npm-licenses.sh	npx	5dc65733e2ac	npx --yes "$CHECKER" --production --excludePrivatePackages --json) > "
+scripts/ci/sentinel-outage-smoke.sh	curl	0ad152fd00fb	curl timeout; do command -v "$tool" >/dev/null || fail "missing $tool"
+scripts/ci/sentinel-outage-smoke.sh	curl	00716ae76a42	curl --silent --show-error --fail --max-time 8 --noproxy '*' --connect
 scripts/ci/tunnel-smoke.sh	curl	173ca4275450	curl -fsS --max-time 3 "http://$ADDR:$BACKEND_PORT/" 2>/dev/null || tr
 scripts/download-swagger-ui.sh	curl	9221e5efaae7	curl -LO "https://github.com/swagger-api/swagger-ui/archive/refs/tags/
 scripts/engineer-crew-e2e.sh	curl	fcf8e5e02022	curl >/dev/null || fail "no curl"
@@ -93,3 +100,6 @@ sidecars/otel-sidecar/Dockerfile	go install	95563208eaad	go install go.opentelem
 sidecars/otel-sidecar/Dockerfile	wget	1f00a81cebd4	wget && rm -rf /var/lib/apt/lists/*
 web-ui/Dockerfile	npm ci	9db3f780def6	npm ci
 scripts/lib/deploy-install.sh	curl	6da37ede2a0e	curl -fsS --max-time 3 '$url' >/dev/null 2>&1"
+scripts/ci/offline-install-guest.sh	curl	427e4b79b1f0	curl
+scripts/ci/offline-install-vm.sh	curl	944df6386d5c	curl -fsSL --retry 3 --connect-timeout 30 --max-time 300 "$1" -o "$2";
+scripts/ci/managed-key-verify.sh	curl	944df6386d5c	curl -fsSL --retry 3 --connect-timeout 30 --max-time 300 "$1" -o "$2";

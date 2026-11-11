@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
+	"net/http"
 	"strings"
 	"time"
 
@@ -16,6 +16,7 @@ import (
 	"github.com/footprintai/containarium/internal/gatewayprovider"
 	"github.com/footprintai/containarium/internal/sshkey"
 	"github.com/footprintai/containarium/pkg/core/sdlcskills"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/footprintai/containarium/pkg/version"
 	"github.com/spf13/cobra"
 )
@@ -180,6 +181,19 @@ It also lands the agent-box helper on ~/.local/bin, so containarium code
 run/attach/status/stop work on this box, and records the choices above in
 ~/.containarium/code.json (0600) so ` + "`code run`" + ` never re-asks.
 
+On the Claude path it installs the pinned SDLC role skills into
+~/.claude/skills, selected by --skill-sets (default: all). That sets the
+selection once, over SSH, as part of installing the engine. To change it
+later on a box that already exists — add a set, drop one, or pick up a pin
+bump — use ` + "`containarium code skill-sets <box> --skill-sets <ids>`" + `, which
+re-applies the same installer through the daemon, with no SSH client, and
+removes only what the dropped sets installed. Re-running this command with a
+different --skill-sets also works, at the cost of re-installing the engine.
+
+--bootstrap-url applies a bundle (a .tar.gz with an apply.sh) after the
+toolchain lands. To re-apply a bundle later without re-installing anything,
+use ` + "`containarium code bootstrap <box> --url <url>`" + ` (or --url-cmd).
+
 After installing it prints the binary version and reports which credential
 SOURCE the box has — names only, never a value. On the Claude path it also
 asserts the install created no ~/.claude/.credentials.json.
@@ -229,7 +243,7 @@ func init() {
 		"deprecated alias for --skill-sets none")
 	_ = codeInstallCmd.Flags().MarkDeprecated("no-sdlc-skills", "use --skill-sets none")
 	codeInstallCmd.Flags().StringVar(&codeSkillSets, "skill-sets", "",
-		"which pinned SDLC skill sets to install into ~/.claude/skills: a comma-separated list of set ids (for example sdlc,qa), \"all\", or \"none\" (default: all). An unknown id fails and names the known ones; narrowing the list on a re-run removes the dropped sets")
+		"which pinned SDLC skill sets to install into ~/.claude/skills: a comma-separated list of set ids (for example sdlc,qa), \"all\", or \"none\" (default: all). An unknown id fails and names the known ones; narrowing the list on a re-run removes the dropped sets. To change the sets later without re-installing the engine, use `containarium code skill-sets`")
 	codeInstallCmd.Flags().StringVar(&codeRelease, "release", "",
 		"release tag to pull the agent-box / mcp-server assets from, v-prefixed (default: this CLI's own version)")
 	codeInstallCmd.Flags().StringVar(&codeClaudeCodeVersion, "claude-code-version", "",
@@ -257,7 +271,11 @@ func init() {
 	codeInstallCmd.Flags().StringVar(&codeCodexVersion, "codex-version", "",
 		"pin the Codex CLI version installed with --engine codex (default: whatever npm considers current)")
 
-	codeRunCmd.Flags().StringVar(&codeRunPrompt, "prompt", "", "prompt to give the agent (required)")
+	codeRunCmd.Flags().StringVar(&codeRunPrompt, "prompt", "", "prompt to give the agent (required unless --command is given)")
+	codeRunCmd.Flags().StringVar(&codeRunCommand, "command", "",
+		"run this shell command on the box instead of the agent (no engine starts, no agent credential is loaded); mutually exclusive with --prompt, --session, --continue, --output-format-stream-json and --approvals ask; the box needs GNU coreutils `timeout`")
+	codeRunCmd.Flags().DurationVar(&codeRunTimeout, "timeout", 0,
+		"with --command, end the command after this long (exit code 124); default 15m, at most 1h; a fractional value rounds up to whole seconds")
 	codeRunCmd.Flags().BoolVar(&codeRunContinue, "continue", false,
 		"resume the engine's most recent session in the run's working directory instead of starting a fresh one (`pi -c`, `claude --continue`)")
 	codeRunCmd.Flags().StringVar(&codeRunSession, "session", "",
@@ -290,6 +308,58 @@ func codeRunName() string {
 	return defaultCodeRunName
 }
 
+// codeAPIServer is the server every code subcommand resolves the box against:
+// --ssh-server, else --server / CONTAINARIUM_SERVER, else the logged-in one.
+func codeAPIServer() string {
+	sshServer := codeSSHServer
+	if sshServer == "" {
+		sshServer = serverAddr
+	}
+	return pickSSHServer(sshServer)
+}
+
+// recordCodingAgentFn is the seam tests replace; production uses
+// recordCodingAgent.
+var recordCodingAgentFn = recordCodingAgent
+
+// codingAgentForEngine maps an installed engine to the coding agent a server
+// records. Only Claude Code has a CodingAgent value; other engines are not
+// recorded.
+func codingAgentForEngine(name engine.Name) (pb.CodingAgent, bool) {
+	if name == engine.NameClaude {
+		return pb.CodingAgent_CODING_AGENT_CLAUDE_CODE, true
+	}
+	return pb.CodingAgent_CODING_AGENT_UNSPECIFIED, false
+}
+
+// recordCodingAgent tells the server that agent is now installed on box, so a
+// control plane that keeps a per-box record (and lists the boxes a coding
+// session can use from it) sees an install made over SSH. Best-effort: the
+// install has already been verified, so nothing here fails the command.
+func recordCodingAgent(ctx context.Context, box string, agent pb.CodingAgent, diag io.Writer) {
+	api, err := newConnectAPI(codeAPIServer())
+	if err != nil {
+		reportCodingAgentRecord(diag, box, agent, 0, err)
+		return
+	}
+	st, err := api.SetCodingAgent(ctx, box, agent)
+	reportCodingAgentRecord(diag, box, agent, st, err)
+}
+
+// reportCodingAgentRecord says what became of the record. A server that keeps
+// no coding-agent record answers 501 (or 404 when it predates the route): that
+// is not a failure, there is simply nothing to update.
+func reportCodingAgentRecord(diag io.Writer, box string, agent pb.CodingAgent, status int, err error) {
+	switch {
+	case err == nil:
+		fmt.Fprintf(diag, "✓ recorded coding agent %s for %s on the server\n", agent, box)
+	case status == http.StatusNotImplemented || status == http.StatusNotFound:
+		fmt.Fprintf(diag, "  the server keeps no coding-agent record for %s; nothing to update\n", box)
+	default:
+		fmt.Fprintf(diag, "! could not record the coding agent for %s on the server (%v); the install itself succeeded. Re-run `containarium code install %s` to retry\n", box, err, box)
+	}
+}
+
 // resolveCodeTarget authorizes the caller's managed SSH key on box (same
 // flow as `containarium connect`) and returns the resolved SSH target plus
 // the private key path to authenticate with. Shared by every code
@@ -300,12 +370,7 @@ func resolveCodeTarget(ctx context.Context, box string, diag io.Writer) (connect
 		return connectcore.Target{}, "", err
 	}
 
-	sshServer := codeSSHServer
-	if sshServer == "" {
-		sshServer = serverAddr
-	}
-	server := pickSSHServer(sshServer)
-	api, err := newConnectAPI(server)
+	api, err := newConnectAPI(codeAPIServer())
 	if err != nil {
 		return connectcore.Target{}, "", err
 	}
@@ -568,65 +633,20 @@ echo "agent-box installed at $HOME/.local/bin/agent-box"`
 // sdlcSkillsInstallScript fetches the release's install-sdlc-skills.sh and runs
 // it as the box user (#2065), landing the pinned open-sdlc-skills role skills in
 // ~/.claude/skills. The release tag was already validated against
-// releaseTagPattern, so it is safe inside the double-quoted URL.
-//
-// Only a 404 means "this release predates the skills asset" and is skipped with
-// a message; any other fetch failure fails the install, so a network blip never
-// silently ships a box with no skills. A hash mismatch or unsafe archive is the
-// installer's own failure and propagates.
-//
-// sets is a validated selection (sdlcskills.SkillSets): its charset cannot carry
-// shell syntax, so it is safe inside the double quotes too. An installer that
-// predates SKILL_SETS would ignore it and install everything, so a narrowed
-// selection against one fails instead.
+// releaseTagPattern, so it is safe inside the double-quoted URL. The script
+// itself is sdlcskills.InstallScript, shared with the daemon's
+// ApplyBoxSkillSets (#3374) so both paths run the one installer the same way.
 func sdlcSkillsInstallScript(release string, sets sdlcskills.SkillSets) string {
-	return `set -e
-tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
-code="$(curl -sSL -o "$tmp" -w '%{http_code}' "https://raw.githubusercontent.com/` + agentBoxRepo + `/` + release + `/scripts/install-sdlc-skills.sh" </dev/null)"
-case "$code" in
-  200)
-    if ! grep -q '^# skill-sets: v1$' "$tmp"; then
-      # An installer that predates skill sets would ignore SKILL_SETS and install everything.
-      case "` + sets.String() + `" in
-        all) ;;
-        none) echo "release ` + release + `'s SDLC skills installer predates skill sets; nothing to remove, skipping" >&2; exit 0 ;;
-        *) echo "release ` + release + `'s SDLC skills installer predates skill sets; cannot apply SKILL_SETS=` + sets.String() + `" >&2; exit 1 ;;
-      esac
-    fi
-    SKILL_SETS="` + sets.String() + `" RELEASE="` + release + `" REPO="` + agentBoxRepo + `" bash "$tmp" ;;
-  404)
-    case "` + sets.String() + `" in
-      all|none) echo "release ` + release + ` has no SDLC skills installer; skipping" >&2 ;;
-      *) echo "release ` + release + ` has no SDLC skills installer; cannot apply SKILL_SETS=` + sets.String() + `" >&2; exit 1 ;;
-    esac ;;
-  *) echo "fetching the SDLC skills installer failed: HTTP $code" >&2; exit 1 ;;
-esac`
+	return sdlcskills.InstallScript(agentBoxRepo, release, sets)
 }
 
 // releaseTagPattern is what may be interpolated into the asset URL above.
 // The tag is a flag value and lands inside a double-quoted shell string, so
 // it is validated rather than quoted — a charset with no $, backtick, quote,
 // or backslash cannot be anything but a path segment there.
-var releaseTagPattern = regexp.MustCompile(`^v?[0-9A-Za-z][0-9A-Za-z._-]*$`)
+var releaseTagPattern = sdlcskills.ReleaseTagPattern
 
-// bootstrapScript fetches url, unpacks it into a throwaway directory, and
-// runs its apply.sh as the box user — the seam a team uses to drop in skills,
-// an MCP config, or dotfiles without this command growing a flag per item.
-// No sudo anywhere: a bootstrap bundle is the user's own content and gets the
-// user's own privileges.
-func bootstrapScript(url string) string {
-	return `set -e
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-curl -fsSL ` + coderun.ShellQuoteSingle(url) + ` | tar -xz -C "$tmp"
-if [ ! -f "$tmp/apply.sh" ]; then
-  echo "bootstrap bundle has no apply.sh at its root" >&2
-  exit 4
-fi
-chmod +x "$tmp/apply.sh"
-cd "$tmp" && ./apply.sh`
-}
+// bootstrapScript and the preflight that guards it are in code_bootstrap.go.
 
 // claudeVerifyScript replaces #1673's non-interactive prompt, which could not
 // run without a credential this command no longer supplies.
@@ -650,6 +670,21 @@ func claudeVerifyScript() string {
 // the install and verify exec (e.g. a timeout) touches one place.
 func buildClaudeSSHArgs(target connectcore.Target, identity, execCmd string) []string {
 	return connectcore.BuildSSHArgs(target, identity, execCmd)
+}
+
+// codeSSHRunner returns the function `code install` and `code bootstrap` run
+// each remote script through: one ssh exec as the box user, under kw.
+func codeSSHRunner(ctx context.Context, kw connectcore.KeyWait, target connectcore.Target, privPath string, diag io.Writer) func(string) (string, error) {
+	probe := probeSSHArgs(connectcore.BuildSSHArgs(target, privPath, ""))
+	return func(script string) (string, error) {
+		var out string
+		err := sshWithKeyWait(ctx, kw, probe, func() error {
+			var e error
+			out, e = sshExec(diag, buildClaudeSSHArgs(target, privPath, script))
+			return e
+		})
+		return out, err
+	}
 }
 
 func runCodeInstall(cmd *cobra.Command, args []string) error {
@@ -678,16 +713,7 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	probe := probeSSHArgs(connectcore.BuildSSHArgs(target, privPath, ""))
-	run := func(script string) (string, error) {
-		var out string
-		err := sshWithKeyWait(ctx, kw, probe, func() error {
-			var e error
-			out, e = sshExec(diag, buildClaudeSSHArgs(target, privPath, script))
-			return e
-		})
-		return out, err
-	}
+	run := codeSSHRunner(ctx, kw, target, privPath, diag)
 
 	// #1727: resolve the engine and its credential source from the flags, and
 	// run the credential source's own install-time preflight BEFORE installing
@@ -713,6 +739,16 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// #3512: a bundle URL may be one-shot. Confirm the SSH path and the bundle
+	// step's needs before the first script, so a dead host or a read-only
+	// home fails here, with nothing installed and the URL untouched.
+	bootstrapURL := strings.TrimSpace(codeBootstrapURL)
+	if bootstrapURL != "" {
+		if err := bootstrapPreflight(ctx, kw, target, privPath, box); err != nil {
+			return err
+		}
+	}
+
 	if _, err := run(plan.engine.InstallScript(installOpts)); err != nil {
 		return fmt.Errorf("install %s on %q: %w", plan.engine.Name(), box, err)
 	}
@@ -732,9 +768,9 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(diag, "✓ SDLC skills (%s) installed on %s (from %s)\n", skillSets, box, release)
 	}
 
-	if url := strings.TrimSpace(codeBootstrapURL); url != "" {
-		if _, err := run(bootstrapScript(url)); err != nil {
-			return fmt.Errorf("apply bootstrap bundle on %q: %w", box, err)
+	if bootstrapURL != "" {
+		if err := applyBootstrapBundle(box, bootstrapURL, run); err != nil {
+			return err
 		}
 		fmt.Fprintf(diag, "✓ bootstrap bundle applied on %s\n", box)
 	}
@@ -764,6 +800,10 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 	}
 	stdout := cmd.OutOrStdout()
 	fmt.Fprintf(stdout, "✓ %s verified on %s:\n%s\n", plan.engine.Name(), box, strings.TrimSpace(out))
+	// Only now, with the install verified, is there something true to record.
+	if agent, ok := codingAgentForEngine(plan.engine.Name()); ok {
+		recordCodingAgentFn(ctx, box, agent, diag)
+	}
 	fmt.Fprint(stdout, codeNextStepsHelp(box, plan))
 	return nil
 }

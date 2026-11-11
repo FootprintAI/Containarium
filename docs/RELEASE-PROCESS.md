@@ -17,10 +17,13 @@ that matters.
 
 ## Files to change when cutting a release
 
-1. **`CHANGELOG.md`** — move the `## [Unreleased]` section's contents (or
-   add new entries) under a new `## [X.Y.Z] - YYYY-MM-DD` heading, above
-   the previous release. Keep an empty `## [Unreleased]` heading at the
-   top for the next round of changes. Follow [Keep a
+1. **`CHANGELOG.md`** — run `scripts/changelog-assemble.sh X.Y.Z`. It moves
+   everything under `## [Unreleased]` and every fragment in `changelog.d/`
+   (one file per PR; see `changelog.d/README.md`) under a new
+   `## [X.Y.Z] - YYYY-MM-DD` heading, above the previous release, leaves an
+   empty `## [Unreleased]` heading at the top, and deletes the fragments.
+   Review the result and edit the wording if needed. The tag build fails
+   while fragments remain. Follow [Keep a
    Changelog](https://keepachangelog.com/en/1.0.0/) categories (`Added`,
    `Fixed`, `Changed`, etc.).
 2. **`pkg/version/version.go`** — bump the `Version` constant to match
@@ -170,7 +173,11 @@ Before merging the release PR, check each:
   "Upgrading" heading in the changelog that names the flag and what an operator
   must do first. v0.101.0 and v0.101.1 made `--sentinel-pin` mandatory on tunnel
   clients without saying so, and a tunnel host upgraded on release day could not
-  reconnect.
+  reconnect. The same applies to a new host-side prerequisite that a binary-only
+  upgrade does not install: ask "does this release need a host-side step?" and,
+  if it does, name the step under "Upgrading". v0.123.0 started refusing
+  `BUILD_TOOLS` runs on hosts with no managed toolchain release and listed the
+  feature only under "Added" (#3361).
 - **Paired changes.** If a change to a client needs a counterpart on the server
   (or the reverse), both halves are in this release. If the second half is not
   merged yet, the first half does not ship: revert it from the release branch or
@@ -186,7 +193,7 @@ rather than after.
 | --- | --- | --- | --- |
 | `release.yml` | 28 assets: the CLI for linux/darwin-amd64/darwin-arm64/windows (plus best-effort `-macos11` darwin builds from `scripts/build-macos11.sh`), MCP server and agent-box binaries for linux/darwin-amd64/darwin-arm64, the agent-runtime bundle (listed in `SHA256SUMS.txt`), the SDLC skills bundle + its `.sha256` (#2065), the air-gapped install bundle + its `.sha256`, the Helm chart `containarium-k8s-<version>.tgz` + its `.sha256`, four SPDX SBOMs (`containariumd`, `containarium`, `mcp-server`, `agent-box`, linux/amd64; #2561), and a generated `SHA256SUMS.txt` that lists the binaries, the SBOMs, the agent-runtime bundle, the SDLC skills bundle and (appended by the `helm-chart` job, which downloads, appends and re-uploads the file before signing; #2702) the chart `.tgz`, and a keyless cosign `<file>.sigstore.json` for each of those files (the `sign-release` job, #2561). The `helm-chart` job also pushes the chart to GHCR as an OCI artifact (`oci://ghcr.io/<org>/charts/containarium-k8s`), and the `model-gateway-image` job pushes `ghcr.io/<org>/containarium-model-gateway` with its keyless cosign signature (by digest) | GitHub Release on the tag, and GHCR | Release assets are deletable, but anyone who already pulled has them; treat a published OCI chart version as permanent |
 | `containarium-daemon.yml` | Daemon container image, plus its keyless cosign signature (by digest) | `ghcr.io/footprintai/containarium` | Tag is mutable in principle; treat as published |
-| `sidecars.yml` | `containarium-otel-sidecar`, `containarium-sshpiper`, `containarium-agent-box` images, each with its keyless cosign signature (by digest) | `ghcr.io` | Same |
+| `sidecars.yml` | `containarium-otel-sidecar`, `containarium-sshpiper`, `containarium-agent-box` and `containarium-slides-agent` (the `slides-agent` recipe image) images, each with its keyless cosign signature (by digest) | `ghcr.io` | Same |
 | `distros-py-release.yml` | `containarium-telemetry` Python package | **PyPI** | **No.** PyPI does not allow re-uploading a version, even after deletion |
 
 The PyPI one deserves particular care: per `TELEMETRY-DISTRO-DESIGN.md`

@@ -34,14 +34,24 @@ func backupTools() []Tool {
 				"age public key before storage, so the platform only holds " +
 				"ciphertext. 'key_mode' selects who holds the key on a daemon " +
 				"with a backup KMS key configured ('managed': a per-backup key " +
-				"wrapped by the KMS; 'both': managed plus the age recipient). " +
-				"Mirrors `containarium backup create`.",
+				"wrapped by the KMS; 'both': managed plus the age recipient). 'require_encryption' refuses " +
+				"a backup that would be stored unencrypted. " +
+				"scope 'box' backs up the tenant's whole box instead of a database " +
+				"(its filesystem and attached volumes, exported through Incus, always " +
+				"encrypted): it needs key_mode and takes only dest, gcs_bucket and " +
+				"age_recipient besides; restore it with restore_box_backup. " +
+				"Mirrors `containarium backup create` (scope 'box': `backup create --box`).",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"username": map[string]interface{}{
 						"type":        "string",
-						"description": "Tenant whose container holds the database.",
+						"description": "Tenant whose container holds the database (scope 'box': whose box is backed up).",
+					},
+					"scope": map[string]interface{}{
+						"type":        "string",
+						"description": "What to back up: 'database' (default) dumps a database; 'box' backs up the whole box, like `backup create --box`. A box backup needs key_mode and refuses database, hook, hook_format, label, db_user and db_password before any request is sent.",
+						"enum":        []string{"database", "box"},
 					},
 					"database": map[string]interface{}{
 						"type":        "string",
@@ -85,6 +95,10 @@ func backupTools() []Tool {
 						"type":        "string",
 						"description": "Who holds the key (#2402). 'managed': encrypt to a fresh per-backup identity whose secret the daemon wraps with its KMS key and stores on the record; 'both': managed plus the age recipient, so either opens the file; 'age_recipient': the recipient only, no wrapping. Omit for the daemon default (managed/both when a backup KMS key is configured, otherwise the recipient/plaintext behaviour). A mode the daemon cannot provide is refused, not downgraded. The daemon never unwraps: restore/verify still take the identity, unwrapped under your own KMS credentials.",
 						"enum":        []string{"age_recipient", "managed", "both"},
+					},
+					"require_encryption": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Refuse the backup (FAILED_PRECONDITION, before any container is touched, so nothing is stored) if it would be stored unencrypted: no age_recipient given or registered for the tenant and no managed backup key on the daemon. Default false. Mirrors `containarium backup create --require-encryption`.",
 					},
 				},
 				"required": []string{"username"},
@@ -151,7 +165,11 @@ func backupTools() []Tool {
 				"came from is never touched, and a target that resolves to it is " +
 				"refused. A dump that fails to load is reported as a failed " +
 				"verification with the engine's own error, not as a tool error. The " +
-				"outcome is recorded on the backup as audit evidence. Mirrors " +
+				"outcome is recorded on the backup as audit evidence. A whole-box " +
+				"backup is restored into a scratch box instead, its files compared " +
+				"with the manifest of digests and the scratch box deleted; set " +
+				"target_username to the backup's own tenant. A comparison cut short " +
+				"by the 15-minute cap is INCOMPLETE, never a pass. Mirrors " +
 				"`containarium backup verify`.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
@@ -178,6 +196,7 @@ func backupTools() []Tool {
 			Handler: handleVerifyBackup,
 		},
 	}
+	tools = append(tools, restoreBoxBackupTool())
 	// restore_backup and verify_backup share the CLI's key/selection flags (#2403).
 	for _, t := range tools {
 		if t.Name == "restore_backup" || t.Name == "verify_backup" {
@@ -192,14 +211,21 @@ func backupTools() []Tool {
 
 func handleCreateBackup(client API, args map[string]interface{}) (string, error) {
 	dest := getStringArg(args, "dest", "local")
-	var destEnum string
+	var destination pb.BackupDestination
 	switch dest {
 	case "local":
-		destEnum = "BACKUP_DESTINATION_LOCAL"
+		destination = pb.BackupDestination_BACKUP_DESTINATION_LOCAL
 	case "gcs":
-		destEnum = "BACKUP_DESTINATION_GCS"
+		destination = pb.BackupDestination_BACKUP_DESTINATION_GCS
 	default:
 		return "", fmt.Errorf("invalid dest %q (expected 'local' or 'gcs')", dest)
+	}
+	switch scope := getStringArg(args, "scope", "database"); scope {
+	case "database":
+	case "box":
+		return handleCreateBoxBackup(client, args, destination)
+	default:
+		return "", fmt.Errorf("invalid scope %q (expected 'database' or 'box')", scope)
 	}
 
 	database := getStringArg(args, "database", "")
@@ -217,13 +243,15 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 	}
 	resp, err := client.CreateBackup(CreateBackupRequest{
 		Username:     getStringArg(args, "username", ""),
-		Destination:  destEnum,
+		Destination:  destination.String(),
 		GCSBucket:    getStringArg(args, "gcs_bucket", ""),
 		Hook:         hook,
 		Label:        getStringArg(args, "label", ""),
 		HookFormat:   hookFormat,
 		AgeRecipient: getStringArg(args, "age_recipient", ""),
 		KeyMode:      keyMode,
+
+		RequireEncryption: getBoolArg(args, "require_encryption", false),
 		Connection: &PgConnectionBody{
 			Database: database,
 			User:     getStringArg(args, "db_user", ""),
@@ -262,17 +290,27 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 // daemon default — and an unknown value is refused here rather than
 // bounced by the gateway as an opaque 400.
 func keyModeEnumName(arg string) (string, error) {
+	m, err := keyModeArg(arg)
+	if err != nil || m == pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED {
+		return "", err
+	}
+	return m.String(), nil
+}
+
+// keyModeArg maps the tool's key_mode argument to the proto enum. Empty is
+// UNSPECIFIED; an unknown value is refused.
+func keyModeArg(arg string) (pb.BackupKeyMode, error) {
 	switch arg {
 	case "":
-		return "", nil
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED, nil
 	case "age_recipient":
-		return "BACKUP_KEY_MODE_AGE_RECIPIENT", nil
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_AGE_RECIPIENT, nil
 	case "managed":
-		return "BACKUP_KEY_MODE_MANAGED", nil
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_MANAGED, nil
 	case "both":
-		return "BACKUP_KEY_MODE_BOTH", nil
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_BOTH, nil
 	default:
-		return "", fmt.Errorf("invalid key_mode %q (expected 'age_recipient', 'managed' or 'both')", arg)
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED, fmt.Errorf("invalid key_mode %q (expected 'age_recipient', 'managed' or 'both')", arg)
 	}
 }
 
@@ -388,10 +426,12 @@ func handleVerifyBackup(client API, args map[string]interface{}) (string, error)
 	if v == nil {
 		return "", fmt.Errorf("daemon returned no verification result")
 	}
-	passed := v.Result == "VERIFICATION_RESULT_PASSED"
-	if passed {
+	switch v.Result {
+	case "VERIFICATION_RESULT_PASSED":
 		fmt.Fprintf(&b, "✅ %s\n\n", resp.Message)
-	} else {
+	case "VERIFICATION_RESULT_INCOMPLETE":
+		fmt.Fprintf(&b, "⚠️ %s\n\n", resp.Message)
+	default:
 		fmt.Fprintf(&b, "❌ %s\n\n", resp.Message)
 	}
 	for _, c := range v.Checks {
@@ -401,7 +441,11 @@ func handleVerifyBackup(client API, args map[string]interface{}) (string, error)
 		}
 		fmt.Fprintf(&b, "  %s %-18s %s\n", mark, c.Name, c.Detail)
 	}
-	fmt.Fprintf(&b, "\n  target: %s (scratch db %s, dropped)\n", v.TargetContainer, v.ScratchDatabase)
+	if v.ScratchDatabase == "" {
+		fmt.Fprintf(&b, "\n  target: %s (scratch box, deleted)\n", v.TargetContainer)
+	} else {
+		fmt.Fprintf(&b, "\n  target: %s (scratch db %s, dropped)\n", v.TargetContainer, v.ScratchDatabase)
+	}
 	fmt.Fprintf(&b, "  when:   %s", v.VerifiedAt)
 	if v.VerifiedBy != "" {
 		fmt.Fprintf(&b, " by %s", v.VerifiedBy)

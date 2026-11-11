@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/footprintai/containarium/internal/client"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
@@ -27,6 +28,8 @@ var (
 	backupCreateHookFormat string
 	// #2801
 	backupCreateBox bool
+	// #3169
+	backupCreateRequireEncryption bool
 )
 
 var backupCreateCmd = &cobra.Command{
@@ -68,7 +71,14 @@ of passing --age-recipient on every run:
 A create with no --age-recipient flag then encrypts to that registered
 key automatically; an explicit --age-recipient still overrides it for a
 one-off call. Neither a tenant with no key registered nor a standalone
-daemon (no secrets store) is an error — both mean plaintext, as today.
+daemon (no secrets store) is an error — both mean plaintext, as today:
+the dump is stored unencrypted, the output says "Encrypted: no" with a
+WARNING, and the record carries encrypted: false. Pass
+--require-encryption to refuse that instead: the backup then fails with
+a message naming the tenant, and no object is written. Secrets are
+stored per daemon, so a container copied to another host arrives without
+its registered recipient; re-register it there before the first backup
+('backup status' lists configured tenants that have none).
 
 Managed keys (--key-mode): on a daemon configured with a backup KMS key
 (CONTAINARIUM_BACKUP_KMS_KEY_NAME), each backup is encrypted to a fresh
@@ -103,6 +113,8 @@ Examples:
   containarium backup create alice --hook /opt/backup/pg-dump-fc.sh \
       --hook-format pg_custom --dest local --server <host>
   containarium backup create alice --database app --age-recipient age1... \
+      --dest gcs --gcs-bucket gs://my-backups/pg --server <host>
+  containarium backup create alice --database app --require-encryption \
       --dest gcs --gcs-bucket gs://my-backups/pg --server <host>`,
 	Args: cobra.ExactArgs(1),
 	RunE: runBackupCreate,
@@ -123,6 +135,7 @@ func init() {
 	f.StringVar(&backupCreateHookFormat, "hook-format", "", "declared format of the --hook output: 'opaque' (default) or 'pg_custom' (a pg_dump -Fc archive, restore-testable)")
 	f.StringVar(&backupCreateAgeRecipient, "age-recipient", "", "age public key (age1...) to encrypt the dump to before it is stored; restore needs the matching identity")
 	f.BoolVar(&backupCreateBox, "box", false, "back up the whole box instead of a database; needs --key-mode (#2801)")
+	f.BoolVar(&backupCreateRequireEncryption, "require-encryption", false, "fail instead of storing the dump unencrypted when no age recipient is given or registered and the daemon has no managed key (#3169)")
 	f.StringVar(&backupCreateKeyMode, "key-mode", "", "who holds the key: 'managed' (KMS-wrapped per-backup key), 'both' (managed plus --age-recipient), 'age-recipient' (no wrapping); omit for the daemon default (#2402)")
 }
 
@@ -174,6 +187,9 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 		HookFormat:   hookFormat,
 		AgeRecipient: backupCreateAgeRecipient,
 		KeyMode:      keyMode,
+		// #3169: only the daemon resolves the registered recipient, so
+		// only it can tell whether this dump would be plaintext.
+		RequireEncryption: backupCreateRequireEncryption,
 		Connection: &pb.PgConnection{
 			Database: backupCreateDatabase,
 			User:     backupCreateDBUser,
@@ -189,6 +205,10 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 	printCreatedBackups(resp)
 	return nil
 }
+
+// createBoxBackupFn is the whole-box backup the platform MCP tool
+// create_backup (scope "box") also calls (CLI-first, CLAUDE.md, #3504).
+var createBoxBackupFn = client.CreateBoxBackup
 
 // runBackupCreateBox sends a BOX-scope create (#2801). The flags that only
 // mean something for a database backup are refused rather than ignored, and
@@ -216,18 +236,11 @@ func runBackupCreateBox(username string, dest pb.BackupDestination, keyMode pb.B
 		return fmt.Errorf("--box needs --key-mode (managed, both or age-recipient): a whole-box backup is never plaintext")
 	}
 
-	c, err := newBackupClientFn()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = c.Close() }()
-
 	fmt.Printf("Backing up the whole box of %s to %s (key mode %s)...\n", username, backupCreateDest, keyModeLabel(keyMode))
-	resp, err := c.CreateBackup(&pb.CreateBackupRequest{
-		Username:     username,
-		Scope:        pb.BackupScope_BACKUP_SCOPE_BOX,
+	resp, err := createBoxBackupFn(func() (client.BoxBackupAPI, error) { return newBackupClientFn() }, client.BoxBackupParams{
+		Box:          username,
 		Destination:  dest,
-		GcsBucket:    backupCreateBucket,
+		GCSBucket:    backupCreateBucket,
 		AgeRecipient: backupCreateAgeRecipient,
 		KeyMode:      keyMode,
 	})
@@ -239,6 +252,10 @@ func runBackupCreateBox(username string, dest pb.BackupDestination, keyMode pb.B
 }
 
 // printCreatedBackups renders a CreateBackup response.
+//
+// scripts/backup-all-tenants.sh greps this output for the exact text
+// "Encrypted: no" to flag plaintext tenants (#3169). Do not reword that line
+// without updating the script; TestPrintCreatedBackups_ScriptContract pins it.
 func printCreatedBackups(resp *pb.CreateBackupResponse) {
 	fmt.Printf("\n✓ %s\n", resp.Message)
 	for _, r := range resp.Records {
@@ -252,6 +269,11 @@ func printCreatedBackups(resp *pb.CreateBackupResponse) {
 		fmt.Printf("      Location: %s\n", r.Location)
 		if r.Encrypted {
 			fmt.Printf("      Encrypted: yes (to %s)\n", r.AgeRecipient)
+		} else if r.KeyMode != pb.BackupKeyMode_BACKUP_KEY_MODE_MANAGED && r.KeyMode != pb.BackupKeyMode_BACKUP_KEY_MODE_BOTH {
+			// #3169: say so when no key protects the dump, instead of
+			// leaving the absence of a line to be noticed.
+			fmt.Printf("      Encrypted: no\n")
+			fmt.Printf("      WARNING: backup %s was stored UNENCRYPTED (no age recipient registered or given)\n", r.Id)
 		}
 		if r.KeyMode == pb.BackupKeyMode_BACKUP_KEY_MODE_MANAGED || r.KeyMode == pb.BackupKeyMode_BACKUP_KEY_MODE_BOTH {
 			fmt.Printf("      Key mode: %s (key version %s)\n", keyModeLabel(r.KeyMode), r.KekId)

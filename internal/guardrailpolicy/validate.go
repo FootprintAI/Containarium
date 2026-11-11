@@ -3,6 +3,8 @@ package guardrailpolicy
 import (
 	"crypto/ed25519"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -47,6 +49,37 @@ func Validate(policy *pb.GuardrailPolicy, signers []*pb.GuardrailTrustedSigner) 
 	}
 	return nil
 }
+
+// ValidateSetRequest is Validate plus the revoked keys (#2729): each has a
+// key_id of 64 lowercase hex characters and a reason, appears once, and is
+// not also a trusted signer. Whether the request keeps every stored
+// revocation is CheckTransition's job, under the store's lock.
+func ValidateSetRequest(req *pb.SetGuardrailPolicyRequest) error {
+	if err := Validate(req.GetPolicy(), req.GetTrustedSigners()); err != nil {
+		return err
+	}
+	revoked := make(map[string]bool, len(req.GetRevokedSigners()))
+	for i, r := range req.GetRevokedSigners() {
+		if !keyIDPattern.MatchString(r.GetKeyId()) {
+			return fmt.Errorf("revoked key %d: key_id %q is not 64 lowercase hex characters (a SHA-256)", i, r.GetKeyId())
+		}
+		if strings.TrimSpace(r.GetReason()) == "" {
+			return fmt.Errorf("revoked key %d (%s): a reason is required", i, r.GetKeyId())
+		}
+		if revoked[r.GetKeyId()] {
+			return fmt.Errorf("revoked key %d: %s is revoked twice", i, r.GetKeyId())
+		}
+		revoked[r.GetKeyId()] = true
+	}
+	for i, s := range req.GetTrustedSigners() {
+		if revoked[s.GetKeyId()] {
+			return fmt.Errorf("trusted signer %d (%q): key %s is revoked and cannot be trusted again", i, s.GetLabel(), s.GetKeyId())
+		}
+	}
+	return nil
+}
+
+var keyIDPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func definedKind(k pb.GuardrailKind) bool {
 	return k.Descriptor().Values().ByNumber(k.Number()) != nil

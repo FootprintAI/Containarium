@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/footprintai/containarium/internal/agentbox"
+	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/coderun"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -143,30 +144,36 @@ type runInputsState struct {
 	events  []coderun.InputEvent
 }
 
+// boxRunRunning reports whether run name on box is running. NotFound when
+// there is no run record by that name.
+func (s *ContainerServer) boxRunRunning(box, username, name string) (bool, error) {
+	exec := s.boxRunExecFn()
+	if exec == nil {
+		return false, status.Error(codes.Unavailable, "no container backend to read the run on")
+	}
+	out, err := exec(box, boxRunListScript(s.boxRunDir()))
+	if err != nil {
+		return false, status.Errorf(codes.Unavailable, "read run records of %q: %v", username, err)
+	}
+	views, boot, alive := parseBoxRunViews(out)
+	for _, v := range views {
+		if v.fileName == name {
+			return agentbox.ResolveOutcome(v.record, boot, func(pid int) bool { return pid > 0 && alive[pid] }) == agentbox.RunOutcomeRunning, nil
+		}
+	}
+	return false, status.Errorf(codes.NotFound, "no run named %q on %q", name, username)
+}
+
 // readRunInputs reads the run's record and journal. NotFound when there is no
 // run by that name.
 func (s *ContainerServer) readRunInputs(box, username, name string) (runInputsState, error) {
-	exec := s.boxRunExecFn()
-	if exec == nil {
-		return runInputsState{}, status.Error(codes.Unavailable, "no container backend to read the run on")
-	}
-	dir := s.boxRunDir()
-	out, err := exec(box, boxRunListScript(dir))
+	running, err := s.boxRunRunning(box, username, name)
 	if err != nil {
-		return runInputsState{}, status.Errorf(codes.Unavailable, "read run records of %q: %v", username, err)
+		return runInputsState{}, err
 	}
-	views, boot, alive := parseBoxRunViews(out)
-	var st runInputsState
-	found := false
-	for _, v := range views {
-		if v.fileName == name {
-			found = true
-			st.running = agentbox.ResolveOutcome(v.record, boot, func(pid int) bool { return pid > 0 && alive[pid] }) == agentbox.RunOutcomeRunning
-		}
-	}
-	if !found {
-		return runInputsState{}, status.Errorf(codes.NotFound, "no run named %q on %q", name, username)
-	}
+	st := runInputsState{running: running}
+	exec := s.boxRunExecFn()
+	dir := s.boxRunDir()
 	jout, err := exec(box, runInputsJournalScript(dir, name, s.journalCap()))
 	if err != nil {
 		return runInputsState{}, status.Errorf(codes.Unavailable, "read the permission requests of run %q: %v", name, err)
@@ -321,6 +328,23 @@ echo written
 `, q(answersDir), q(content), q(id))
 }
 
+// requireAnswerScope is the second half of AnswerRunInput's access rule
+// (#3191): beyond the box-run rule, the caller's token must name code:answer.
+// The box-run rule alone admits the owner's own token, which the agent can hold
+// (an owner who runs `containarium login` inside the box leaves it in
+// ~/.containarium/credentials.json), and an allow from that token is the agent
+// approving itself. Matched literally: a skill run's in-box token can be "*",
+// and a login token can carry no scopes claim at all; neither answers.
+func requireAnswerScope(ctx context.Context) error {
+	if auth.HasLiteralScope(ctx, auth.ScopeCodeAnswer) {
+		return nil
+	}
+	return status.Errorf(codes.PermissionDenied,
+		"scope required: %s (answering permission requests needs a token that names it; the wildcard and unscoped tokens do not count). "+
+			"Mint one off the box with 'containarium token generate --secret-file <file> --username <you> --scopes %s,%s'; see 'containarium code answer --help'",
+		auth.ScopeCodeAnswer, auth.ScopeSSHWrite, auth.ScopeCodeAnswer)
+}
+
 // AnswerRunInput answers one permission request of a box run.
 func (s *ContainerServer) AnswerRunInput(ctx context.Context, req *pb.AnswerRunInputRequest) (*pb.AnswerRunInputResponse, error) {
 	username, name, id := req.GetUsername(), req.GetRunName(), req.GetRequestId()
@@ -343,6 +367,9 @@ func (s *ContainerServer) AnswerRunInput(ctx context.Context, req *pb.AnswerRunI
 		return nil, status.Errorf(codes.InvalidArgument, "request_sha256 must be %d bytes: the SHA-256 of the tool call shown to whoever answered", sha256.Size)
 	}
 	if err := s.authorizeBoxRuns(ctx, username); err != nil {
+		return nil, err
+	}
+	if err := requireAnswerScope(ctx); err != nil {
 		return nil, err
 	}
 	priv, err := s.approvalKey(username)

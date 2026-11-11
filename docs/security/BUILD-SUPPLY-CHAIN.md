@@ -81,6 +81,9 @@ check with a checksum for each download.
 | --- | --- | --- | --- |
 | `scripts/install-xcaddy.sh` | curl | xcaddy release tarball for `make build-caddy`, `scripts/setup-caddy.sh`, `proxyproto-e2e.yml` | version + sha256 per platform in `scripts/xcaddy-version.env` (replaces `go install ...@latest`) |
 | `scripts/install-buf.sh` | curl | buf release binary | version + sha256 per platform in `scripts/buf-version.env` |
+| `scripts/ci/offline-install-vm.sh` | curl | Published offline bundle and official Ubuntu 24.04 Minimal VM image | Explicit release tag (default v0.121.0) and dated Ubuntu image (release-20261027); SHA256 verified against each publisher's checksum file and retained with the release commit in the evidence artifact. These same-origin checks establish integrity, not independent authenticity |
+| `scripts/ci/managed-key-verify.sh` | curl | Published `containariumd` and `containarium` Linux binaries, `SHA256SUMS.txt` and `.sigstore.json` bundles of two explicit release tags (the #3213 verification harness; defaults v0.122.0 and v0.120.2) | Explicit release tags. `SHA256SUMS.txt` and each binary are checked with `cosign verify-blob` against the exact `release.yml@refs/tags/<tag>` identity, then `sha256sum -c`; both binaries must be listed. Digests, commits and the runner image are retained in the evidence artifact. The harness never builds or runs a CI-built binary |
+| `scripts/ci/offline-install-guest.sh` | curl | The word `curl` in the required-command check | No fetch; the guest has no network adapter |
 | `.github/workflows/ebpf-load.yml` | curl | bpftool release tarball | version + sha256 (`BPFTOOL_VERSION`, `BPFTOOL_SHA256`) |
 | `.github/workflows/fence-probe-e2e.yml` | curl | bpftool release tarball (twice: the observation-only job and the split-egress job each fetch it) | version + sha256 |
 | `.github/workflows/release.yml` | curl | bpftool release tarball | version + sha256. The `curl` commands inside the release-notes heredoc are text shown to users, not fetches the build runs |
@@ -99,6 +102,9 @@ check with a checksum for each download.
 | File | Tool | What | Pinned how |
 | --- | --- | --- | --- |
 | `web-ui/Dockerfile` | npm ci | web UI dependencies | lockfile |
+| `images/slides-agent/Dockerfile` | npm install | `npm install -g pnpm@10.17.0`, the exact pnpm version upstream's `packageManager` field names | exact version from the npm registry; npm checks the tarball against the registry's integrity hash (same-origin) |
+| `images/slides-agent/Dockerfile` | pnpm install | open-slide core and demo workspace dependencies (then `pnpm deploy --prod` materialises the demo app with production dependencies only, from the same lockfile), after the pinned commit `1ce6bd5268efeaf4cc3bed28112ac770fc5f3b34` is fetched with `git fetch --depth 1 origin <sha>` and verified with `git rev-parse HEAD` | lockfile (`--frozen-lockfile --ignore-scripts`, upstream's `pnpm-lock.yaml` at the pinned commit; integrity hashes). The commit fetch is a `git fetch`, not a `git clone`, so the gate does not see it; the pin is the full SHA checked in the Dockerfile |
+| `images/slides-agent/Dockerfile` | xcaddy build | Caddy (`CADDY_VERSION`, a release tag) built from source with two dependency bumps (`--replace` of `golang.org/x/net` and `github.com/go-jose/go-jose/v4` to fixed versions) for the recipe image's auth proxy, because the upstream Caddy image's binary carries fixed HIGH findings | module version: the Go module proxy and checksum database verify every module; xcaddy itself comes from `scripts/install-xcaddy.sh` (version + sha256, listed above) |
 | `scripts/build-webui.sh` | npm ci | web UI dependencies | lockfile (was `npm install`) |
 | `Makefile` | npm ci | agent-runtime dependencies | lockfile |
 | `.github/workflows/agent-runtime.yml` | npm ci | agent-runtime dependencies | lockfile |
@@ -130,6 +136,7 @@ check with a checksum for each download.
 | `scripts/install-lab-phase-b.sh` | curl | Incus apt repository signing key | unpinned key fetch |
 | `scripts/setup-gpu-host.sh` | curl | NVIDIA and Incus apt signing keys and source list | unpinned |
 | `scripts/setup-gpu-host.sh` | wget | `wget` in an apt package list | not a build fetch |
+| `images/slides-agent/Dockerfile` | curl | `curl` in the runtime stage's apt package list (with chromium and fonts) | not a build fetch; apt resolves it against the Debian archive (see the apt category above) |
 | `scripts/setup-caddy.sh` | curl | `curl https://test.$DOMAIN` in a usage hint printed to the operator | not a build fetch |
 | `Makefile` | xcaddy build | `make build-caddy` builds Caddy `$(CADDY_VERSION)` with `--with` plugin modules (caddy-l4 and the DNS providers) | Caddy core version pinned; plugin modules float to the newest version the Go module proxy serves (the Go checksum database still verifies each download). Pinning each module would also change the list `TestCaddyModulesInSyncWithMakefile` reads, so it is a follow-up |
 | `scripts/setup-caddy.sh` | xcaddy build | Builds Caddy with one DNS plugin on a host | Caddy core and plugin float |
@@ -149,6 +156,7 @@ check with a checksum for each download.
 | `scripts/engineer-crew-e2e.sh` | curl | calls to the local gateway; HEAD request for the release bundle |
 | `scripts/two-engine-crew-e2e.sh` | curl | calls to the local gateway; HEAD request for the release bundle |
 | `scripts/ci/tunnel-smoke.sh` | curl | probe of a loopback test backend |
+| `scripts/ci/sentinel-outage-smoke.sh` | curl | HTTPS probe of the operator-provisioned outage fixture through the sentinel, checked against a fixed expected body with TLS verification; also a tool-availability check. No dependency is downloaded or executed |
 | `scripts/backup-scoped-token-e2e.sh` | curl | calls to the daemon under test through `$server`. It defaults to `http://localhost:8080` but can be overridden by `CONTAINARIUM_BACKUP_E2E_SERVER`, so the checker cannot prove it is loopback and the one `api` helper call that makes every request is listed rather than exempted |
 
 ## Adding a fetch

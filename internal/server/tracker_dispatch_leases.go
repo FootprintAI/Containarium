@@ -111,7 +111,7 @@ func (r trackerRunStarter) End(ctx context.Context, runID string) {
 	if !provisioned {
 		// Its row is already terminal, so its start report will lose the
 		// compare-and-set and launchDispatchedRun tears it down then.
-		log.Printf("[tracker] dispatched run %s: timed out while still provisioning; its lease is ended when provisioning returns", runID)
+		log.Printf("[tracker] dispatched run %q: timed out while still provisioning; its lease is ended when provisioning returns", runID)
 		return
 	}
 	r.agents.endDispatchedLease(ctx, h, dispatchSweepReason)

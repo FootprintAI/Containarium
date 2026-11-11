@@ -11,15 +11,19 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/limitio"
 	metricsPackage "github.com/footprintai/containarium/internal/metrics"
 	"github.com/footprintai/containarium/internal/metrics/cloudexport"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -36,7 +40,15 @@ type PeerClient struct {
 	Healthy    bool
 	LastSeenAt time.Time // Timestamp of last successful health check
 	client     *http.Client
-	scheme     string // "http" pre-Phase-0.5; "https" once PeerPool.BootstrapPKI succeeds
+
+	// static marks a peer added from --peers rather than found through the
+	// sentinel. Discovery neither removes a static peer nor rewrites its
+	// address, whatever its key looks like.
+	static bool
+	// shadowWarned limits the "sentinel lists a static peer's id" log line to
+	// once per peer instead of once per discovery tick.
+	shadowWarned bool
+	scheme       string // "http" pre-Phase-0.5; "https" once PeerPool.BootstrapPKI succeeds
 
 	// Cached system info from last discovery poll
 	CachedHostname       string
@@ -92,6 +104,10 @@ type PeerPool struct {
 	// peer.go then falls back to plain HTTP (pre-0.5 behavior).
 	pki *peerPKI
 
+	// plainHTTPLogOnce makes the "peer mTLS not enabled" notice a
+	// one-time line (#3079).
+	plainHTTPLogOnce sync.Once
+
 	// Capacity-aware placement ranking (#1029 direction 2). When
 	// capacityRanking is true and capacityTokenFn is set, the discovery loop
 	// also refreshes each healthy peer's CPU commitment, and
@@ -142,10 +158,18 @@ func NewPeerPool(localBackendID string, sentinelURL string, staticPeers []string
 
 	// Add static peers. They start on plain HTTP; BootstrapPKI
 	// upgrades them in place once the daemon fetches its cert.
-	for _, addr := range staticPeers {
-		p.peers[addr] = &PeerClient{
-			ID:   addr,
-			Addr: addr,
+	// The rules live in ParseStaticPeers. The daemon rejects a bad --peers
+	// at boot, so an error here only reaches other callers; they get no static
+	// peers (never a half-validated set) and a warning.
+	parsed, err := ParseStaticPeers(staticPeers, localBackendID)
+	if err != nil {
+		log.Printf("[peers] ignoring all static peers: %v", err)
+	}
+	for _, sp := range parsed {
+		p.peers[sp.ID] = &PeerClient{
+			ID:     sp.ID,
+			Addr:   sp.Addr,
+			static: true,
 			client: &http.Client{
 				Timeout: 30 * time.Second,
 			},
@@ -153,6 +177,105 @@ func NewPeerPool(localBackendID string, sentinelURL string, staticPeers []string
 	}
 
 	return p
+}
+
+// StaticPeer is one parsed --peers entry.
+type StaticPeer struct {
+	// ID is the peer's backend ID: its key in the peer pool, the value
+	// `move --target` takes, and the name of the incus remote that a move
+	// looks up. Without an explicit id it is the address.
+	ID string
+	// Addr is host:port of the peer's own daemon.
+	Addr string
+}
+
+// staticPeerIDPattern is the set of characters an explicit id may use. A move
+// needs the id to match an incus remote name exactly, and incus rejects only
+// ':' and '=' in a remote name, so this is a safe subset of what incus accepts:
+// no colon, slash or space, and not a leading hyphen. An existing remote named
+// outside this set cannot be matched by a static peer.
+var staticPeerIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// ParseStaticPeer parses one --peers entry. Two forms are accepted:
+//
+//	host:port        the entry is both the address and the id (the original
+//	                 form, accepted as-is so existing configs keep working)
+//	id=host:port     an explicit id, validated strictly
+//
+// An address-only peer cannot be a move target, because the address contains
+// a colon and so cannot be an incus remote name. Give a peer an explicit id
+// to move containers to it.
+func ParseStaticPeer(entry string) (StaticPeer, error) {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return StaticPeer{}, fmt.Errorf("empty peer entry")
+	}
+
+	// The form is chosen by the first '=': an entry without one is an
+	// address-only peer (accepted as-is for back-compat), and one with it is
+	// id=addr, so an address-only entry can never itself contain '='.
+	i := strings.Index(entry, "=")
+	if i < 0 {
+		return StaticPeer{ID: entry, Addr: entry}, nil
+	}
+
+	id, addr := entry[:i], entry[i+1:]
+	if !staticPeerIDPattern.MatchString(id) {
+		return StaticPeer{}, fmt.Errorf("peer %q: id %q must be letters, digits, '.', '_' or '-', starting with a letter or digit", entry, id)
+	}
+	if strings.HasPrefix(id, discoveredPeerIDPrefix) {
+		return StaticPeer{}, fmt.Errorf("peer %q: id %q uses the %q prefix reserved for sentinel-discovered peers", entry, id, discoveredPeerIDPrefix)
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host == "" || port == "" || strings.Contains(addr, "=") {
+		return StaticPeer{}, fmt.Errorf("peer %q: address %q must be host:port (an IPv6 host needs brackets: [::1]:8080)", entry, addr)
+	}
+	if n, perr := strconv.ParseUint(port, 10, 16); perr != nil || n == 0 {
+		return StaticPeer{}, fmt.Errorf("peer %q: port %q must be a number from 1 to 65535", entry, port)
+	}
+	return StaticPeer{ID: id, Addr: addr}, nil
+}
+
+// ParseStaticPeers parses every --peers entry. A blank entry (a trailing
+// comma on the flag) is ignored, and an entry repeated exactly is collapsed,
+// as the old map-keyed code did. It rejects what would be ambiguous: two
+// peers sharing an id, one address listed under two ids (every container would
+// appear twice), and an id equal to this daemon's own backend id.
+func ParseStaticPeers(entries []string, localBackendID string) ([]StaticPeer, error) {
+	peers := make([]StaticPeer, 0, len(entries))
+	byID := make(map[string]StaticPeer, len(entries))
+	byFolded := make(map[string]StaticPeer, len(entries))
+	byAddr := make(map[string]StaticPeer, len(entries))
+	for _, entry := range entries {
+		if strings.TrimSpace(entry) == "" {
+			continue
+		}
+		sp, err := ParseStaticPeer(entry)
+		if err != nil {
+			return nil, err
+		}
+		if sp.ID == localBackendID {
+			return nil, fmt.Errorf("peer %q: id %q is this daemon's own backend id", entry, sp.ID)
+		}
+		if prev, ok := byID[sp.ID]; ok {
+			if prev == sp {
+				continue
+			}
+			return nil, fmt.Errorf("peers %q and %q share the id %q", prev.ID+"="+prev.Addr, entry, sp.ID)
+		}
+		// Ids that differ only by case would name one incus remote twice.
+		if prev, ok := byFolded[strings.ToLower(sp.ID)]; ok {
+			return nil, fmt.Errorf("peers %q and %q have ids that differ only by case", prev.ID+"="+prev.Addr, entry)
+		}
+		if prev, ok := byAddr[sp.Addr]; ok {
+			return nil, fmt.Errorf("address %q is listed under two ids: %q and %q", sp.Addr, prev.ID, sp.ID)
+		}
+		byID[sp.ID] = sp
+		byFolded[strings.ToLower(sp.ID)] = sp
+		byAddr[sp.Addr] = sp
+		peers = append(peers, sp)
+	}
+	return peers, nil
 }
 
 // BootstrapPKI fetches a leaf cert from the sentinel and wires it
@@ -197,6 +320,82 @@ func (p *PeerPool) BootstrapPKI(ctx context.Context) error {
 	return nil
 }
 
+// PeerMTLSEnabled reports whether this daemon's peer calls use the
+// sentinel-issued leaf cert and pinned peer CA. False when the bootstrap
+// was skipped, failed, or has not run. Nil-safe.
+func (p *PeerPool) PeerMTLSEnabled() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.pki != nil
+}
+
+// PeerTransportRelevant reports whether this daemon has any peer calls to
+// describe: a sentinel URL (discovery can add peers at any time) or at least
+// one peer. Evaluated at read time so peers added later are picked up. A
+// standalone daemon (no sentinel, no peers) makes no peer calls. Nil-safe.
+func (p *PeerPool) PeerTransportRelevant() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.sentinelURL != "" || len(p.peers) > 0
+}
+
+// PeerMTLSState returns (enabled, relevant) for the metric probe.
+func (p *PeerPool) PeerMTLSState() (enabled, relevant bool) {
+	return p.PeerMTLSEnabled(), p.PeerTransportRelevant()
+}
+
+// peerTransportOf maps a pool to the PeerTransport reported in
+// SystemInfo. A nil pool is UNSPECIFIED (no peer calls to describe).
+func peerTransportOf(p *PeerPool) pb.PeerTransport {
+	if !p.PeerTransportRelevant() {
+		return pb.PeerTransport_PEER_TRANSPORT_UNSPECIFIED
+	}
+	if p.PeerMTLSEnabled() {
+		return pb.PeerTransport_PEER_TRANSPORT_MTLS
+	}
+	return pb.PeerTransport_PEER_TRANSPORT_HTTP
+}
+
+// LogPlainHTTPOnce logs, at most once per pool, that peer mTLS is not
+// enabled and daemon-to-peer calls use plain HTTP. reason is the bootstrap
+// error, or nil when the bootstrap was skipped. It is a supported
+// configuration, so this is a notice, not an error (#3079). It states only
+// the peer-call transport; it says nothing about other transports such as
+// the sentinel-backend tunnel. No-op when peer mTLS is active or the daemon has no sentinel and no peers.
+func (p *PeerPool) LogPlainHTTPOnce(reason error) {
+	if p.PeerMTLSEnabled() || !p.PeerTransportRelevant() {
+		return
+	}
+	p.plainHTTPLogOnce.Do(func() {
+		if reason != nil {
+			log.Printf("[peer-pki] peer mTLS not enabled: peer-to-peer calls use plain HTTP (%v). Visible as peer_transport in system info and containarium.peer.mtls.enabled", reason)
+			return
+		}
+		log.Printf("[peer-pki] peer mTLS not enabled: peer-to-peer calls use plain HTTP. Visible as peer_transport in system info and containarium.peer.mtls.enabled")
+	})
+}
+
+// EnforceStrictPeerTLS turns the plain-HTTP peer fallback into an error when
+// strict is set (#3517): a daemon with peer calls to make but no peer mTLS
+// refuses to run rather than silently carry them over http. reason is the
+// bootstrap error, or nil when the bootstrap was skipped. With strict false,
+// or with no peer calls to describe, it returns nil (default unchanged).
+func (p *PeerPool) EnforceStrictPeerTLS(strict bool, reason error) error {
+	if !strict || p.PeerMTLSEnabled() || !p.PeerTransportRelevant() {
+		return nil
+	}
+	if reason != nil {
+		return fmt.Errorf("peer mTLS is required (--require-peer-mtls) but bootstrap failed: %w", reason)
+	}
+	return fmt.Errorf("peer mTLS is required (--require-peer-mtls) but bootstrap was skipped (no sentinel URL or HMAC secret)")
+}
+
 // buildPeerHTTPClient returns an http.Client wired to present the
 // daemon's leaf cert and verify peer / sentinel server certs
 // against the pinned CA. When `pki` is nil, returns a plain client
@@ -218,14 +417,22 @@ func buildPeerHTTPClient(pki *peerPKI) *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:    pki.CACertPool(),
-				MinVersion: tls.VersionTLS12,
-				GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
-					cert := pki.ClientCertificate()
-					return &cert, nil
-				},
-			},
+			TLSClientConfig: peerTLSConfig(pki),
+		},
+	}
+}
+
+// peerTLSConfig is the client TLS config for peer calls: verify against the
+// pinned pool CA and present the daemon's leaf (read per handshake, so a
+// renewal applies without a rebuild). Shared by the HTTPS client and the
+// terminal WebSocket dial.
+func peerTLSConfig(pki *peerPKI) *tls.Config {
+	return &tls.Config{
+		RootCAs:    pki.CACertPool(),
+		MinVersion: tls.VersionTLS12,
+		GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			cert := pki.ClientCertificate()
+			return &cert, nil
 		},
 	}
 }
@@ -417,8 +624,9 @@ func (p *PeerPool) discover() {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
+		log.Printf("[peers] discovery failed: read response: %v", err)
 		return
 	}
 
@@ -471,6 +679,13 @@ func (p *PeerPool) discover() {
 		peerAddr := fmt.Sprintf("%s:%s%s", sentinelHost, sentinelPort, peer.ProxyPath)
 
 		if existing, ok := p.peers[peer.ID]; ok {
+			if existing.static {
+				if !existing.shadowWarned {
+					log.Printf("[peers] sentinel lists %q, which is also a static peer; keeping the static address", peer.ID)
+					existing.shadowWarned = true
+				}
+				continue
+			}
 			existing.Addr = peerAddr
 			existing.Pool = peer.Pool
 			existing.Healthy = peer.Healthy
@@ -499,7 +714,7 @@ func (p *PeerPool) discover() {
 	// Remove peers that are no longer in the sentinel's list
 	// (but don't remove static peers)
 	for id := range p.peers {
-		if !discovered[id] && isDiscoveredPeer(id) {
+		if !discovered[id] && !p.peers[id].static && isDiscoveredPeer(id) {
 			log.Printf("[peers] peer removed: %s", id)
 			delete(p.peers, id)
 		}
@@ -756,7 +971,7 @@ func (pc *PeerClient) fetchContainers(authToken string) ([]incus.ContainerInfo, 
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -875,7 +1090,7 @@ func (pc *PeerClient) ForwardCreateContainer(authToken string, pbReq *pb.CreateC
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -946,7 +1161,7 @@ func (pc *PeerClient) ForwardRequestCtx(ctx context.Context, method, path, authT
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, resp.StatusCode, err
 	}
@@ -1250,9 +1465,14 @@ func extractPort(rawURL string) string {
 	return "8888" // default
 }
 
+// discoveredPeerIDPrefix marks a peer found through the sentinel. Discovery
+// drops any pool key with this prefix that the sentinel stops listing, so a
+// static peer must not use it.
+const discoveredPeerIDPrefix = "tunnel-"
+
 // isDiscoveredPeer returns true if the peer ID looks like a tunnel-discovered peer.
 func isDiscoveredPeer(id string) bool {
-	return len(id) > 7 && id[:7] == "tunnel-"
+	return len(id) > len(discoveredPeerIDPrefix) && strings.HasPrefix(id, discoveredPeerIDPrefix)
 }
 
 // PeerTerminalURL implements gateway.PeerTerminalProxy.
@@ -1267,9 +1487,28 @@ func (pp *PeerPool) PeerTerminalURL(username, authToken string) (string, error) 
 		}
 		return "", nil
 	}
-	// Build ws:// URL pointing at the peer's terminal endpoint via sentinel proxy
-	wsURL := fmt.Sprintf("ws://%s/v1/containers/%s/terminal", peer.Addr, username)
+	// Build the URL pointing at the peer's terminal endpoint via sentinel
+	// proxy. An https (pool mTLS) peer gets wss:// so the bearer and terminal
+	// I/O are encrypted; a plain-http peer keeps ws:// (#3516).
+	wsScheme := "ws"
+	if peer.urlScheme() == "https" {
+		wsScheme = "wss"
+	}
+	wsURL := fmt.Sprintf("%s://%s/v1/containers/%s/terminal", wsScheme, peer.Addr, username)
 	return wsURL, nil
+}
+
+// PeerTerminalTLSConfig implements gateway.PeerTerminalTLS: the TLS config
+// for a wss:// terminal dial, pinned to the pool CA and presenting this
+// daemon's leaf, the same as the peer HTTPS client. Nil without pool PKI.
+func (pp *PeerPool) PeerTerminalTLSConfig() *tls.Config {
+	pp.mu.RLock()
+	pki := pp.pki
+	pp.mu.RUnlock()
+	if pki == nil {
+		return nil
+	}
+	return peerTLSConfig(pki)
 }
 
 // PeerMetricsFetcherAdapter adapts PeerPool to the metrics.PeerMetricsFetcher interface.

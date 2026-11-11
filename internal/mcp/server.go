@@ -216,7 +216,7 @@ func (s *Server) handleToolsCall(req *MCPRequest) *MCPResponse {
 	// out-of-scope tool calls don't even hit the network.
 	if !toolAllowed(s.allowedScopes(), tool) {
 		return s.createErrorResponse(req.ID, -32603,
-			fmt.Sprintf("Tool '%s' requires scope %q which the current token does not grant", tool.Name, tool.RequiredScope),
+			fmt.Sprintf("Tool '%s' requires scope %s which the current token does not grant", tool.Name, requiredScopeText(tool)),
 			"insufficient scope")
 	}
 

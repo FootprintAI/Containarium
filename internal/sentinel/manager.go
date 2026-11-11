@@ -755,6 +755,23 @@ func (m *Manager) PeersHandler() http.HandlerFunc {
 	}
 }
 
+var unsignedServedOnce sync.Once
+
+// signServedResponse signs a response body the way /sentinel/peers does:
+// ed25519 when a signing key is configured, else the shared-secret HMAC, else
+// nothing (the verifier then treats the response as unsigned).
+func (m *Manager) signServedResponse(w http.ResponseWriter, body []byte) {
+	if priv := loadSentinelSigningKey(); len(priv) == ed25519.PrivateKeySize {
+		auth.SignSentinelResponseEd25519(w, priv, body)
+	} else if len(m.hmacSecret) >= auth.SentinelMinSecretLen {
+		auth.SignSentinelResponse(w, m.hmacSecret, body)
+	} else {
+		unsignedServedOnce.Do(func() {
+			log.Printf("[sentinel] WARNING: no signing key or HMAC secret configured; /containarium/checksum and /version are served UNSIGNED, so daemons cannot authenticate updates")
+		})
+	}
+}
+
 // PrimariesHandler returns an HTTP handler that serves the primary registry.
 //
 // Methods:
@@ -809,7 +826,7 @@ func (m *Manager) PrimariesHandler() http.HandlerFunc {
 			// Only reachable behind daemonAuthGate: the request authenticated,
 			// so its pool may now be tied to its source address (#2892).
 			m.authHealth.bind(stored.Pool, requestSourceAddr(r))
-			log.Printf("[sentinel] primary registered: pool=%q host=%q base_domains=%v ip=%s:%d", stored.Pool, stored.Hostname, stored.BaseDomains, stored.IP, stored.Port)
+			log.Printf("[sentinel] primary registered: pool=%q host=%q base_domains=%q ip=%q port=%d", stored.Pool, stored.Hostname, stored.BaseDomains, stored.IP, stored.Port)
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(stored)
 
@@ -1029,7 +1046,7 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 						log.Printf("[sentinel] SSH recovery hint: %v", err)
 					}
 				}
-				log.Printf("[sentinel] backend %s (%s) is healthy", b.ID, b.IP)
+				log.Printf("[sentinel] backend %q (%s) is healthy", b.ID, b.IP)
 			}
 		} else {
 			b.healthyCount = 0
@@ -1037,7 +1054,7 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 			if b.unhealthyCount >= m.config.UnhealthyThreshold && b.Healthy {
 				b.Healthy = false
 				m.recordBackendHealth(b.ID, false)
-				log.Printf("[sentinel] backend %s (%s) is unhealthy", b.ID, b.IP)
+				log.Printf("[sentinel] backend %q (%s) is unhealthy", b.ID, b.IP)
 
 				// If this was the primary, try failover
 				m.mu.RLock()
@@ -1058,7 +1075,7 @@ func (m *Manager) healthCheckAll(ctx context.Context) {
 	if anyHealthy && m.currentState() == StateMaintenance {
 		best := m.backends.SelectPrimary()
 		if best != nil {
-			log.Printf("[sentinel] backend available, switching to proxy via %s (%s)", best.ID, best.IP)
+			log.Printf("[sentinel] backend available, switching to proxy via %q (%s)", best.ID, best.IP)
 			if err := m.switchToProxy(best); err != nil {
 				log.Printf("[sentinel] failed to switch to proxy: %v", err)
 			}
@@ -1153,10 +1170,10 @@ func (m *Manager) maybeFailback() {
 		// The primary is unchanged; try again on the next check. Not logged as
 		// a failback: nothing moved, and a consumer counting "failback:" lines
 		// must not count a refused switch.
-		log.Printf("[sentinel] switch back to %s (%s) refused, staying on %s: %v", best.ID, best.IP, cur.ID, err)
+		log.Printf("[sentinel] switch back to %q (%s) refused, staying on %q: %v", best.ID, best.IP, cur.ID, err)
 		return
 	}
-	log.Printf("[sentinel] failback: %s → %s (%s), healthy for %d consecutive checks", cur.ID, best.ID, best.IP, checks)
+	log.Printf("[sentinel] failback: %q → %q (%s), healthy for %d consecutive checks", cur.ID, best.ID, best.IP, checks)
 	m.recordFailback()
 }
 
@@ -1173,7 +1190,7 @@ func (m *Manager) doSwitchToProxy(b *Backend) error {
 func (m *Manager) failoverPrimary(ctx context.Context, failed *Backend) {
 	next := m.backends.SelectPrimary()
 	if next != nil && next != failed {
-		log.Printf("[sentinel] failover: %s → %s (%s)", failed.ID, next.ID, next.IP)
+		log.Printf("[sentinel] failover: %q → %q (%s)", failed.ID, next.ID, next.IP)
 		if err := m.doSwitchToProxy(next); err != nil {
 			log.Printf("[sentinel] failover failed: %v", err)
 		} else {
@@ -1220,10 +1237,10 @@ func (m *Manager) switchToProxy(backend *Backend) error {
 	// Immediate key sync from ALL healthy backends + apply
 	for _, b := range m.backends.Healthy() {
 		if err := m.keyStore.Sync(b.ID, b.IP, m.config.HealthPort); err != nil {
-			log.Printf("[sentinel] key sync for %s on proxy switch failed: %v", b.ID, err)
+			log.Printf("[sentinel] key sync for %q on proxy switch failed: %v", b.ID, err)
 		}
 		if err := m.keyStore.PushSentinelKey(b.IP, m.config.HealthPort); err != nil {
-			log.Printf("[sentinel] push sentinel key for %s failed: %v", b.ID, err)
+			log.Printf("[sentinel] push sentinel key for %q failed: %v", b.ID, err)
 		}
 	}
 	if err := m.keyStore.Apply(); err != nil {
@@ -1270,7 +1287,7 @@ func (m *Manager) switchToProxy(backend *Backend) error {
 	}
 
 	m.state.Store(StateProxy)
-	log.Printf("[sentinel] mode: PROXY → primary=%s (%s), total backends=%d",
+	log.Printf("[sentinel] mode: PROXY → primary=%q (%s), total backends=%d",
 		backend.ID, backend.IP, m.backends.Count())
 	return nil
 }
@@ -1346,7 +1363,7 @@ func (m *Manager) startHTTPSProxy(backend *Backend) {
 		spotID := strings.TrimPrefix(backend.ID, "tunnel-")
 		port := m.config.HTTPSPort
 		fb = func() (net.Conn, error) { return m.tunnelRegistry.DialTunnel(spotID, port) }
-		desc = fmt.Sprintf("fallback via tunnel %s:%d", spotID, port)
+		desc = fmt.Sprintf("fallback via tunnel %q:%d", spotID, port)
 	}
 	m.httpsDispatch.SetHandler(m.buildSNIRoutingHandlerDial(fb))
 	log.Printf("[sentinel] HTTPS proxy started → %s (SNI routing via primary registry)", desc)
@@ -1568,6 +1585,15 @@ func (m *Manager) buildSNIRoutingHandlerDial(fallback fallbackDial) func(net.Con
 		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		sni, peekedConn, peekErr := peekSNI(conn)
 		_ = conn.SetReadDeadline(time.Time{})
+
+		// The watchdog measures our mux/dispatch/router, independently of
+		// backend health (#1139). An unmatched SNI normally uses the fallback,
+		// so .invalid alone did not keep this probe local: a blackholed backend
+		// made a healthy sentinel exit. Closing here proves the entire local
+		// path serviced the ClientHello, before any tenant route or dial.
+		if peekErr == nil && sni == selfCheckSNI {
+			return
+		}
 
 		var (
 			dst net.Conn
@@ -1928,37 +1954,37 @@ func (m *Manager) diagnoseAndRecover(ctx context.Context, b *Backend) recoveryOu
 
 	status, err := b.Provider.GetInstanceStatus(ctx)
 	if err != nil {
-		log.Printf("[sentinel] failed to get status for %s: %v", b.ID, err)
+		log.Printf("[sentinel] failed to get status for %q: %v", b.ID, err)
 		// Treat an unreadable status like a failed attempt: keep trying,
 		// but backed off, rather than hammering the status API.
 		m.advanceRecoveryBackoff()
 		return recoveryStartFailed
 	}
 
-	log.Printf("[sentinel] backend %s status: %s", b.ID, status)
+	log.Printf("[sentinel] backend %q status: %s", b.ID, status)
 
 	switch status {
 	case StatusStopped, StatusTerminated:
-		log.Printf("[sentinel] attempting to start %s...", b.ID)
+		log.Printf("[sentinel] attempting to start %q...", b.ID)
 		if err := b.Provider.StartInstance(ctx); err != nil {
-			log.Printf("[sentinel] failed to start %s: %v (will retry, backing off)", b.ID, err)
+			log.Printf("[sentinel] failed to start %q: %v (will retry, backing off)", b.ID, err)
 			m.advanceRecoveryBackoff()
 			return recoveryStartFailed
 		}
-		log.Printf("[sentinel] start command sent for %s", b.ID)
+		log.Printf("[sentinel] start command sent for %q", b.ID)
 		// Start accepted — re-probe soon (initial interval) so we catch
 		// it either coming healthy or, if capacity is then lost again,
 		// retrying without a long stall.
 		m.scheduleRecovery(m.config.RecoveryBackoffInitial)
 		return recoveryStartOK
 	case StatusProvisioning:
-		log.Printf("[sentinel] %s is provisioning...", b.ID)
+		log.Printf("[sentinel] %q is provisioning...", b.ID)
 		m.scheduleRecovery(m.config.RecoveryBackoffInitial)
 		return recoveryNoop
 	case StatusRunning:
 		// Cloud says running but TCP health failed — starting won't help;
 		// the health check will flip it healthy when the daemon answers.
-		log.Printf("[sentinel] %s reports running but health check failed", b.ID)
+		log.Printf("[sentinel] %q reports running but health check failed", b.ID)
 		m.scheduleRecovery(m.config.RecoveryBackoffInitial)
 		return recoveryNoop
 	}
@@ -2046,7 +2072,7 @@ func (m *Manager) OnTunnelConnect(spot *TunnelSpot) {
 	}
 	m.backends.Add(b)
 
-	log.Printf("[sentinel] tunnel connected: %s at %s (total backends: %d)", b.ID, b.IP, m.backends.Count())
+	log.Printf("[sentinel] tunnel connected: %q at %s (total backends: %d)", b.ID, b.IP, m.backends.Count())
 
 	// If the tunnel handshake declared this spot is a primary (slice 6),
 	// auto-register it in the primary registry pointing at its loopback
@@ -2062,7 +2088,7 @@ func (m *Manager) OnTunnelConnect(spot *TunnelSpot) {
 			Port:        spot.PublicPort,
 			BackendID:   b.ID,
 		})
-		log.Printf("[sentinel] tunnel-promoted primary: pool=%q hostname=%q aliases=%v base_domains=%v -> %s:%d",
+		log.Printf("[sentinel] tunnel-promoted primary: pool=%q hostname=%q aliases=%q base_domains=%q -> %s:%d",
 			spot.Pool, spot.PublicHostname, spot.PublicAliases, spot.PublicBaseDomains, spot.LocalIP, spot.PublicPort)
 	}
 
@@ -2078,7 +2104,7 @@ func (m *Manager) OnTunnelDisconnect(spot *TunnelSpot) {
 	backendID := "tunnel-" + spot.ID
 	if m.primaries != nil {
 		if n := m.primaries.UnregisterByBackendID(backendID); n > 0 {
-			log.Printf("[sentinel] removed %d primary registration(s) for disconnected tunnel %s", n, backendID)
+			log.Printf("[sentinel] removed %d primary registration(s) for disconnected tunnel %q", n, backendID)
 		}
 	}
 	if m.certStore != nil {
@@ -2089,7 +2115,7 @@ func (m *Manager) OnTunnelDisconnect(spot *TunnelSpot) {
 		return
 	}
 
-	log.Printf("[sentinel] tunnel disconnected: %s (remaining backends: %d)", backendID, m.backends.Count())
+	log.Printf("[sentinel] tunnel disconnected: %q (remaining backends: %d)", backendID, m.backends.Count())
 
 	// Remove this backend's users from sshpiper config. Apply() rewrites
 	// config.yaml, which sshpiperd's yaml plugin re-reads per connection — no
@@ -2107,7 +2133,7 @@ func (m *Manager) OnTunnelDisconnect(spot *TunnelSpot) {
 	if wasPrimary && m.currentState() == StateProxy {
 		next := m.backends.SelectPrimary()
 		if next != nil {
-			log.Printf("[sentinel] failover after tunnel disconnect: → %s (%s)", next.ID, next.IP)
+			log.Printf("[sentinel] failover after tunnel disconnect: → %q (%s)", next.ID, next.IP)
 			if err := m.switchToProxy(next); err != nil {
 				log.Printf("[sentinel] failover failed: %v", err)
 			}

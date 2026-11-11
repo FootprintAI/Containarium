@@ -230,6 +230,19 @@ func ParseSkillSets(s string) (SkillSets, error) {
 // None reports whether the selection installs nothing.
 func (s SkillSets) None() bool { return s.none }
 
+// All reports whether the selection is every set ("" or "all").
+func (s SkillSets) All() bool { return s.all || (!s.none && len(s.ids) == 0) }
+
+// IDs returns the explicit set ids of the selection, in the order given, or
+// nil for "all" and "none". A caller that needs "all" as explicit ids expands
+// it from a lock (ApplyBoxSkillSets takes an explicit list, #3374).
+func (s SkillSets) IDs() []string {
+	if s.all || s.none {
+		return nil
+	}
+	return append([]string(nil), s.ids...)
+}
+
 // String is the SKILL_SETS value for the installer: all, none, or a,b.
 func (s SkillSets) String() string {
 	switch {

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/coderun/engine"
+	"github.com/footprintai/containarium/internal/toolaccess"
 	"github.com/footprintai/containarium/pkg/core/box"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
@@ -32,7 +33,7 @@ import (
 
 // boxRunUnprivilegedUser is the OS user such runs execute as. A fixed name: the
 // daemon creates it lazily on the first such run, so existing boxes need no backfill.
-const boxRunUnprivilegedUser = "ctn-run"
+const boxRunUnprivilegedUser = toolaccess.RunUser
 
 // boxRunRecordedToolAccess reports the tool-access level recorded for username's
 // box ("" = none recorded, the legacy path). The fn seam is for tests; production

@@ -83,14 +83,14 @@ func (s *ContainerServer) SetContainerTTL(ctx context.Context, req *pb.SetContai
 			if err := tc.SetTTL(ctx, ref, nil); err != nil {
 				return nil, status.Errorf(codes.Internal, "failed to clear ttl: %v", err)
 			}
-			log.Printf("[ttl] cleared container=%s", containerName)
+			log.Printf("[ttl] cleared container=%q", containerName)
 			return resp, nil
 		}
 		expiresAt := time.Now().Add(time.Duration(req.DurationSeconds) * time.Second).UTC()
 		if err := tc.SetTTL(ctx, ref, &expiresAt); err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to set ttl: %v", err)
 		}
-		log.Printf("[ttl] set container=%s expires_at=%s (duration=%ds)", containerName, expiresAt.Format(time.RFC3339), req.DurationSeconds)
+		log.Printf("[ttl] set container=%q expires_at=%s (duration=%ds)", containerName, expiresAt.Format(time.RFC3339), req.DurationSeconds)
 		resp.TtlExpiresAt = timestamppb.New(expiresAt)
 		return resp, nil
 	}
@@ -103,7 +103,7 @@ func (s *ContainerServer) SetContainerTTL(ctx context.Context, req *pb.SetContai
 		if err := s.manager.UnsetConfig(containerName, incus.TTLExpiresAtKey); err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to clear %s: %v", incus.TTLExpiresAtKey, err)
 		}
-		log.Printf("[ttl] cleared container=%s", containerName)
+		log.Printf("[ttl] cleared container=%q", containerName)
 		return resp, nil
 	}
 
@@ -114,7 +114,7 @@ func (s *ContainerServer) SetContainerTTL(ctx context.Context, req *pb.SetContai
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to set %s: %v", incus.TTLExpiresAtKey, err)
 	}
-	log.Printf("[ttl] set container=%s expires_at=%s (duration=%ds)", containerName, expiresAt.Format(time.RFC3339), req.DurationSeconds)
+	log.Printf("[ttl] set container=%q expires_at=%s (duration=%ds)", containerName, expiresAt.Format(time.RFC3339), req.DurationSeconds)
 	resp.TtlExpiresAt = timestamppb.New(expiresAt)
 	return resp, nil
 }
@@ -156,11 +156,11 @@ func (s *ContainerServer) stampBirthTTL(ctx context.Context, containerName, user
 	}
 	if err != nil {
 		if delErr := s.boxes().Delete(ctx, box.BoxRef{Tenant: username}, true); delErr != nil {
-			log.Printf("[ttl] birth TTL stamp failed AND cleanup-delete failed for %s: stamp=%v delete=%v", containerName, err, delErr)
+			log.Printf("[ttl] birth TTL stamp failed AND cleanup-delete failed for %q: stamp=%v delete=%v", containerName, err, delErr)
 		}
 		return status.Errorf(codes.Internal, "failed to set birth TTL on %s (box deleted to avoid a leak): %v", containerName, err)
 	}
-	log.Printf("[ttl] birth TTL set container=%s expires_at=%s (duration=%ds)", containerName, expiresAt.Format(time.RFC3339), ttlSeconds)
+	log.Printf("[ttl] birth TTL set container=%q expires_at=%s (duration=%ds)", containerName, expiresAt.Format(time.RFC3339), ttlSeconds)
 	return nil
 }
 
@@ -174,15 +174,23 @@ func (s *ContainerServer) stampBirthTTL(ctx context.Context, containerName, user
 // later) rather than failing the create. idleMinutes must be > 0 (the zero case
 // is "no auto-sleep" and never reaches here).
 func (s *ContainerServer) stampBirthAutoSleep(containerName string, idleMinutes int32) {
-	if err := s.manager.SetConfig(containerName, incus.AutoSleepEnabledKey, "true"); err != nil {
-		log.Printf("[autosleep] failed to enable birth auto-sleep on %s: %v (continuing; box has no idle-stop)", containerName, err)
+	// A create does not call StartContainer, so its freshly running Box
+	// otherwise has no last-start time. Start the idle clock at birth,
+	// before enabling the timer. The requested threshold must also be
+	// persisted before enabling, avoiding an unintended fallback timer.
+	if err := s.manager.SetConfig(containerName, incus.LastStartedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		log.Printf("[autosleep] birth clock stamp failed for %q: %v (auto-sleep not enabled)", containerName, err)
 		return
 	}
 	if err := s.manager.SetConfig(containerName, incus.IdleThresholdMinutesKey, strconv.Itoa(int(idleMinutes))); err != nil {
-		log.Printf("[autosleep] enabled auto-sleep on %s but failed to set idle threshold: %v (autosleep loop falls back to its %dm default)", containerName, err, incus.DefaultIdleThresholdMinutes)
+		log.Printf("[autosleep] birth idle threshold stamp failed for %q: %v (auto-sleep not enabled)", containerName, err)
 		return
 	}
-	log.Printf("[autosleep] birth auto-sleep enabled container=%s idle_threshold=%dm", containerName, idleMinutes)
+	if err := s.manager.SetConfig(containerName, incus.AutoSleepEnabledKey, "true"); err != nil {
+		log.Printf("[autosleep] failed to enable birth auto-sleep on %q: %v (continuing; box has no idle-stop)", containerName, err)
+		return
+	}
+	log.Printf("[autosleep] birth auto-sleep enabled container=%q idle_threshold=%dm", containerName, idleMinutes)
 }
 
 // stampBirthDeleteAfterStopped persists the per-box stopped→delete window
@@ -195,10 +203,10 @@ func (s *ContainerServer) stampBirthAutoSleep(containerName string, idleMinutes 
 // never reaches here).
 func (s *ContainerServer) stampBirthDeleteAfterStopped(containerName string, seconds int64) {
 	if err := s.manager.SetConfig(containerName, incus.DeleteAfterStoppedSecondsKey, strconv.FormatInt(seconds, 10)); err != nil {
-		log.Printf("[ttl] failed to set birth %s on %s: %v (continuing; box has no stopped→delete)", incus.DeleteAfterStoppedSecondsKey, containerName, err)
+		log.Printf("[ttl] failed to set birth %s on %q: %v (continuing; box has no stopped→delete)", incus.DeleteAfterStoppedSecondsKey, containerName, err)
 		return
 	}
-	log.Printf("[ttl] birth stopped→delete set container=%s delete_after_stopped=%ds", containerName, seconds)
+	log.Printf("[ttl] birth stopped→delete set container=%q delete_after_stopped=%ds", containerName, seconds)
 }
 
 // stampTTL writes now()+duration as a UTC RFC3339 wall-clock expiry onto the

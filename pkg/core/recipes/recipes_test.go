@@ -3,6 +3,7 @@ package recipes
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -737,6 +738,222 @@ func TestCodingAgentRecipe_OldInstallerHandling(t *testing.T) {
 			_, statErr := os.Stat(marker)
 			if (err == nil) != tc.wantOK || (statErr == nil) != tc.wantRan {
 				t.Errorf("ok=%v ran=%v, want ok=%v ran=%v\n%s", err == nil, statErr == nil, tc.wantOK, tc.wantRan, out)
+			}
+		})
+	}
+}
+
+// TestSlidesAgentRecipe (#3434): a slides-agent box is coding-agent plus the
+// prebaked slides image. It shares coding-agent's post_start contract line for
+// line, runs the dev server only behind the in-box auth proxy, and fetches
+// nothing from a package registry at box start.
+func TestSlidesAgentRecipe(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatalf("LoadEmbedded: %v", err)
+	}
+	r, err := m.Get("slides-agent")
+	if err != nil {
+		t.Fatalf("expected built-in recipe slides-agent: %v", err)
+	}
+	ca, err := m.Get("coding-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.RequiresGpu {
+		t.Error("slides-agent should not require a GPU")
+	}
+	// Only the in-box auth proxy is exposed, under the "workspace" subdomain:
+	// the host GetWorkspaceAccess composes its /__ws_login#t= URL on.
+	if len(r.Ports) != 1 || r.Ports[0].ContainerPort != 8080 || r.Ports[0].Subdomain != "workspace" {
+		t.Errorf("slides-agent should expose only the auth proxy on :8080 as 'workspace'; got %+v", r.Ports)
+	}
+
+	// Same post_start contract as coding-agent: every coding-agent step is
+	// present verbatim, so the two cannot drift apart.
+	steps := map[string]bool{}
+	for _, line := range r.PostStart {
+		steps[line] = true
+	}
+	for _, line := range ca.PostStart {
+		if !steps[line] {
+			t.Errorf("slides-agent post_start lacks coding-agent step %.60q", line)
+		}
+	}
+	// Same parameters as coding-agent (minus the deprecated sdlc_skills alias),
+	// plus the proxy auth and the image override.
+	params := map[string]*pb.RecipeParam{}
+	for _, p := range r.Parameters {
+		params[p.Name] = p
+	}
+	caParams := map[string]*pb.RecipeParam{}
+	for _, p := range ca.Parameters {
+		caParams[p.Name] = p
+	}
+	for _, name := range []string{"release", "claude_code_version", "bootstrap_url", "box_user", "skill_sets"} {
+		got, want := params[name], caParams[name]
+		if got == nil || want == nil {
+			t.Errorf("parameter %q must exist on both coding-agent and slides-agent", name)
+			continue
+		}
+		if got.Required != want.Required || got.Default != want.Default || got.Type != want.Type {
+			t.Errorf("parameter %q differs from coding-agent: got %+v want %+v", name, got, want)
+		}
+	}
+	if params["sdlc_skills"] != nil {
+		t.Error("slides-agent must not carry the deprecated sdlc_skills alias")
+	}
+	if pw := params["auth_password"]; pw == nil || !pw.Required || pw.Type != "password" || pw.Default != "" {
+		t.Errorf("auth_password must be a required password with no default; got %+v", pw)
+	}
+	if u := params["auth_user"]; u == nil || u.Default == "" || u.Required {
+		t.Errorf("auth_user must be optional with a default; got %+v", u)
+	}
+	if img := params["slides_image"]; img == nil || img.Required || img.Default != "" {
+		t.Errorf("slides_image must be optional with an empty default (empty = the release's published image); got %+v", img)
+	}
+	if _, err := ResolveParameters(r, map[string]string{"release": "v1.2.3"}); err == nil {
+		t.Error("resolving without auth_password should fail (box never exposed without auth)")
+	}
+
+	joined := strings.Join(r.PostStart, "\n")
+	for _, want := range []string{
+		"ghcr.io/footprintai/containarium-slides-agent", // the prebaked image, tag = the release
+		"CONTAINARIUM_PARAM_SLIDES_IMAGE",               // mirror / override hook
+		"CONTAINARIUM_PARAM_RELEASE",
+		"--network host",                                // proxy on the box's address, dev server on loopback
+		"--restart=always",                              // survives box reboot and idle-stop/start
+		"--env-file",                                    // auth material never on the command line
+		"hash-password",                                 // password bcrypt-hashed at deploy
+		`rm -f "$WSAUTH/token"`,                         // no static zero-click token (#3486)
+		":/workspace",                                   // the deck tree stays on the box disk
+		"--user",                                        // container runs as the box user so files stay editable
+		"exit 1",                                        // fail closed on empty auth material
+		`[ "$CODE" = "401" ]`,                           // unauthenticated request refused, or the deploy fails
+		"http://127.0.0.1:9099/__mint",                  // the zero-click login works end to end at deploy (#3486)
+		`--data-urlencode 't@-'`,                        // the token is POSTed, from stdin, never in a URL or argv
+		"__Host-ws_session=",                            // redeemed for the session cookie
+		`[ "$REPLAY" = "403" ]`,                         // a replayed token is refused, or the deploy fails
+		`printf 'Cookie: __Host-ws_session=%s' "$SESS"`, // the dev server must answer through the proxy (200)
+		`[ "$AUTHED" = "200" ]`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("slides-agent post_start missing %q", want)
+		}
+	}
+	// Nothing is installed from a package registry at box start: Node, the
+	// framework, its dependencies and Chromium are in the image. The release
+	// artifacts and Claude Code's own installer are coding-agent's contract.
+	for _, banned := range []string{"apt-get install", "npm install", "npx ", "pnpm ", "nodesource", "playwright", "pip install"} {
+		if strings.Contains(joined, banned) {
+			t.Errorf("slides-agent post_start must not fetch from a package registry: found %q", banned)
+		}
+	}
+	// Same credential lint as coding-agent.
+	text := r.String()
+	for _, banned := range []string{
+		"forceLoginMethod", "forceLoginOrgUUID", "forceLoginGatewayUrl",
+		"ANTHROPIC_", "CLAUDE_CODE_OAUTH_TOKEN", "managed-settings", "/etc/claude-code",
+	} {
+		if strings.Contains(text, banned) {
+			t.Errorf("slides-agent recipe must not contain %q", banned)
+		}
+	}
+	for _, line := range r.PostStart {
+		if strings.Contains(line, "claude.ai/install.sh") && !strings.Contains(line, "runuser -u") {
+			t.Errorf("Claude Code installer not run as the box user: %q", line)
+		}
+	}
+}
+
+// TestSlidesAgentRecipe_AuthStaging runs the recipe's auth-staging step with a
+// fake podman: the token and env file land with owner-only modes, the env file
+// carries the user, hash and token, and an empty hash aborts the deploy.
+func TestSlidesAgentRecipe_AuthStaging(t *testing.T) {
+	r, err := GetDefault().Get("slides-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var step string
+	for _, line := range r.PostStart {
+		if strings.Contains(line, "hash-password") {
+			step = line
+		}
+	}
+	if step == "" {
+		t.Fatal("slides-agent post_start has no auth-staging step")
+	}
+	if !strings.Contains(step, "WSAUTH=/opt/wsauth\n") {
+		t.Fatal("auth-staging step must set WSAUTH=/opt/wsauth on its own line (tests redirect it)")
+	}
+	for _, tc := range []struct {
+		name   string
+		hash   string
+		wantOK bool
+	}{
+		{"hash present", "$2a$14$fakehashfakehashfakehash", true},
+		{"empty hash", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			bin := filepath.Join(dir, "bin")
+			if err := os.MkdirAll(bin, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			// podman run ... hash-password prints the hash; anything else is a no-op.
+			fake := "#!/bin/sh\ncase \"$*\" in *hash-password*) printf '%s' \"$FAKE_HASH\";; esac\n"
+			if err := os.WriteFile(filepath.Join(bin, "podman"), []byte(fake), 0o700); err != nil { //nolint:gosec // test stand-in
+				t.Fatal(err)
+			}
+			wsauth := filepath.Join(dir, "wsauth")
+			// A static token left by an image from before #3486 must go, so
+			// the daemon never hands it out.
+			if err := os.MkdirAll(wsauth, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(wsauth, "token"), []byte("old-static-token"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			script := strings.Replace(step, "WSAUTH=/opt/wsauth\n", "WSAUTH="+wsauth+"\n", 1)
+			cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+script) //nolint:gosec // embedded recipe text
+			cmd.Env = append(os.Environ(),
+				"PATH="+bin+":"+os.Getenv("PATH"),
+				"FAKE_HASH="+tc.hash,
+				"IMAGE=example.invalid/slides:test",
+				"CONTAINARIUM_PARAM_AUTH_USER=deck",
+				"CONTAINARIUM_PARAM_AUTH_PASSWORD=s3cret",
+			)
+			out, err := cmd.CombinedOutput()
+			if (err == nil) != tc.wantOK {
+				t.Fatalf("ok=%v want %v\n%s", err == nil, tc.wantOK, out)
+			}
+			if !tc.wantOK {
+				if _, err := os.Stat(filepath.Join(wsauth, "env")); err == nil {
+					t.Error("a failed staging step must not leave an env file behind")
+				}
+				return
+			}
+			fi, err := os.Stat(filepath.Join(wsauth, "env"))
+			if err != nil {
+				t.Fatalf("env: %v", err)
+			}
+			if fi.Mode().Perm() != 0o600 {
+				t.Errorf("env mode = %o, want 0600", fi.Mode().Perm())
+			}
+			if _, err := os.Stat(filepath.Join(wsauth, "token")); !os.IsNotExist(err) {
+				t.Errorf("a static zero-click token must not be staged (#3486): %v", err)
+			}
+			env, _ := os.ReadFile(filepath.Join(wsauth, "env"))
+			for _, want := range []string{"SLIDES_AUTH_USER=deck\n", "SLIDES_AUTH_HASH=" + tc.hash + "\n"} {
+				if !strings.Contains(string(env), want) {
+					t.Errorf("env file missing %q:\n%s", want, env)
+				}
+			}
+			if strings.Contains(string(env), "SLIDES_WS_TOKEN") {
+				t.Error("the env file must not carry a static zero-click token (#3486)")
+			}
+			if strings.Contains(string(env), "s3cret") {
+				t.Error("the plaintext password must never reach the env file")
 			}
 		})
 	}

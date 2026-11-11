@@ -114,7 +114,7 @@ func (d *ttlsweeperDeleter) DeleteContainer(ctx context.Context, name, reason st
 		return fmt.Errorf("ttlsweeper: refusing to delete %q (not in <username>-container form)", name)
 	}
 
-	log.Printf("[ttl] auto-deleting container=%s reason=%q", name, reason)
+	log.Printf("[ttl] auto-deleting container=%q reason=%q", name, reason)
 	_, err := d.cs.DeleteContainer(ctx, &pb.DeleteContainerRequest{
 		Username: username,
 		// Force=true: TTL expiry is a "delete now" event, not a

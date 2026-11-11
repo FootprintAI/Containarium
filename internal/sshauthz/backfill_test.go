@@ -34,9 +34,13 @@ func fixtureHome(t *testing.T) (root string, want map[string]string) {
 
 func TestScanAuthorizedKeys(t *testing.T) {
 	root, want := fixtureHome(t)
-	recs, err := ScanAuthorizedKeys(root, caseNow)
+	res, err := ScanAuthorizedKeys(root, caseNow)
 	if err != nil {
 		t.Fatal(err)
+	}
+	recs := res.Records
+	if len(res.Unreadable) != 0 {
+		t.Fatalf("plain accounts reported unreadable: %+v", res.Unreadable)
 	}
 	if len(recs) != len(want) {
 		t.Fatalf("got %d records, want %d: %+v", len(recs), len(want), recs)
@@ -75,5 +79,38 @@ func TestBackfill_TwiceAddsNothing_InMemory(t *testing.T) {
 	n, err = Backfill(t.Context(), store, root, caseNow)
 	if err != nil || n != 0 {
 		t.Fatalf("second backfill = %d, %v; want 0", n, err)
+	}
+}
+
+// Containment (#3241): an account whose home cannot be read is skipped, and
+// every other account is still registered; startup does not fail for it.
+func TestBackfill_UnreadableAccountDoesNotBlockOthers(t *testing.T) {
+	root, want := fixtureHome(t)
+	badAccounts(t, root)
+	store := &memKeys{rows: map[string]KeyRecord{}}
+	n, err := Backfill(t.Context(), store, root, caseNow)
+	if err != nil || n != len(want) {
+		t.Fatalf("backfill = %d, %v; want %d, nil", n, err, len(want))
+	}
+}
+
+func TestScanAuthorizedKeys_ReportsUnreadableAccounts(t *testing.T) {
+	root, want := fixtureHome(t)
+	bad := badAccounts(t, root)
+	res, err := ScanAuthorizedKeys(root, caseNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Records) != len(want) {
+		t.Fatalf("got %d records, want %d", len(res.Records), len(want))
+	}
+	var got []string
+	for _, u := range res.Unreadable {
+		got = append(got, u.Username)
+	}
+	sort.Strings(got)
+	sort.Strings(bad)
+	if strings.Join(got, ",") != strings.Join(bad, ",") {
+		t.Fatalf("unreadable = %v, want %v", got, bad)
 	}
 }

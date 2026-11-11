@@ -561,3 +561,29 @@ func (f *fakeIncusCounting) ListContainers() ([]incus.ContainerInfo, error) {
 	atomic.AddInt64(f.count, 1)
 	return nil, nil
 }
+
+func TestManager_TrafficReadFailureSkipsSleepUntilRecovered(t *testing.T) {
+	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	inc := &fakeIncus{containers: []incus.ContainerInfo{{
+		Name:                 "alice-container",
+		State:                "Running",
+		AutoSleepEnabled:     true,
+		IdleThresholdMinutes: 15,
+		LastStartedAt:        now.Add(-2 * time.Hour),
+	}}}
+	traffic := &fakeTraffic{err: errors.New("activity lookup failed")}
+	stopper := &fakeStopper{}
+	m := NewManager(inc, traffic, stopper, nil, Options{Clock: func() time.Time { return now }})
+	m.tick(context.Background())
+	if calls := stopper.recorded(); len(calls) != 0 {
+		t.Fatalf("failed activity lookup must not trigger sleep: %+v", calls)
+	}
+
+	// The successful zero-activity read still allows the documented
+	// since-start fallback after the anti-thrash window.
+	traffic.err = nil
+	m.tick(context.Background())
+	if calls := stopper.recorded(); len(calls) != 1 || calls[0].username != "alice" {
+		t.Fatalf("successful zero-activity read should allow sleep: %+v", calls)
+	}
+}

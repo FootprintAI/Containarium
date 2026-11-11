@@ -165,7 +165,7 @@ func (h *credentialHarness) dispatcher(ctx context.Context) *Dispatcher {
 		CredentialSecret: testCredentialSecret,
 		Runs:             h.runs,
 		Clock:            h.clock,
-		Policy:           &Policy{RunTimeout: sweepTimeout},
+		Policy:           &Policy{RunTimeout: sweepTimeout, DispatchOnLabel: true},
 		Leases:           h.leases,
 	}
 }

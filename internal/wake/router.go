@@ -80,7 +80,7 @@ func (r *Router) SwapToWake(ctx context.Context, containerName string, routes []
 			err = r.proxy.UpdateRoute(route.FullDomain, r.wakeHost, r.wakePort)
 		}
 		if err != nil {
-			log.Printf("[wake] swap-to-wake %s: %v", route.FullDomain, err)
+			log.Printf("[wake] swap-to-wake %q: %v", route.FullDomain, err)
 			if firstErr == nil {
 				firstErr = fmt.Errorf("swap-to-wake %s: %w", route.FullDomain, err)
 			}
@@ -111,7 +111,7 @@ func (r *Router) SwapToDirect(ctx context.Context, containerName string, routes 
 			err = r.proxy.UpdateRoute(route.FullDomain, route.TargetIP, route.TargetPort)
 		}
 		if err != nil {
-			log.Printf("[wake] swap-to-direct %s: %v", route.FullDomain, err)
+			log.Printf("[wake] swap-to-direct %q: %v", route.FullDomain, err)
 			if firstErr == nil {
 				firstErr = fmt.Errorf("swap-to-direct %s: %w", route.FullDomain, err)
 			}

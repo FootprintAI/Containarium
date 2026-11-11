@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -141,7 +142,7 @@ func (g *Gateway) resolveKeyOwner(ctx context.Context, claims *GatewayClaims, pr
 			return key, true, ownerKind(claims.KeyOwner)
 		}
 		if global := g.cfg.ProviderKeys[provider]; global != "" {
-			g.cfg.Logger.Printf("model-gateway: key_owner=%s has no %s key; falling back to the daemon-global key (this call is billed to the operator, not the owner)",
+			g.cfg.Logger.Printf("model-gateway: key_owner=%q has no %s key; falling back to the daemon-global key (this call is billed to the operator, not the owner)",
 				claims.KeyOwner, provider)
 			return global, true, pb.GatewayKeyOwner_GATEWAY_KEY_OWNER_OPERATOR_FALLBACK
 		}
@@ -241,7 +242,7 @@ func (g *Gateway) isOwnerRevoked(ctx context.Context, claims *GatewayClaims) boo
 
 	cutoff, err := g.cfg.OwnerRevocations.RevokedBefore(ctx, claims.KeyOwner)
 	if err != nil {
-		log.Printf("model-gateway: owner-revocation lookup failed for key_owner=%s: %v (allowing; the revocation list is a kill-switch, not the primary gate)", claims.KeyOwner, err)
+		log.Printf("model-gateway: owner-revocation lookup failed for key_owner=%q: %v (allowing; the revocation list is a kill-switch, not the primary gate)", claims.KeyOwner, err)
 		return false
 	}
 	if cutoff.IsZero() {
@@ -303,4 +304,24 @@ func (m *MemOwnerRevocations) RevokeOwner(_ context.Context, keyOwner string, at
 	}
 	m.cutoff[keyOwner] = at
 	return nil
+}
+
+// OwnerCutoff is one key owner's recorded revocation cutoff.
+type OwnerCutoff struct {
+	KeyOwner      string
+	RevokedBefore time.Time
+}
+
+// Cutoffs returns every recorded cutoff (the latest per owner), sorted by key
+// owner. The daemon copies them into its durable store when Postgres arrives
+// after a degraded start (#3365).
+func (m *MemOwnerRevocations) Cutoffs() []OwnerCutoff {
+	m.mu.RLock()
+	out := make([]OwnerCutoff, 0, len(m.cutoff))
+	for owner, at := range m.cutoff {
+		out = append(out, OwnerCutoff{KeyOwner: owner, RevokedBefore: at})
+	}
+	m.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].KeyOwner < out[j].KeyOwner })
+	return out
 }

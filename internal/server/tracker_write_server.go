@@ -43,7 +43,7 @@ func (s *ContainerServer) resolveWriterConn(ctx context.Context, username, conne
 	if err := enforceConnectionBinding(ctx, connectionName); err != nil {
 		return nil, tracker.Conn{}, err
 	}
-	trackerConn, err := s.trackerStore.Get(ctx, username, connectionName)
+	trackerConn, err := s.loadTrackerStore().Get(ctx, username, connectionName)
 	if err != nil {
 		return nil, tracker.Conn{}, mapTrackerError(err)
 	}
@@ -61,10 +61,11 @@ func (s *ContainerServer) writerConnFor(ctx context.Context, trackerConn *tracke
 	if err != nil {
 		return nil, tracker.Conn{}, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
-	if s.secretsStore == nil {
+	store := s.loadSecretsStore()
+	if store == nil {
 		return nil, tracker.Conn{}, status.Error(codes.Unavailable, "secrets store not configured on this daemon")
 	}
-	cred, err := s.secretsStore.BrokerCredential(ctx, trackerConn.Username, trackerConn.CredentialSecret)
+	cred, err := store.BrokerCredential(ctx, trackerConn.Username, trackerConn.CredentialSecret)
 	if err != nil {
 		return nil, tracker.Conn{}, status.Errorf(codes.FailedPrecondition, "resolve broker credential: %v", err)
 	}
@@ -111,7 +112,7 @@ func (s *ContainerServer) CommentOnTrackerIssue(ctx context.Context, req *pb.Com
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerWrite); err != nil {
 		return nil, err
 	}
-	if s.trackerStore == nil {
+	if s.loadTrackerStore() == nil {
 		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -167,7 +168,7 @@ func (s *ContainerServer) ClaimTrackerIssue(ctx context.Context, req *pb.ClaimTr
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerWrite); err != nil {
 		return nil, err
 	}
-	if s.trackerStore == nil {
+	if s.loadTrackerStore() == nil {
 		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
 	}
 	if s.claimLocks == nil {
@@ -228,7 +229,7 @@ func (s *ContainerServer) SetTrackerIssueLabels(ctx context.Context, req *pb.Set
 	if err := auth.RequireScope(ctx, auth.ScopeTrackerWrite); err != nil {
 		return nil, err
 	}
-	if s.trackerStore == nil {
+	if s.loadTrackerStore() == nil {
 		return nil, status.Error(codes.Unavailable, "tracker store not configured on this daemon")
 	}
 	if req.Username == "" {
@@ -247,7 +248,7 @@ func (s *ContainerServer) SetTrackerIssueLabels(ctx context.Context, req *pb.Set
 	if err := enforceConnectionBinding(ctx, req.Connection); err != nil {
 		return nil, err
 	}
-	record, err := s.trackerStore.Get(ctx, req.Username, req.Connection)
+	record, err := s.loadTrackerStore().Get(ctx, req.Username, req.Connection)
 	if err != nil {
 		return nil, mapTrackerError(err)
 	}
@@ -280,7 +281,7 @@ func (s *ContainerServer) SetTrackerIssueLabels(ctx context.Context, req *pb.Set
 	// against max_children_per_run. Adding the gate is not bound: it only
 	// holds an issue back.
 	if isRun && (anyScopeLabel(add, remove) || anyGateLabel(remove)) {
-		in, err := s.trackerStore.IssueInRunLineage(ctx, req.Username, req.Connection, runID, req.Number)
+		in, err := s.loadTrackerStore().IssueInRunLineage(ctx, req.Username, req.Connection, runID, req.Number)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "check run lineage: %v", err)
 		}
@@ -384,6 +385,6 @@ func (s *ContainerServer) auditTrackerWrite(ctx context.Context, action, usernam
 		Detail:       string(payload),
 		RunID:        runID,
 	}); err != nil {
-		log.Printf("[tracker] audit %s %s/%s#%d: %v", action, username, connection, number, err)
+		log.Printf("[tracker] audit %s %q/%q#%d: %v", action, username, connection, number, err)
 	}
 }

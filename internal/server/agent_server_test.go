@@ -187,6 +187,30 @@ func TestMintedAgentTokenScopes_TokensDelegateNeverGranted(t *testing.T) {
 	})
 }
 
+// TestMintedAgentTokenScopes_CodeAnswerNeverGranted is #3191: code:answer
+// answers the run's own permission requests, so a skill run's in-box token
+// must never carry it, whatever the caller or a custom manifest grants.
+func TestMintedAgentTokenScopes_CodeAnswerNeverGranted(t *testing.T) {
+	skill := &pb.AgentSkill{
+		Id:            "custom-answering-skill",
+		AllowedScopes: []string{auth.ScopeContainersRead, auth.ScopeCodeAnswer},
+	}
+	for name, callerScopes := range map[string][]string{
+		"unrestricted caller":      nil,
+		"caller holds code:answer": {auth.ScopeContainersRead, auth.ScopeCodeAnswer},
+		"wildcard caller":          {auth.ScopeWildcard},
+	} {
+		ctx := auth.ContextWithTestSubjectScopes(context.Background(), "some-caller", nil, callerScopes)
+		got := mintedAgentTokenScopes(ctx, skill)
+		if slices.Contains(got, auth.ScopeCodeAnswer) {
+			t.Errorf("%s: mintedAgentTokenScopes = %v, must never carry code:answer", name, got)
+		}
+		if !slices.Contains(got, auth.ScopeContainersRead) {
+			t.Errorf("%s: mintedAgentTokenScopes = %v, want containers:read still granted", name, got)
+		}
+	}
+}
+
 // TestSendAgentTaskRequiresCallScope confirms the agents:call gate.
 func TestSendAgentTaskRequiresCallScope(t *testing.T) {
 	s := &AgentSkillServer{catalog: skills.GetDefault()}

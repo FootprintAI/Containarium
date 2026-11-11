@@ -22,6 +22,8 @@ const (
 	sshpiperConfigFile  = "/etc/sshpiper/config.yaml"
 	sshpiperUsersDir    = "/etc/sshpiper/users"
 	sshpiperUpstreamKey = "/etc/sshpiper/upstream_key"
+	// Operator-provisioned backend host pins; never learned from keysync HTTP.
+	sshpiperKnownHosts = "/etc/sshpiper/known_hosts"
 
 	// sshpiperTrustedUserCAKeys is where an operator installs the SSH
 	// certificate-authority public key(s) that sshpiper should trust. When this
@@ -230,7 +232,7 @@ func (ks *KeyStore) Apply() error {
 		liveUsers[r.username] = true
 		userDir := filepath.Join(sshpiperUsersDir, r.username)
 		if err := os.MkdirAll(userDir, 0755); err != nil { // #nosec G301 -- sshpiper requires world-readable user dirs
-			log.Printf("[keysync] failed to create dir for %s: %v", r.username, err)
+			log.Printf("[keysync] failed to create dir for %q: %v", r.username, err)
 			continue
 		}
 		akPath := filepath.Join(userDir, "authorized_keys")
@@ -238,7 +240,7 @@ func (ks *KeyStore) Apply() error {
 		// authorized_keys parser may stop at a blank line, causing key match failures.
 		cleanedKeys := cleanAuthorizedKeys(r.authorizedKeys)
 		if err := os.WriteFile(akPath, []byte(cleanedKeys+"\n"), 0600); err != nil {
-			log.Printf("[keysync] failed to write authorized_keys for %s: %v", r.username, err)
+			log.Printf("[keysync] failed to write authorized_keys for %q: %v", r.username, err)
 			continue
 		}
 	}
@@ -255,7 +257,7 @@ func (ks *KeyStore) Apply() error {
 			}
 			stale := filepath.Join(sshpiperUsersDir, e.Name())
 			if rmErr := os.RemoveAll(stale); rmErr != nil {
-				log.Printf("[keysync] failed to prune stale sshpiper dir %s: %v", stale, rmErr)
+				log.Printf("[keysync] failed to prune stale sshpiper dir %q: %v", stale, rmErr)
 			} else {
 				pruned++
 			}
@@ -336,13 +338,13 @@ func (ks *KeyStore) PushSentinelKey(backendIP string, httpPort int) error {
 // back to the interval (#953), so a blip costs seconds of stale sshpiper
 // routing rather than a full interval.
 func (ks *KeyStore) RunSyncLoop(ctx context.Context, backendID, backendIP string, httpPort int, interval time.Duration) {
-	log.Printf("[keysync] starting sync loop for backend %s (%s:%d, interval=%s)", backendID, backendIP, httpPort, interval)
+	log.Printf("[keysync] starting sync loop for backend %q (%s:%d, interval=%s)", backendID, backendIP, httpPort, interval)
 
 	runSyncLoop(ctx, "keysync", interval, syncRetryDelays(interval), func() error {
 		return ks.syncAndApply(backendID, backendIP, httpPort)
 	})
 
-	log.Printf("[keysync] sync loop stopped for backend %s", backendID)
+	log.Printf("[keysync] sync loop stopped for backend %q", backendID)
 }
 
 // RunSyncLoopLegacy is backward-compatible: uses "default" as backend ID.
@@ -359,9 +361,9 @@ func (ks *KeyStore) RunSyncLoopLegacy(ctx context.Context, backendIP string, htt
 // the response for minutes.
 func (ks *KeyStore) syncAndApply(backendID, backendIP string, httpPort int) error {
 	if err := ks.Sync(backendID, backendIP, httpPort); err != nil {
-		log.Printf("[keysync] sync failed for %s: %v", backendID, err)
+		log.Printf("[keysync] sync failed for %q: %v", backendID, err)
 		if strings.Contains(err.Error(), "unexpected status 401") {
-			log.Printf("[keysync] backend %s rejected the signed /authorized-keys request with 401 — "+
+			log.Printf("[keysync] backend %q rejected the signed /authorized-keys request with 401 — "+
 				"this backend's CONTAINARIUM_SENTINEL_AUTH_SECRET doesn't match this sentinel's (or is unset). "+
 				"Until fixed, this backend never gets an sshpiper pipe entry and SSH to its containers silently "+
 				"fails with 'no matching pipe' (#687). Fix: set matching CONTAINARIUM_SENTINEL_AUTH_SECRET on both ends "+
@@ -376,14 +378,14 @@ func (ks *KeyStore) syncAndApply(backendID, backendIP string, httpPort int) erro
 		count = len(bk.users)
 	}
 	ks.mu.RUnlock()
-	log.Printf("[keysync] sync OK for %s: %d users", backendID, count)
+	log.Printf("[keysync] sync OK for %q: %d users", backendID, count)
 
 	// A failed push is worth retrying but must not abort the cycle: the
 	// pull already succeeded, and applying it is what keeps SSH working.
 	// Reported at the end so the loop still sees the cycle as incomplete.
 	pushErr := ks.PushSentinelKey(backendIP, httpPort)
 	if pushErr != nil {
-		log.Printf("[keysync] push sentinel key failed for %s: %v", backendID, pushErr)
+		log.Printf("[keysync] push sentinel key failed for %q: %v", backendID, pushErr)
 	}
 
 	if err := ks.Apply(); err != nil {
@@ -539,7 +541,7 @@ func writeCATrustBundleFile(path, content, version string) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("ssh ca trust: rename into place: %w", err)
 	}
-	log.Printf("[keysync] ssh ca trust bundle applied: version=%s", version)
+	log.Printf("[keysync] ssh ca trust bundle applied: version=%q", version)
 	return nil
 }
 
@@ -567,7 +569,7 @@ func renderSSHPiperConfig(routes []userRoute, caKeysPath string) []byte {
 		fmt.Fprintf(&buf, "    to:\n")
 		fmt.Fprintf(&buf, "      host: %s:%d\n", r.backendIP, sshPort)
 		fmt.Fprintf(&buf, "      username: %q\n", r.username)
-		fmt.Fprintf(&buf, "      ignore_hostkey: true\n")
+		fmt.Fprintf(&buf, "      known_hosts: %s\n", sshpiperKnownHosts)
 		fmt.Fprintf(&buf, "      private_key: %s\n", sshpiperUpstreamKey)
 	}
 	return buf.Bytes()

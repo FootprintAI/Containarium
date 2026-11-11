@@ -127,6 +127,9 @@ func (s *CodingToolEgressPolicyServer) SetAuditStore(a auditLogger) {
 func (s *CodingToolEgressPolicyServer) SetImplicit(imp codeegress.Implicit) { s.implicit = imp }
 
 func (s *CodingToolEgressPolicyServer) SetCodingToolEgressPolicy(ctx context.Context, req *pb.SetCodingToolEgressPolicyRequest) (*pb.SetCodingToolEgressPolicyResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeNetworkPolicyWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -191,6 +194,9 @@ func (s *CodingToolEgressPolicyServer) GetCodingToolEgressPolicy(ctx context.Con
 }
 
 func (s *CodingToolEgressPolicyServer) DeleteCodingToolEgressPolicy(ctx context.Context, req *pb.DeleteCodingToolEgressPolicyRequest) (*pb.DeleteCodingToolEgressPolicyResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeNetworkPolicyWrite); err != nil {
+		return nil, err
+	}
 	if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -251,6 +257,6 @@ func (s *CodingToolEgressPolicyServer) auditChange(ctx context.Context, action, 
 		ResourceID:   id,
 		Detail:       string(payload),
 	}); err != nil {
-		log.Printf("[code-egress] audit %s %s: %v", action, id, err)
+		log.Printf("[code-egress] audit %s %q: %v", action, id, err)
 	}
 }
