@@ -64,10 +64,12 @@ spec:
               value: {{ .Values.sharedVolumeStorageClass | quote }}
             - name: CONTAINARIUM_K8S_RUNTIME_CLASS
               value: {{ .Values.runtimeClass | quote }}
-            # Demo-mode: skip host-key verification so kind/dev clusters work
-            # out of the box. Set to "" in production and supply a known host key.
+            {{- if .Values.daemon.insecureIgnoreHostKey }}
+            # Opt-in only (daemon.insecureIgnoreHostKey): the gateway skips
+            # upstream host-key verification. Off by default (#3628).
             - name: CONTAINARIUM_K8S_INSECURE_IGNORE_HOST_KEY
               value: "1"
+            {{- end }}
           ports:
             - name: api
               containerPort: 8080
