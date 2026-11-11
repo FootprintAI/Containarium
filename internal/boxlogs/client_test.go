@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"strconv"
 	"testing"
 	"time"
 
@@ -90,7 +91,7 @@ func (c *cancelTailer) TailBoxLogs(req *pb.TailBoxLogsRequest) (*pb.TailBoxLogsR
 	if len(c.reqs) == c.cancelAt {
 		c.cancel()
 	}
-	return okWindow("c"+string(rune('0'+len(c.reqs))), false), nil
+	return okWindow("c"+strconv.Itoa(len(c.reqs)), false), nil
 }
 
 // A stopped box or an unsupported runtime is a typed error, not an empty
