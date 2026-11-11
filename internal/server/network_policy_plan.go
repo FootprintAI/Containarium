@@ -1,6 +1,8 @@
 package server
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"time"
@@ -46,6 +48,16 @@ type reconcilePlan struct {
 	ifName     map[int]string              // ifindex -> container name (for bookkeeping)
 	egress     []netbpf.EgressEntry        // per-tenant egress allow-list entries
 	deny       []netbpf.DenyEntry          // per-tenant virtual-patch deny entries (#660)
+	// compileFailed holds the tenants whose egress or deny rules failed to
+	// compile this pass (#3518). Neither set is planned for them; holdLastGood
+	// fills in what is installed so nothing of theirs is removed or replaced.
+	compileFailed map[uint32]compileFailure
+}
+
+// compileFailure is one tenant whose policy rules did not compile (#3518).
+type compileFailure struct {
+	Tenant string
+	Err    error
 }
 
 // planReconcile computes the desired BPF map state from the current container
@@ -65,6 +77,8 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 		ipTenant:   make(map[[4]byte]uint32),
 		vethPolicy: make(map[int]netbpf.PolicyConfig),
 		ifName:     make(map[int]string),
+
+		compileFailed: make(map[uint32]compileFailure),
 	}
 	// egress entries are per tenant, not per container — emit each tenant's set
 	// once, keyed by the tenant IDs we actually saw.
@@ -122,16 +136,21 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 		}
 
 		if hasPolicy && !egressDone[v.TenantID] {
-			if entries, err := netbpf.CompileEgress(v.TenantID, policy); err == nil {
-				plan.egress = append(plan.egress, entries...)
-			}
+			egressDone[v.TenantID] = true
 			// Virtual-patch deny entries (#660), once per tenant. Expired rules are
 			// already filtered out of policy.DenyRules by the daemon (compiledPolicies)
 			// before planning, so anything here is active.
-			if entries, err := netbpf.CompileDeny(v.TenantID, policy); err == nil {
-				plan.deny = append(plan.deny, entries...)
+			egress, errEgress := netbpf.CompileEgress(v.TenantID, policy)
+			deny, errDeny := netbpf.CompileDeny(v.TenantID, policy)
+			// Fail closed (#3518): one bad rule must not empty or shrink the
+			// tenant's sets, so neither is planned; the caller holds the last
+			// good ones and reports the failure.
+			if err := errors.Join(errEgress, errDeny); err != nil {
+				plan.compileFailed[v.TenantID] = compileFailure{Tenant: v.Tenant, Err: err}
+				continue
 			}
-			egressDone[v.TenantID] = true
+			plan.egress = append(plan.egress, egress...)
+			plan.deny = append(plan.deny, deny...)
 		}
 	}
 	return plan
@@ -372,4 +391,46 @@ func foldEgressModeForObject(plan *reconcilePlan, supportsEgressMode bool) map[u
 		ignored[cfg.TenantID] = true
 	}
 	return ignored
+}
+
+// holdLastGood adds, for every tenant whose rules failed to compile this pass,
+// the egress and deny entries already installed for it, so the converge step
+// neither deletes them nor adds a partial set (#3518). A tenant with nothing
+// installed yet keeps nothing: its policy has never compiled here.
+func holdLastGood(plan *reconcilePlan, egressInstalled map[netbpf.EgressEntry]bool, denyInstalled map[netbpf.DenyKey]netbpf.DenyEntry) {
+	if len(plan.compileFailed) == 0 {
+		return
+	}
+	for e := range egressInstalled {
+		if _, bad := plan.compileFailed[e.TenantID]; bad {
+			plan.egress = append(plan.egress, e)
+		}
+	}
+	for _, d := range denyInstalled {
+		if _, bad := plan.compileFailed[d.TenantID]; bad {
+			plan.deny = append(plan.deny, d)
+		}
+	}
+}
+
+// noteCompileFailures returns the log lines for compile failures that are new
+// or changed since the last pass, and for tenants that recovered, updating seen
+// in place, so a failure is logged once per change rather than every pass
+// (#3518). The tenant is quoted (%q): it is operator-supplied text.
+func noteCompileFailures(seen, failed map[uint32]compileFailure) []string {
+	var lines []string
+	for id, f := range failed {
+		if prev, ok := seen[id]; ok && prev.Tenant == f.Tenant && prev.Err.Error() == f.Err.Error() {
+			continue
+		}
+		seen[id] = f
+		lines = append(lines, fmt.Sprintf("[netpolicy] tenant %q (id %d): policy rules failed to compile, keeping the last good egress and deny sets: %v", f.Tenant, id, f.Err))
+	}
+	for id, prev := range seen {
+		if _, still := failed[id]; !still {
+			delete(seen, id)
+			lines = append(lines, fmt.Sprintf("[netpolicy] tenant %q (id %d): policy rules compile again", prev.Tenant, id))
+		}
+	}
+	return lines
 }

@@ -100,7 +100,16 @@ func boxRunDirScript(dir string) string {
 // present to the control plane), copied from the owner's home. It is not a Claude
 // login. Relative to $HOME. Written atomically and left in place: nothing deletes
 // it per run, so a run that ends cannot pull it from under one still going.
-var boxRunStagedPlatformCredentials = []string{
+//
+// Empty since the per-run token (box_run_token): a run gets its own token file
+// and never a copy of the box principal. Any copy left by an earlier daemon is
+// removed by the stage script (boxRunStaleCredentials).
+var boxRunStagedPlatformCredentials = []string{}
+
+// boxRunStaleCredentials are copies of the box principal that an earlier daemon
+// staged into the run user's home. The stage script removes them so the run user
+// cannot read the owner's 90-day principal after an upgrade.
+var boxRunStaleCredentials = []string{
 	".config/containarium/box-token",
 }
 
@@ -150,6 +159,9 @@ chmod 0700 "$r/.config/containarium"
 	}
 	for _, rel := range boxRunStagedPlatformCredentials {
 		b.WriteString("if [ -f \"$o/" + rel + "\" ]; then (umask 077; cat \"$o/" + rel + "\" > \"$r/" + rel + ".new\") && chown \"$u:$u\" \"$r/" + rel + ".new\" && chmod 0600 \"$r/" + rel + ".new\" && mv -f \"$r/" + rel + ".new\" \"$r/" + rel + "\"; fi\n")
+	}
+	for _, rel := range boxRunStaleCredentials {
+		b.WriteString("rm -f \"$r/" + rel + "\"\n")
 	}
 	// The skills layout: a plain tree, refreshed each run.
 	b.WriteString("if [ -d \"$o/.claude/skills\" ]; then rm -rf \"$r/.claude/skills\"; cp -R \"$o/.claude/skills\" \"$r/.claude/skills\"; chown -R \"$u:$u\" \"$r/.claude/skills\"; fi\n")

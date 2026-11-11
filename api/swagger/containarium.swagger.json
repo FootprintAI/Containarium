@@ -3706,6 +3706,62 @@
         ]
       }
     },
+    "/v1/containers/{username}/code-runs/{runName}/command-events": {
+      "get": {
+        "summary": "List a box code run's command events",
+        "description": "Returns the run's command events (START, END, BLOCKED) with after_seq \u003c seq, in seq order, at most limit (default and maximum 500), read from the run's audit file, which only root on the box can write. seq starts at 1 and is assigned by the audit sink. ended is true once the sink has finished and the page reaches the last event. state says the same as an enum (OPEN, ENDED) and adds INCOMPLETE: the run has stopped and its sink is gone without finishing the feed, so the page holds the last events there will be but ended stays false. A run that does not exist is NOT_FOUND; a run started without a command policy has no events. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_ListRunCommandEvents",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListRunCommandEventsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "runName",
+            "description": "The run's name, as ListBoxRuns reports it.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "afterSeq",
+            "description": "Return only events with a seq greater than this. 0 reads from the start.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "uint64"
+          },
+          {
+            "name": "limit",
+            "description": "At most this many events. 0 means the default, 500; the maximum is 500.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
     "/v1/containers/{username}/code-runs/{runName}/inputs": {
       "get": {
         "summary": "List a box code run's open permission requests",
@@ -11204,6 +11260,131 @@
       },
       "description": "AgentCard is the discovery document a skill serves so peer agents can find\nit and learn how to delegate to it (A2A, Phase 1). It is carried in-proto so\nthe wire format stays insulated from upstream A2A churn."
     },
+    "AgentCommandClass": {
+      "type": "string",
+      "enum": [
+        "AGENT_COMMAND_CLASS_UNSPECIFIED",
+        "AGENT_COMMAND_CLASS_LEVEL",
+        "AGENT_COMMAND_CLASS_ALLOWLISTED",
+        "AGENT_COMMAND_CLASS_HARD_DENIED",
+        "AGENT_COMMAND_CLASS_NOT_ALLOWED"
+      ],
+      "default": "AGENT_COMMAND_CLASS_UNSPECIFIED",
+      "description": "AgentCommandClass is how the pre hook classified a command.\n\n - AGENT_COMMAND_CLASS_LEVEL: Within the run's tool-access level; the engine's own rules decide it.\n - AGENT_COMMAND_CLASS_ALLOWLISTED: Outside the level, but matched an allowlist entry, so it was allowed.\n - AGENT_COMMAND_CLASS_HARD_DENIED: A hard deny matched (network client, git push, git remote, a git\ntransport option); refused whatever the level or allowlist says.\n - AGENT_COMMAND_CLASS_NOT_ALLOWED: Neither the level nor the allowlist matched; refused."
+    },
+    "AgentCommandCloseReason": {
+      "type": "string",
+      "enum": [
+        "AGENT_COMMAND_CLOSE_REASON_UNSPECIFIED",
+        "AGENT_COMMAND_CLOSE_REASON_HARD_DENY",
+        "AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED",
+        "AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE",
+        "AGENT_COMMAND_CLOSE_REASON_ENGINE_REFUSED",
+        "AGENT_COMMAND_CLOSE_REASON_INTERRUPTED",
+        "AGENT_COMMAND_CLOSE_REASON_UNRESOLVABLE"
+      ],
+      "default": "AGENT_COMMAND_CLOSE_REASON_UNSPECIFIED",
+      "description": "AgentCommandCloseReason says why a command was refused and its run ended\n(BLOCKED), or why the sink closed a START that got no END (END).\n\n - AGENT_COMMAND_CLOSE_REASON_HARD_DENY: A hard deny matched.\n - AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED: Neither the level nor the allowlist matched (or the command could not be\nparsed).\n - AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE: The start event could not be recorded, so the command was refused rather\nthan run unaudited.\n - AGENT_COMMAND_CLOSE_REASON_ENGINE_REFUSED: END written by the sink: the pre hook allowed or deferred the command, the\nengine then reported no result for it (no PostToolUse or\nPostToolUseFailure), and the run ended cleanly (its exit status is 0). The\nengine fires a post hook for every command it runs, success or failure, so\nthis is a command the engine itself refused after the hook, for example by\n--restricted path confinement: it did not run. outcome is NOT_RUN. The\nrun's exit status is recorded by a root process that is the run's parent\n(`agent-box run-supervise`), in a root-only directory, so the run user\ncannot write it; that the engine fires a post hook for every command it\nruns is the engine's behaviour, not a guarantee.\n - AGENT_COMMAND_CLOSE_REASON_INTERRUPTED: END written by the sink: the run ended with this command started and no\nend reported, and not cleanly (killed, timed out, crashed, a non-zero exit\nstatus, no exit status at all, or the sink itself was stopped). The command\nmay have run in part. outcome is UNKNOWN.\n - AGENT_COMMAND_CLOSE_REASON_UNRESOLVABLE: The command could not be resolved to the program it runs, so no rule can\nbe applied to it: it is a compound line (operator, redirection, subshell),\nor holds an expansion the parser cannot evaluate (brace expansion, a glob\nin the executable word, ANSI-C quoting, arithmetic expansion), or nests a\nquoted shell command deeper than the supported depth. Refused as the\nhard denies cannot be proven to hold for it; no hard deny matched."
+    },
+    "AgentCommandEvent": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/AgentCommandEventKind"
+        },
+        "time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Stamped by the sink, not by the hook."
+        },
+        "runName": {
+          "type": "string",
+          "description": "The run's name and the daemon-chosen id of this start of it. Stamped by the\nsink from its own configuration."
+        },
+        "runId": {
+          "type": "string"
+        },
+        "toolUseId": {
+          "type": "string",
+          "description": "The engine's id for the tool call: pairs a START with its END."
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The command's arguments after redaction. Leading environment assignments\n(NAME=value) are dropped, never logged."
+        },
+        "class": {
+          "$ref": "#/definitions/AgentCommandClass"
+        },
+        "exitCode": {
+          "type": "integer",
+          "format": "int32",
+          "description": "END only, and only when known; absent means unknown, never 0. For an engine\nrun it comes from the engine's hook input: an exit-code field in\ntool_response when present; for PostToolUse without one, 0 (the engine\nfires PostToolUse only for exit status 0); for PostToolUseFailure, the\nnumber N when the error text begins with the line \"Exit code N\" (0-255),\nand absent otherwise. That text is the engine's display format, not a\ncontract: if an engine release changes it, the code is recorded as absent,\nnot guessed. Command mode records the shell's status."
+        },
+        "closeReason": {
+          "$ref": "#/definitions/AgentCommandCloseReason",
+          "description": "BLOCKED, and an END the sink wrote for a START without one."
+        },
+        "approval": {
+          "$ref": "#/definitions/AgentRunApproval",
+          "description": "Set when the run is an approved re-run (attribution: who approved, which\napproval, and the event's time). Stamped by the sink."
+        },
+        "outcome": {
+          "$ref": "#/definitions/AgentCommandOutcome",
+          "description": "END only: whether the command ran."
+        },
+        "seq": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The event's position in its run's feed: 1 for the first event the sink\nwrites, then +1 for each. Assigned by the sink under its write lock,\nnever by a client (a value a client sends is overwritten), and never\nreused: a sink restarted for the same run continues after the last event\nin the file. A reader that sees a jump knows it missed events."
+        }
+      },
+      "description": "AgentCommandEvent is one line of a run's audit file (protojson). Command\noutput and environment variables are never part of it."
+    },
+    "AgentCommandEventKind": {
+      "type": "string",
+      "enum": [
+        "AGENT_COMMAND_EVENT_KIND_UNSPECIFIED",
+        "AGENT_COMMAND_EVENT_KIND_START",
+        "AGENT_COMMAND_EVENT_KIND_END",
+        "AGENT_COMMAND_EVENT_KIND_BLOCKED"
+      ],
+      "default": "AGENT_COMMAND_EVENT_KIND_UNSPECIFIED",
+      "description": "AgentCommandEventKind is the kind of one audit event.\n\n - AGENT_COMMAND_EVENT_KIND_START: Written before the command runs.\n - AGENT_COMMAND_EVENT_KIND_END: Written when the command has finished, with its exit code, by the post\nhook (engine run) or the command hook (command mode). Also written by the\nsink when the run ends with a START that has no END, so every START has\nexactly one END: then outcome is NOT_RUN or UNKNOWN, close_reason says\nwhy, and there is no exit code.\n - AGENT_COMMAND_EVENT_KIND_BLOCKED: The command was refused and the run was told to stop."
+    },
+    "AgentCommandOutcome": {
+      "type": "string",
+      "enum": [
+        "AGENT_COMMAND_OUTCOME_UNSPECIFIED",
+        "AGENT_COMMAND_OUTCOME_RAN",
+        "AGENT_COMMAND_OUTCOME_NOT_RUN",
+        "AGENT_COMMAND_OUTCOME_UNKNOWN"
+      ],
+      "default": "AGENT_COMMAND_OUTCOME_UNSPECIFIED",
+      "description": "AgentCommandOutcome says whether the command of an END ran.\n\n - AGENT_COMMAND_OUTCOME_RAN: The engine (post hook) or the command hook reported that it finished.\n - AGENT_COMMAND_OUTCOME_NOT_RUN: It did not run (close_reason ENGINE_REFUSED).\n - AGENT_COMMAND_OUTCOME_UNKNOWN: Unknown: the run was interrupted first (close_reason INTERRUPTED)."
+    },
+    "AgentCommandPolicy": {
+      "type": "object",
+      "properties": {
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowlist entries, each an argv glob: whitespace-separated elements, the\nfirst the executable name (matched exactly, no wildcard), every other a\npattern where `*` matches any run of characters inside ONE argv element. An\nentry matches a command with exactly as many elements. A command that holds\na shell operator, expansion or redirection never matches. A match lets the\ncommand run even when the run's tool-access level would not; hard denies\nstill apply. At most 256 entries of at most 512 bytes each."
+        },
+        "redactPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Regular expressions (RE2) added to the default redaction list. Any part of\na logged argument that matches is replaced by \"[REDACTED]\". At most 64."
+        }
+      },
+      "description": "AgentCommandPolicy is the caller-supplied (org) policy for one run."
+    },
     "AgentCredentialSource": {
       "type": "string",
       "enum": [
@@ -11270,6 +11451,20 @@
         }
       },
       "description": "AgentEngineStatus is one engine's readiness row, as ListAgentEngines\nreports it. One row per AgentEngine value (#2223)."
+    },
+    "AgentRunApproval": {
+      "type": "object",
+      "properties": {
+        "approvalId": {
+          "type": "string",
+          "description": "Opaque id of the approval, as the caller's approval record names it."
+        },
+        "approverId": {
+          "type": "string",
+          "description": "Opaque id of the user who approved."
+        }
+      },
+      "description": "AgentRunApproval names the human approval a re-run carries: a command that\nwas refused ends its run, and an approval starts a NEW run with this set; it\nnever resumes the refused one."
     },
     "AgentSkill": {
       "type": "object",
@@ -12179,6 +12374,10 @@
         "usage": {
           "$ref": "#/definitions/RunUsage",
           "description": "Tokens the engine reported for this run (capability \"run_usage\"). Always\nset; check usage.status before reading usage.models. UNAVAILABLE means the\ndaemon has no usage for the run (never zeros)."
+        },
+        "workdir": {
+          "type": "string",
+          "description": "The directory the run was started in, relative to the run's home, as\nrequested in StartBoxRunRequest.workdir (#3551). Empty when the run started\nin the home itself, and for a run from before the field. Capability\n\"box_run_workdir\"."
         }
       },
       "description": "BoxRun is one current run record on a box."
@@ -14496,6 +14695,13 @@
         "guardrailInput": {
           "$ref": "#/definitions/GuardrailGateInput",
           "description": "The dataset and attestation for a recipe with guardrail_gate set.\nRequired for such a recipe (absent is FAILED_PRECONDITION); ignored for\nan ungated one. A gated recipe cannot be deployed async."
+        },
+        "sshKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "SSH public keys to authorize (optional, can be added later).\nForwarded unchanged to the inner CreateContainer; same validation and\nlimits (at most 32 keys, each at most 8 KiB, each a well-formed OpenSSH\npublic key). An invalid or over-bound key refuses the whole deploy with\nINVALID_ARGUMENT before any container is created. Empty keeps the\nkey-less behaviour: add keys later with AddSSHKey / SetSSHKeys."
         }
       },
       "description": "DeployRecipeRequest provisions a new dedicated container from a recipe."
@@ -16694,6 +16900,10 @@
             "type": "string"
           },
           "description": "Instances carrying no user.containarium.* key (made directly in Incus,\nor a VM). Left unguarded and listed for information only; unlike\nunresolved they do not degrade the verdict (#2396)."
+        },
+        "isolationDegraded": {
+          "type": "boolean",
+          "description": "isolation_degraded is true while containers are created or kept without\ntenant-to-tenant isolation because this host cannot carry bridge NIC\nACLs and the create was allowed to proceed (fail-open, #3521). Clears\nonce a supported check passes."
         }
       },
       "description": "GuardStatus is one guard's last-pass snapshot."
@@ -17773,6 +17983,27 @@
         }
       }
     },
+    "ListRunCommandEventsResponse": {
+      "type": "object",
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/RunCommandEventEntry"
+          },
+          "description": "Events with seq \u003e after_seq in seq order, at most limit of them. A jump in\nseq between consecutive entries means events were missed."
+        },
+        "ended": {
+          "type": "boolean",
+          "description": "True when the run's audit sink has finished (every START has its END) and\nthis page reaches the last event: nothing more will ever be added. False\nwhile the run can still add events, or when more events are waiting past\nthis page."
+        },
+        "state": {
+          "$ref": "#/definitions/RunCommandFeedState",
+          "description": "Where the feed stands as of this page. A reader polls while it is OPEN\nand stops at ENDED or INCOMPLETE."
+        }
+      }
+    },
     "ListRunInputsResponse": {
       "type": "object",
       "properties": {
@@ -18534,10 +18765,12 @@
         "NETWORK_POLICY_UNCOVERED_PATH_IPV6",
         "NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG",
         "NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED",
-        "NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE"
+        "NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE",
+        "NETWORK_POLICY_UNCOVERED_PATH_POLICY_COMPILE_FAILED",
+        "NETWORK_POLICY_UNCOVERED_PATH_OPERATOR_SIGNATURES_STALE"
       ],
       "default": "NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED",
-      "description": "NetworkPolicyUncoveredPath is traffic the eBPF policy does not decide.\n\n - NETWORK_POLICY_UNCOVERED_PATH_IPV6: IPv6: the program parses IPv4 only, so IPv6 traffic passes unchecked.\n - NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG: Domain entries: egress_domains are re-resolved on a refresh loop (at\nmost every 60 seconds, sooner for a shorter record TTL), so an address a\ndomain moves to is denied, and an address it left still allowed, until\nthe next refresh and reconcile.\n - NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED: The host kernel is known to be too old for egress enforcement (TCX attach\nneeds 6.6 or newer), so the egress program cannot be attached here whatever\nthe other fields say. Reported in every state, including when no enforcer\nis running. A kernel release that cannot be read or parsed is unknown and\nis not reported as unsupported (#2972).\n - NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE: The tenant's egress allow-list in the kernel is not what its policy says:\nthe last reconcile pass failed to add or remove at least one entry. In\nenforce mode a missing entry denies traffic the policy allows, and an entry\nthat could not be removed keeps allowing traffic the policy no longer does.\nThe failed entries are retried on the next pass."
+      "description": "NetworkPolicyUncoveredPath is traffic the eBPF policy does not decide.\n\n - NETWORK_POLICY_UNCOVERED_PATH_IPV6: IPv6: the program parses IPv4 only, so IPv6 traffic passes unchecked.\n - NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG: Domain entries: egress_domains are re-resolved on a refresh loop (at\nmost every 60 seconds, sooner for a shorter record TTL), so an address a\ndomain moves to is denied, and an address it left still allowed, until\nthe next refresh and reconcile.\n - NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED: The host kernel is known to be too old for egress enforcement (TCX attach\nneeds 6.6 or newer), so the egress program cannot be attached here whatever\nthe other fields say. Reported in every state, including when no enforcer\nis running. A kernel release that cannot be read or parsed is unknown and\nis not reported as unsupported (#2972).\n - NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE: The tenant's egress allow-list in the kernel is not what its policy says:\nthe last reconcile pass failed to add or remove at least one entry. In\nenforce mode a missing entry denies traffic the policy allows, and an entry\nthat could not be removed keeps allowing traffic the policy no longer does.\nThe failed entries are retried on the next pass.\n - NETWORK_POLICY_UNCOVERED_PATH_POLICY_COMPILE_FAILED: The tenant's egress allow-list or deny rules failed to compile (e.g. a\nCIDR that is not IPv4), so the policy as stored is not what the kernel\nholds: the daemon keeps the tenant's last good egress and deny sets\nrather than loading a partial or empty one (#3518). The reason is in the\ndaemon log. Fix the policy to clear it.\n - NETWORK_POLICY_UNCOVERED_PATH_OPERATOR_SIGNATURES_STALE: The operator-signature store could not be read on the latest refresh, so\nthe enforcer keeps the last good signature set in the kernel. Signatures\nadded, changed or removed since then are not applied until the store\nanswers again; the state clears on its own (#3519). Reported only while\nthe enforcer is running."
     },
     "NetworkTenantSource": {
       "type": "string",
@@ -20049,7 +20282,7 @@
       "properties": {
         "state": {
           "type": "string",
-          "description": "Observed state. Must match one of the AssignmentState* values\n(pending / active / stopping / stopped). Empty rejected with\nInvalidArgument; values outside the enum also InvalidArgument."
+          "description": "Observed state. Must match one of the AssignmentState* values\n(pending / active / stopping / stopped / degraded). Empty rejected with\nInvalidArgument; values outside the enum also InvalidArgument."
         },
         "observedAt": {
           "type": "string",
@@ -20783,6 +21016,32 @@
           "description": "Tokens the engine reported for this run (capability \"run_usage\"). Always\nset; UNAVAILABLE when the daemon has no usage for the run."
         }
       }
+    },
+    "RunCommandEventEntry": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The event's seq, the same value as event.seq."
+        },
+        "event": {
+          "$ref": "#/definitions/AgentCommandEvent",
+          "description": "The START, END or BLOCKED event the run's audit sink recorded."
+        }
+      },
+      "description": "RunCommandEventEntry is one event with its position in the run's feed."
+    },
+    "RunCommandFeedState": {
+      "type": "string",
+      "enum": [
+        "RUN_COMMAND_FEED_STATE_UNSPECIFIED",
+        "RUN_COMMAND_FEED_STATE_OPEN",
+        "RUN_COMMAND_FEED_STATE_ENDED",
+        "RUN_COMMAND_FEED_STATE_INCOMPLETE"
+      ],
+      "default": "RUN_COMMAND_FEED_STATE_UNSPECIFIED",
+      "description": "RunCommandFeedState is where a run's command event feed stands as of one\npage of it.\n\n - RUN_COMMAND_FEED_STATE_UNSPECIFIED: A daemon that predates this field; read ended instead.\n - RUN_COMMAND_FEED_STATE_OPEN: More events can still come, or more are waiting past this page. Ask\nagain after the last seq received.\n - RUN_COMMAND_FEED_STATE_ENDED: The same as ended = true: the feed is complete and this page reaches its\nlast event.\n - RUN_COMMAND_FEED_STATE_INCOMPLETE: The run has stopped and its audit sink is gone without finishing the\nfeed (it was killed, or could not start). This page reaches the last\nevent stored and this start of the run adds nothing more, but the feed\nis not complete: events may be missing from its end, and a START may\nhave no END. ended stays false."
     },
     "RunCrewBody": {
       "type": "object",
@@ -22420,16 +22679,28 @@
         },
         "runToken": {
           "type": "string",
-          "description": "run_token is reserved for a per-run credential. This daemon does not\nhonour it: the field is accepted and ignored (it is never written to the\nbox), and the daemon does not advertise the box_run_token capability. A\nclient must send it only to a daemon that advertises box_run_token, and\nmust not rely on it for a credential."
+          "description": "run_token is the per-run cloud credential for this run (the agent-run\ntoken, prd/cloud/agent-run-token.md). The daemon writes it to a 0600 file\nowned by the run user, points CONTAINARIUM_JWT_TOKEN_FILE at that file for\nthe run, and deletes it when the run exits or is stopped. The token never\nappears in a command line or a script. At most 8 KiB, with no NUL and no\nline break (INVALID_ARGUMENT otherwise, before anything on the box is\ntouched).\n\nA run as the box's unprivileged run user (a box with a recorded\ntool-access level; prompt and command mode alike) MUST carry run_token:\nthe box principal is no longer copied into the run user's home, so without\nit the run would have no platform credential. Such a request without\nrun_token is FAILED_PRECONDITION, naming run_token and box_run_token,\nbefore anything is rotated or spawned. A run as the box owner (no recorded\nlevel) is unchanged and may omit it.\n\nSend it only to a daemon that advertises \"box_run_token\" in\nSystemInfo.capabilities: an older daemon accepts the field and ignores it."
         },
         "command": {
           "type": "string",
-          "description": "Command mode (#3322): run this shell command (through `sh -c`) instead of\nan engine prompt. No engine starts and no agent credential is loaded, so\nthe run user's agent sign-in is not required. Mutually exclusive with\nprompt, session_id, continue_session, structured_output and model\n(INVALID_ARGUMENT, before anything on the box is touched). The command\nruns as the box's run user with the sudo grant of its recorded\ntool-access level, in that user's home directory: the level selects the\nrun user and its sudo grant, nothing more. The engine's allow/deny tool\npolicy applies to engine runs only, so a caller holding the command-mode\nscope can run any program the run user can. A caller that needs a\ncheckout makes it part of the command. The run is\nlisted, tailed and stopped like any other (ListBoxRuns, TailBoxRunLog,\nStopBoxRun); BoxRun.session_id stays empty. Capability \"box_run_command\"\nin SystemInfo.capabilities."
+          "description": "Command mode (#3322): run this shell command (through `sh -c`) instead of\nan engine prompt. No engine starts and no agent credential is loaded, so\nthe run user's agent sign-in is not required. Mutually exclusive with\nprompt, session_id, continue_session, structured_output and model\n(INVALID_ARGUMENT, before anything on the box is touched). The command\nruns as the box's run user with the sudo grant of its recorded\ntool-access level, in that user's home directory. Without command_policy\nthe level selects the run user and its sudo grant, nothing more: the\nengine's allow/deny tool policy does not apply, so a caller holding the\ncommand-mode scope can run any program the run user can. With\ncommand_policy the command goes through the same decision, sink and events\nas an engine run's shell commands (see command_policy). A caller that needs\na checkout makes it part of the command. The run is\nlisted, tailed and stopped like any other (ListBoxRuns, TailBoxRunLog,\nStopBoxRun); BoxRun.session_id stays empty. Capability \"box_run_command\"\nin SystemInfo.capabilities."
         },
         "timeoutSeconds": {
           "type": "integer",
           "format": "int32",
           "description": "With command: the daemon ends the command after this many seconds\n(`timeout -k 5`, so the run exits with code 124). 0 means the daemon's\ndefault of 900; more than 3600 is INVALID_ARGUMENT, as is a value without\ncommand."
+        },
+        "commandPolicy": {
+          "$ref": "#/definitions/AgentCommandPolicy",
+          "description": "Command allowlist and audit events for this run (#3582). Requires a\nrecorded tool-access level (FAILED_PRECONDITION otherwise) and, for an\nengine run, the Claude Code engine. Every shell command is then classified\nbefore it runs: within the level it runs as before; outside it, it runs\nonly if an allow entry matches; a hard deny (network clients, git push, git\nremote, git transport options) or no match refuses it and ENDS the run. An\nengine run gets this through PreToolUse / PostToolUse hooks; a command-mode\nrun (command) through the same decision applied to its one command, which\non a refusal never runs: the run exits 120 and records a BLOCKED event with\nits close reason. Each command gets a start event before it runs and\nexactly one end event (exit code when known, and whether it ran; the sink\nwrites it when the run ends first, see AgentCommandEvent), in an\nappend-only file inside the box that the\nrun user cannot write (/var/lib/containarium-run-audit/events/\u003crun_name\u003e.jsonl,\nprotojson AgentCommandEvent lines). At FULL_SUDO all of this applies but is\nadvisory: the run user can become root and step around it, so it is not a\nsecurity boundary at that level. Capability \"box_run_command_policy\"."
+        },
+        "approval": {
+          "$ref": "#/definitions/AgentRunApproval",
+          "description": "Set when this run is a re-run a human approved after a refusal: every\nevent of the run records it. Needs command_policy, and is refused with\nsession_id or continue_session (INVALID_ARGUMENT): an approval starts a new\nrun, it never resumes the refused one. Each id must match\n[A-Za-z0-9._:@-]{1,128}."
+        },
+        "workdir": {
+          "type": "string",
+          "description": "The directory the run starts in, relative to the home directory a run\nstarts in without it (#3551): the box user's home, or the unprivileged run\nuser's home on a box with a recorded tool-access level. Empty keeps that\nhome. Applies to prompt and command runs alike; the engine's session\nfolder, and what continue_session resumes, follow the directory. The value\nmust be in the canonical relative form WriteBoxFileRequest.path uses: no\nleading \"/\", no \".\" or \"..\" segment, no empty or trailing segment, no\ncontrol characters, at most 1024 bytes, and not under .ssh or\n.containarium; anything else is INVALID_ARGUMENT before the box is\ntouched. The directory must already exist and be a directory the run user\ncan enter, checked as that user before anything on the box is changed:\notherwise FAILED_PRECONDITION naming it, and no run starts. It is never\ncreated, and there is no fallback to the home. BoxRun.workdir reports it.\nCapability \"box_run_workdir\" in SystemInfo.capabilities."
         }
       },
       "description": "StartBoxRunRequest starts (or resumes) a coding-agent run on a box through\nthe daemon API — no SSH client, no agent-box RPC (#2193): the daemon\nroot-execs the same on-disk contract `containarium code run` leaves via\nagent-box's process_start, so ListBoxRuns and TailBoxRunLog read a\ndaemon-started run exactly like one `code run` started.\n\nThe engine and its credential source are never request fields: they come\nfrom the box's own ~/.containarium/code.json (`code install`, #1727) —\nthis RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of\nscope by the same rule #2030 settled for `code install`: this starts or\nresumes an already-authenticated session only."
@@ -22955,7 +23226,7 @@
           "items": {
             "type": "string"
           },
-          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model),\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds),\n\"box_skill_sets\" (the ApplyBoxSkillSets RPC, #3374), \"box_files\" (the\nWriteBoxFile RPC, #3548) and \"box_files_stream\" (the WriteBoxFileStream\nRPC, files up to 64 MiB, #3548).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
+          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model),\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds),\n\"box_run_workdir\" (StartBoxRunRequest.workdir, BoxRun.workdir, #3551),\n\"box_skill_sets\" (the ApplyBoxSkillSets RPC, #3374), \"box_files\" (the\nWriteBoxFile RPC, #3548) and \"box_files_stream\" (the WriteBoxFileStream\nRPC, files up to 64 MiB, #3548).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
         },
         "storagePools": {
           "type": "array",

@@ -58,6 +58,7 @@ const (
 	ContainerService_ApplyBoxSkillSets_FullMethodName         = "/containarium.v1.ContainerService/ApplyBoxSkillSets"
 	ContainerService_GetRunApprovalKey_FullMethodName         = "/containarium.v1.ContainerService/GetRunApprovalKey"
 	ContainerService_ListRunInputs_FullMethodName             = "/containarium.v1.ContainerService/ListRunInputs"
+	ContainerService_ListRunCommandEvents_FullMethodName      = "/containarium.v1.ContainerService/ListRunCommandEvents"
 	ContainerService_AnswerRunInput_FullMethodName            = "/containarium.v1.ContainerService/AnswerRunInput"
 	ContainerService_AddCollaborator_FullMethodName           = "/containarium.v1.ContainerService/AddCollaborator"
 	ContainerService_RemoveCollaborator_FullMethodName        = "/containarium.v1.ContainerService/RemoveCollaborator"
@@ -334,6 +335,10 @@ type ContainerServiceClient interface {
 	// ListRunInputs lists the open permission requests of a box run (#2184).
 	// Same access as StartBoxRun.
 	ListRunInputs(ctx context.Context, in *ListRunInputsRequest, opts ...grpc.CallOption) (*ListRunInputsResponse, error)
+	// ListRunCommandEvents reads a box run's command events (#3582): the START,
+	// END and BLOCKED records the run's audit sink wrote, in order, after a
+	// given sequence number. Read-only. Same access as ListRunInputs.
+	ListRunCommandEvents(ctx context.Context, in *ListRunCommandEventsRequest, opts ...grpc.CallOption) (*ListRunCommandEventsResponse, error)
 	// AnswerRunInput answers one permission request of a box run (#2184).
 	// Answering a request that is already closed or expired changes nothing
 	// and reports the existing outcome. StartBoxRun's access rule plus the
@@ -887,6 +892,16 @@ func (c *containerServiceClient) ListRunInputs(ctx context.Context, in *ListRunI
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListRunInputsResponse)
 	err := c.cc.Invoke(ctx, ContainerService_ListRunInputs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ListRunCommandEvents(ctx context.Context, in *ListRunCommandEventsRequest, opts ...grpc.CallOption) (*ListRunCommandEventsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRunCommandEventsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ListRunCommandEvents_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1527,6 +1542,10 @@ type ContainerServiceServer interface {
 	// ListRunInputs lists the open permission requests of a box run (#2184).
 	// Same access as StartBoxRun.
 	ListRunInputs(context.Context, *ListRunInputsRequest) (*ListRunInputsResponse, error)
+	// ListRunCommandEvents reads a box run's command events (#3582): the START,
+	// END and BLOCKED records the run's audit sink wrote, in order, after a
+	// given sequence number. Read-only. Same access as ListRunInputs.
+	ListRunCommandEvents(context.Context, *ListRunCommandEventsRequest) (*ListRunCommandEventsResponse, error)
 	// AnswerRunInput answers one permission request of a box run (#2184).
 	// Answering a request that is already closed or expired changes nothing
 	// and reports the existing outcome. StartBoxRun's access rule plus the
@@ -1809,6 +1828,9 @@ func (UnimplementedContainerServiceServer) GetRunApprovalKey(context.Context, *G
 }
 func (UnimplementedContainerServiceServer) ListRunInputs(context.Context, *ListRunInputsRequest) (*ListRunInputsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListRunInputs not implemented")
+}
+func (UnimplementedContainerServiceServer) ListRunCommandEvents(context.Context, *ListRunCommandEventsRequest) (*ListRunCommandEventsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListRunCommandEvents not implemented")
 }
 func (UnimplementedContainerServiceServer) AnswerRunInput(context.Context, *AnswerRunInputRequest) (*AnswerRunInputResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AnswerRunInput not implemented")
@@ -2638,6 +2660,24 @@ func _ContainerService_ListRunInputs_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).ListRunInputs(ctx, req.(*ListRunInputsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ListRunCommandEvents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRunCommandEventsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ListRunCommandEvents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ListRunCommandEvents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ListRunCommandEvents(ctx, req.(*ListRunCommandEventsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3520,6 +3560,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListRunInputs",
 			Handler:    _ContainerService_ListRunInputs_Handler,
+		},
+		{
+			MethodName: "ListRunCommandEvents",
+			Handler:    _ContainerService_ListRunCommandEvents_Handler,
 		},
 		{
 			MethodName: "AnswerRunInput",

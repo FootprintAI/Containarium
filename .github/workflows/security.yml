@@ -89,7 +89,7 @@ jobs:
 
       - name: Run gosec
         if: steps.reuse.outputs.reused != 'true'
-        uses: securego/gosec@a7abd50b2947e53b26a7e200223e635ce36fac9b # master
+        uses: securego/gosec@14c713478ed40c9bdfa56d35d9c2142b91608106 # master
         with:
           # -exclude-generated: generated protobuf/grpc-gateway stubs
           # (pkg/pb/**) are never hand-edited (CLAUDE.md) and carry ~130
@@ -104,7 +104,7 @@ jobs:
           args: '-no-fail -exclude-generated -fmt sarif -out gosec-results.sarif ./...'
 
       - name: Upload SARIF results
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
         if: always()
         with:
           sarif_file: gosec-results.sarif
@@ -119,7 +119,7 @@ jobs:
       - name: Set up Go
         uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           cache-name: shared
 
       - name: Install govulncheck
@@ -221,7 +221,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
 
       - name: Upload Trivy SARIF results
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
         if: always()
         with:
           sarif_file: trivy-results.sarif

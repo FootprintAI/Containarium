@@ -126,6 +126,29 @@ at a time so a single bad config doesn't blackhole the fleet.
 3. Daemon logs show `[peer-pki] bootstrap complete` after the
    sentinel is up and reachable on `:8889`.
 
+### Refusing the plain-HTTP fallback (`--require-peer-mtls`)
+
+By default a daemon whose peer-PKI bootstrap fails (or is skipped) keeps
+running and carries peer calls over plain HTTP, logging one
+`[peer-pki] peer mTLS not enabled` notice. To make that an error instead,
+start the daemon with `--require-peer-mtls` (or
+`CONTAINARIUM_REQUIRE_PEER_MTLS=1`): `Start` then fails when peer calls
+exist but mTLS is not active. A standalone daemon (no sentinel, no peers)
+is unaffected. Off by default.
+
+### Other plaintext fallbacks (warn-only, #3517)
+
+- **CLI / REST client:** a `--server` value with no scheme still defaults to
+  `http://`; when the host is not loopback a warning is printed to stderr.
+  Set `CONTAINARIUM_ALLOW_PLAINTEXT_FALLBACK=1` to acknowledge and silence it.
+- **Web UI:** the same fallback logs a browser-console warning once per
+  endpoint. Acknowledge with
+  `localStorage.setItem('containarium.allowPlaintextFallback', '1')`.
+- **Cloud actuation client:** a non-loopback `http://` control plane logs a
+  `[cloud] WARNING` line at start and enroll; use `https://`.
+
+Loopback endpoints (`localhost`, `127.0.0.0/8`, `::1`) never warn.
+
 ### Step C: Retire the rollout fallbacks
 
 Once 100% of nodes are on the new env, drop the rollout-friendly

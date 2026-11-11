@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/footprintai/containarium/internal/client"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
@@ -205,6 +206,10 @@ func runBackupCreate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// createBoxBackupFn is the whole-box backup the platform MCP tool
+// create_backup (scope "box") also calls (CLI-first, CLAUDE.md, #3504).
+var createBoxBackupFn = client.CreateBoxBackup
+
 // runBackupCreateBox sends a BOX-scope create (#2801). The flags that only
 // mean something for a database backup are refused rather than ignored, and
 // so is a missing key mode: the daemon would refuse it too, and saying so
@@ -231,18 +236,11 @@ func runBackupCreateBox(username string, dest pb.BackupDestination, keyMode pb.B
 		return fmt.Errorf("--box needs --key-mode (managed, both or age-recipient): a whole-box backup is never plaintext")
 	}
 
-	c, err := newBackupClientFn()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = c.Close() }()
-
 	fmt.Printf("Backing up the whole box of %s to %s (key mode %s)...\n", username, backupCreateDest, keyModeLabel(keyMode))
-	resp, err := c.CreateBackup(&pb.CreateBackupRequest{
-		Username:     username,
-		Scope:        pb.BackupScope_BACKUP_SCOPE_BOX,
+	resp, err := createBoxBackupFn(func() (client.BoxBackupAPI, error) { return newBackupClientFn() }, client.BoxBackupParams{
+		Box:          username,
 		Destination:  dest,
-		GcsBucket:    backupCreateBucket,
+		GCSBucket:    backupCreateBucket,
 		AgeRecipient: backupCreateAgeRecipient,
 		KeyMode:      keyMode,
 	})

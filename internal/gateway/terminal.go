@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -27,6 +28,13 @@ type PeerTerminalProxy interface {
 	// PeerTerminalURL returns the WebSocket proxy URL for a container on a remote peer.
 	// Returns ("", nil) if the container is local.
 	PeerTerminalURL(username, authToken string) (string, error)
+}
+
+// PeerTerminalTLS is optionally implemented by a PeerTerminalProxy whose
+// peers serve TLS. Its config (pinned pool CA, client leaf) is used to dial
+// a wss:// peer URL (#3516). A nil config dials with the default.
+type PeerTerminalTLS interface {
+	PeerTerminalTLSConfig() *tls.Config
 }
 
 // TerminalHandler handles WebSocket terminal connections via Incus exec
@@ -367,7 +375,14 @@ func (th *TerminalHandler) proxyWebSocket(w http.ResponseWriter, r *http.Request
 	peerHeaders := http.Header{}
 	peerHeaders.Set("Sec-WebSocket-Protocol", auth.WSSubprotocolBearer+", "+authToken)
 
-	peerConn, _, err := websocket.DefaultDialer.Dial(u.String(), peerHeaders)
+	// A wss:// peer is dialled with the pool's pinned CA (#3516).
+	dialer := *websocket.DefaultDialer
+	if u.Scheme == "wss" {
+		if tp, ok := th.peerProxy.(PeerTerminalTLS); ok {
+			dialer.TLSClientConfig = tp.PeerTerminalTLSConfig()
+		}
+	}
+	peerConn, _, err := dialer.Dial(u.String(), peerHeaders)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to connect to peer terminal: %v", err), http.StatusBadGateway)
 		return

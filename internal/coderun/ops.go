@@ -98,11 +98,17 @@ const (
 // instead of starting the command unbounded. 0 (or a negative value) means the
 // default; the cap is the caller's to enforce before this.
 func BuildShellCommand(command string, timeoutSeconds int) string {
+	return BuildTimedCommand("sh -c "+ShellQuoteSingle(command), timeoutSeconds)
+}
+
+// BuildTimedCommand is BuildShellCommand for a line the caller has already
+// quoted: argv runs under the same timeout and missing-timeout guard.
+func BuildTimedCommand(argv string, timeoutSeconds int) string {
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = DefaultCommandTimeoutSeconds
 	}
 	return "command -v timeout >/dev/null 2>&1 || { echo " + ShellQuoteSingle(MissingTimeoutMessage) + " >&2; exit " + strconv.Itoa(MissingTimeoutExitCode) + "; }; " +
-		"timeout -k 5 " + strconv.Itoa(timeoutSeconds) + " sh -c " + ShellQuoteSingle(command)
+		"timeout -k 5 " + strconv.Itoa(timeoutSeconds) + " " + argv
 }
 
 // CommandTimeoutSeconds turns a `--timeout` duration into the whole seconds the

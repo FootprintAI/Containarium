@@ -241,13 +241,15 @@ bundle-sdlc-skills: ## Package the pinned SDLC role skills (pkg/core/sdlcskills/
 build-agent-box-linux: ## Build agent-box for Linux (the typical install target — agent-box runs INSIDE LXC containers)
 	@echo "==> Building agent-box for Linux..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64 cmd/agent-box/main.go
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64 cmd/agent-box/main.go
+	@./scripts/test-agent-box-static.sh $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64
 	@echo "==> agent-box built: $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64"
 
 build-agent-box-all: ## Build agent-box for all platforms
 	@echo "==> Building agent-box for all platforms..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64 cmd/agent-box/main.go
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64 cmd/agent-box/main.go
+	@./scripts/test-agent-box-static.sh $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-linux-amd64
 	@GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-darwin-amd64 cmd/agent-box/main.go
 	@GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(AGENTBOX_BINARY_NAME)-darwin-arm64 cmd/agent-box/main.go
 	@echo "==> agent-box binaries built in $(BUILD_DIR)/"

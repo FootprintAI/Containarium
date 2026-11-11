@@ -9,10 +9,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/hostport"
 	"github.com/footprintai/containarium/internal/runlog"
 	"github.com/footprintai/containarium/internal/toolaccess"
 	"github.com/footprintai/containarium/pkg/core/incus"
@@ -46,6 +48,23 @@ func WithHTTPClient(httpClient *http.Client) HTTPClientOption {
 	}
 }
 
+// EnvAllowPlaintextFallback acknowledges that a scheme-less, non-loopback
+// server endpoint is deliberately reached over plain http://. When set to a
+// truthy value (1, true, yes, on) the fallback warning is not printed (#3517).
+const EnvAllowPlaintextFallback = "CONTAINARIUM_ALLOW_PLAINTEXT_FALLBACK"
+
+// plaintextWarnWriter receives the plaintext-fallback warning. A variable so
+// tests can capture it.
+var plaintextWarnWriter io.Writer = os.Stderr
+
+func plaintextFallbackAllowed() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnvAllowPlaintextFallback))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
 // NewHTTPClient creates a new HTTP client
 func NewHTTPClient(baseURL string, token string, options ...HTTPClientOption) (*HTTPClient, error) {
 	if baseURL == "" {
@@ -54,6 +73,11 @@ func NewHTTPClient(baseURL string, token string, options ...HTTPClientOption) (*
 
 	// Ensure baseURL has proper format
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		// Scheme-less endpoints still default to http:// (unchanged), but a
+		// non-loopback one sends the token in the clear: say so (#3517).
+		if !hostport.IsLoopback(baseURL) && !plaintextFallbackAllowed() {
+			fmt.Fprintf(plaintextWarnWriter, "warning: server endpoint %q has no scheme; falling back to plaintext http://, so the token is sent unencrypted. Use an https:// endpoint, or set %s=1 to acknowledge.\n", baseURL, EnvAllowPlaintextFallback)
+		}
 		baseURL = "http://" + baseURL
 	}
 	// Remove trailing slash
@@ -1909,9 +1933,7 @@ func (c *HTTPClient) GetWorkspaceAccess(name string) (*pb.GetWorkspaceAccessResp
 }
 
 // DeployRecipe provisions a new dedicated container from a recipe via HTTP.
-// guardrailInput is the dataset and attestation for a guardrail-gated recipe
-// (#2368); nil for an ungated one.
-func (c *HTTPClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string, guardrailInput *pb.GuardrailGateInput) (*pb.DeployRecipeResponse, error) {
+func (c *HTTPClient) DeployRecipe(recipeID, name string, opts DeployRecipeOptions) (*pb.DeployRecipeResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // image + model pulls can take time
 	defer cancel()
 
@@ -1919,13 +1941,14 @@ func (c *HTTPClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, p
 	reqBody := deployRecipeRequest{
 		RecipeID:   recipeID,
 		Name:       name,
-		GPU:        gpu,
-		BackendID:  backendID,
-		Pool:       pool,
-		Parameters: params,
+		GPU:        opts.GPU,
+		BackendID:  opts.BackendID,
+		Pool:       opts.Pool,
+		Parameters: opts.Parameters,
+		SSHKeys:    opts.SSHKeys,
 	}
-	if guardrailInput != nil {
-		raw, err := protojson.Marshal(guardrailInput)
+	if opts.GuardrailInput != nil {
+		raw, err := protojson.Marshal(opts.GuardrailInput)
 		if err != nil {
 			return nil, fmt.Errorf("marshal guardrail_input: %w", err)
 		}

@@ -50,6 +50,15 @@ func TestTenantGuardStatusToProto(t *testing.T) {
 	}
 }
 
+func TestTenantGuardStatusToProto_IsolationDegraded(t *testing.T) {
+	if got := tenantGuardStatusToProto(tenantguard.Status{Mode: nicguard.ModeEnforce, IsolationDegraded: true}); !got.IsolationDegraded {
+		t.Errorf("degraded isolation not reported: %+v", got)
+	}
+	if got := tenantGuardStatusToProto(tenantguard.Status{Mode: nicguard.ModeEnforce}); got.IsolationDegraded {
+		t.Errorf("degraded reported on a healthy guard: %+v", got)
+	}
+}
+
 func TestGuardStatusToProto_UnsupportedAndOff(t *testing.T) {
 	ts := tenantguard.Status{Mode: nicguard.ModeEnforce, FirewallDriver: "xtables", Unsupported: true,
 		LastError: "tenantguard: " + nicguard.ErrUnsupportedFirewall.Error() + " (driver=\"xtables\")", StaleSince: time.Unix(1, 0)}

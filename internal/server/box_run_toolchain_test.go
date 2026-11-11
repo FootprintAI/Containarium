@@ -68,7 +68,7 @@ func TestStartBoxRun_MissingManagedToolchain(t *testing.T) {
 					return nil
 				}
 			}
-			_, err := s.StartBoxRun(adminCtx(), &pb.StartBoxRunRequest{Username: "alice", Prompt: "build"})
+			_, err := s.StartBoxRun(adminCtx(), runTokenFor(s, &pb.StartBoxRunRequest{Username: "alice", Prompt: "build"}))
 			if tc.refused {
 				if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "/opt/containarium/toolchains") {
 					t.Fatalf("missing mount: got %v, want FailedPrecondition naming mount", err)
@@ -121,7 +121,7 @@ func TestStartBoxRunCommand_MissingManagedToolchainHasTypedReason(t *testing.T) 
 			return "", nil
 		},
 	}
-	_, err := s.StartBoxRun(adminCtx(), &pb.StartBoxRunRequest{Username: "alice", Command: "make", TimeoutSeconds: 60})
+	_, err := s.StartBoxRun(adminCtx(), runTokenFor(s, &pb.StartBoxRunRequest{Username: "alice", Command: "make", TimeoutSeconds: 60}))
 	if status.Code(err) != codes.FailedPrecondition || spawned {
 		t.Fatalf("spawned=%v err=%v", spawned, err)
 	}

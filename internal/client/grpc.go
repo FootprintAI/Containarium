@@ -953,21 +953,38 @@ func (c *GRPCClient) GetWorkspaceAccess(name string) (*pb.GetWorkspaceAccessResp
 	return resp, nil
 }
 
+// DeployRecipeOptions are a recipe deploy's optional inputs, shared by the
+// gRPC and HTTP clients (and so by the CLI and the MCP deploy_recipe tool).
+type DeployRecipeOptions struct {
+	// GPU is the device ID for passthrough; required for GPU recipes.
+	GPU string
+	// BackendID and Pool select placement (v1: the local backend only).
+	BackendID string
+	Pool      string
+	// Parameters override the recipe's declared parameters by name.
+	Parameters map[string]string
+	// GuardrailInput is the dataset and attestation for a guardrail-gated
+	// recipe (#2368); nil for an ungated one.
+	GuardrailInput *pb.GuardrailGateInput
+	// SSHKeys are public keys authorized on the new box at create time
+	// (#3514), under CreateContainer's validation and limits. Empty: none.
+	SSHKeys []string
+}
+
 // DeployRecipe provisions a new dedicated container from a recipe via gRPC.
-// guardrailInput is the dataset and attestation for a guardrail-gated recipe
-// (#2368); nil for an ungated one.
-func (c *GRPCClient) DeployRecipe(recipeID, name, gpu, backendID, pool string, params map[string]string, guardrailInput *pb.GuardrailGateInput) (*pb.DeployRecipeResponse, error) {
+func (c *GRPCClient) DeployRecipe(recipeID, name string, opts DeployRecipeOptions) (*pb.DeployRecipeResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute) // image + model pulls can take time
 	defer cancel()
 
 	req := &pb.DeployRecipeRequest{
 		RecipeId:       recipeID,
 		Name:           name,
-		Gpu:            gpu,
-		BackendId:      backendID,
-		Pool:           pool,
-		Parameters:     params,
-		GuardrailInput: guardrailInput,
+		Gpu:            opts.GPU,
+		BackendId:      opts.BackendID,
+		Pool:           opts.Pool,
+		Parameters:     opts.Parameters,
+		GuardrailInput: opts.GuardrailInput,
+		SshKeys:        opts.SSHKeys,
 	}
 	resp, err := c.recipeClient.DeployRecipe(ctx, req)
 	if err != nil {

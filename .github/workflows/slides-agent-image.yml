@@ -114,7 +114,7 @@ jobs:
       # on PATH, so it runs here.
       - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           cache-name: shared
       - name: Proxy-level login test with the image's caddy (#3486)
         run: |
@@ -159,7 +159,7 @@ jobs:
           exit-code: '1'
 
       - name: Upload Trivy SARIF results
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
         if: always()
         with:
           sarif_file: trivy-slides-agent-results.sarif

@@ -146,7 +146,10 @@ type ContainerServer struct {
 	boxRunExec         boxScriptFunc
 	boxRunCollaborator collaboratorCheckFunc
 	boxRunLogDir       string
-	boxRunPoll         time.Duration
+	// boxRunAuditDir is the box path of the run audit directory the command
+	// event feed is read from (#3582); empty means runhook.AuditDir.
+	boxRunAuditDir string
+	boxRunPoll     time.Duration
 	// boxRunStartExec is StartBoxRun's own exec seam (#2193), separate from
 	// boxRunExec: production needs to run AS the box's own Linux user (so the
 	// spawned engine reads that user's credentials and the files it creates
@@ -157,6 +160,8 @@ type ContainerServer struct {
 	// into, so it sets this directly to a plain `sh -c` runner, exactly like
 	// boxRunExec's existing tests do for List/Tail.
 	boxRunStartExec boxRunStartFunc
+	// boxRunTokenInstall is the run-token install seam (box_run_token_install.go).
+	boxRunTokenInstall boxRunTokenInstallFunc
 
 	// WriteBoxFile (#3548, box_file_write.go). boxFileWrite is the file API
 	// seam (nil: the container manager's WriteFile) and boxFileStageDir where
@@ -199,7 +204,7 @@ type ContainerServer struct {
 	// apply holds it for writing, a run start for reading (#3510).
 	boxSkillSetsInstall boxSkillSetsInstallFunc
 	boxSkillSetLocks    sync.Map       // key: box name -> *sync.RWMutex
-	boxRunStarts        boxGateHolders // run starts holding a box's gate, for naming in a refused apply (#3530)
+	boxGateHolders      boxGateHolders // who holds each box's gate (run starts, an apply), for a refused apply's reason and message (#3530, #3537)
 	// skillSetsApplyLease overrides the apply marker's lease
 	// (sdlcskills.ApplyMarkerLease) for tests; 0 = the default (#3529).
 	skillSetsApplyLease time.Duration
