@@ -229,13 +229,14 @@ func TestStartBoxRun_RunUserWithATokenGetsItsOwnCredentialAndNoPrincipal(t *test
 }
 
 // A start that fails at the spawn, after the token was installed, removes the
-// token: no run exists whose exit path or stop would. The removal runs as the
-// run user (the token's owner), after the failed spawn, and names the run's
-// own token file.
+// token: no run exists whose exit path or stop would. The removal runs as root
+// (#3622: the file need not belong to the user the next run starts as), after
+// the failed spawn, and names the run's own token file.
 func TestStartBoxRun_FailedSpawnRemovesTheInstalledToken(t *testing.T) {
 	for mode, base := range tokenRunModes() {
 		t.Run(mode, func(t *testing.T) {
 			s, r := newTokenRunServer(t, "none")
+			const asRoot = "(root)"
 			type call struct{ user, script string }
 			var (
 				mu    sync.Mutex
@@ -250,6 +251,16 @@ func TestStartBoxRun_FailedSpawnRemovesTheInstalledToken(t *testing.T) {
 					return "", errors.New("exec failed")
 				}
 				return inner(box, username, script)
+			}
+			innerRoot := s.boxRunExec
+			s.boxRunExec = func(box, script string) (string, error) {
+				mu.Lock()
+				calls = append(calls, call{asRoot, script})
+				mu.Unlock()
+				if strings.Contains(script, "setsid") {
+					return "", errors.New("exec failed")
+				}
+				return innerRoot(box, script)
 			}
 			req := base
 			req.RunToken = testBoxRunToken
@@ -268,8 +279,8 @@ func TestStartBoxRun_FailedSpawnRemovesTheInstalledToken(t *testing.T) {
 					spawnAt = i
 				case c.script == removal:
 					removeAt = i
-					if c.user != boxRunUnprivilegedUser {
-						t.Errorf("the token was removed as %q, want the run user %q", c.user, boxRunUnprivilegedUser)
+					if c.user != asRoot {
+						t.Errorf("the token was removed as %q, want root", c.user)
 					}
 				}
 			}
