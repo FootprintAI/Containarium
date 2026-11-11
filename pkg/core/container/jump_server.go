@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 // Note: As of Go 1.20, rand is automatically seeded
@@ -243,7 +241,7 @@ func ensureJumpAccountState(username string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create .ssh dir: %w", err)
 	}
-	defer func() { _ = unix.Close(sshFd) }()
+	defer closeFD(sshFd)
 	if err := chownTreeNoFollow(sshFd, uid, gid); err != nil {
 		return fmt.Errorf("failed to set .ssh ownership: %w", err)
 	}
@@ -487,7 +485,7 @@ func setupUserSSHKey(username, sshPublicKey string, verbose bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to create .ssh directory: %w", err)
 	}
-	defer func() { _ = unix.Close(sshFd) }()
+	defer closeFD(sshFd)
 
 	// Clean up SSH key (remove extra whitespace, ensure newline)
 	cleanKey := strings.TrimSpace(sshPublicKey)
@@ -523,10 +521,10 @@ func updateUserSSHKey(username, sshPublicKey string, verbose bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to create .ssh directory: %w", err)
 	}
-	defer func() { _ = unix.Close(sshFd) }()
+	defer closeFD(sshFd)
 
 	// Set ownership on .ssh directory (this directory only, not its contents).
-	if err := unix.Fchown(sshFd, uid, gid); err != nil {
+	if err := fchownFD(sshFd, uid, gid); err != nil {
 		return fmt.Errorf("failed to set .ssh ownership: %w", err)
 	}
 
@@ -944,7 +942,7 @@ func AddAuthorizedKey(username, pubKey string) error {
 	if err != nil {
 		return fmt.Errorf("mkdir %s: %w", sshDir, err)
 	}
-	defer func() { _ = unix.Close(sshFd) }()
+	defer closeFD(sshFd)
 
 	// Read existing content (file may not exist yet).
 	var existing []byte

@@ -1,12 +1,12 @@
+//go:build unix
+
 package container
 
 import (
 	"errors"
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
-	"strconv"
 
 	"golang.org/x/sys/unix"
 )
@@ -17,24 +17,6 @@ import (
 // The helpers below walk the .ssh directory one component at a time with
 // openat(O_NOFOLLOW) and change ownership with fchownat(AT_SYMLINK_NOFOLLOW),
 // so a planted symlink is refused or left alone, never followed.
-
-// userSSHOwner resolves the uid/gid that own a jump account's files. A var so
-// tests, which have no such host user, can stub it.
-var userSSHOwner = func(username string) (uid, gid int, err error) {
-	u, err := user.Lookup(username)
-	if err != nil {
-		return 0, 0, fmt.Errorf("lookup user %q: %w", username, err)
-	}
-	uid, err = strconv.Atoi(u.Uid)
-	if err != nil {
-		return 0, 0, fmt.Errorf("parse uid %q: %w", u.Uid, err)
-	}
-	gid, err = strconv.Atoi(u.Gid)
-	if err != nil {
-		return 0, 0, fmt.Errorf("parse gid %q: %w", u.Gid, err)
-	}
-	return uid, gid, nil
-}
 
 // openUserSSHDir returns an open fd for <homeRoot>/<username>/.ssh, creating
 // .ssh with mode 0700 if it is missing, together with the owner it should
@@ -127,3 +109,9 @@ func chownTreeNoFollow(fd, uid, gid int) error {
 	}
 	return nil
 }
+
+// closeFD closes an fd from openUserSSHDir.
+func closeFD(fd int) { _ = unix.Close(fd) }
+
+// fchownFD sets uid:gid on an open directory fd (not its contents).
+func fchownFD(fd, uid, gid int) error { return unix.Fchown(fd, uid, gid) }
