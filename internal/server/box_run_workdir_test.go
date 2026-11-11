@@ -220,6 +220,7 @@ func TestStartBoxRun_Workdir_LevelChecksUnderTheRunUsersHome(t *testing.T) {
 		boxRunCollaborator:    func(owner, subject string) (bool, error) { return false, nil },
 		boxRunToolAccess:      func(ctx context.Context, username string) (string, error) { return "none", nil },
 		boxRunEnsureToolchain: func(string) error { return nil },
+		boxRunTokenInstall:    func(string, string, string, string) error { return nil },
 		boxRunExec: func(box, script string) (string, error) {
 			if strings.Contains(script, "useradd") {
 				return "/home/ctn-run\n", nil
@@ -240,7 +241,7 @@ func TestStartBoxRun_Workdir_LevelChecksUnderTheRunUsersHome(t *testing.T) {
 			return "", nil
 		},
 	}
-	resp, err := s.StartBoxRun(adminCtx(), &pb.StartBoxRunRequest{Username: "alice", Command: "pwd", RunName: "lvl-wd", Workdir: "project"})
+	resp, err := s.StartBoxRun(adminCtx(), &pb.StartBoxRunRequest{Username: "alice", Command: "pwd", RunName: "lvl-wd", Workdir: "project", RunToken: "synthetic-run-token"})
 	if err != nil {
 		t.Fatalf("StartBoxRun: %v", err)
 	}
@@ -268,6 +269,7 @@ func TestStartBoxRun_Workdir_LevelPromptRunChecksUnderTheRunUsersHome(t *testing
 		boxRunCollaborator:    func(owner, subject string) (bool, error) { return false, nil },
 		boxRunToolAccess:      func(ctx context.Context, username string) (string, error) { return "none", nil },
 		boxRunEnsureToolchain: func(string) error { return nil },
+		boxRunTokenInstall:    func(string, string, string, string) error { return nil },
 		boxRunExec: func(box, script string) (string, error) {
 			if strings.Contains(script, "useradd") {
 				return "/home/ctn-run\n", nil
@@ -290,7 +292,7 @@ func TestStartBoxRun_Workdir_LevelPromptRunChecksUnderTheRunUsersHome(t *testing
 			return "", nil
 		},
 	}
-	resp, err := s.StartBoxRun(adminCtx(), &pb.StartBoxRunRequest{Username: "alice", Prompt: "do it", RunName: "lvl-wd-eng", Workdir: "project"})
+	resp, err := s.StartBoxRun(adminCtx(), &pb.StartBoxRunRequest{Username: "alice", Prompt: "do it", RunName: "lvl-wd-eng", Workdir: "project", RunToken: "synthetic-run-token"})
 	if err != nil {
 		t.Fatalf("StartBoxRun: %v", err)
 	}
