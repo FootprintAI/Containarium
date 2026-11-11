@@ -51,6 +51,7 @@ const (
 	ContainerService_GetBoxRunUserStatus_FullMethodName       = "/containarium.v1.ContainerService/GetBoxRunUserStatus"
 	ContainerService_ListBoxRuns_FullMethodName               = "/containarium.v1.ContainerService/ListBoxRuns"
 	ContainerService_TailBoxRunLog_FullMethodName             = "/containarium.v1.ContainerService/TailBoxRunLog"
+	ContainerService_TailBoxLogs_FullMethodName               = "/containarium.v1.ContainerService/TailBoxLogs"
 	ContainerService_StopBoxRun_FullMethodName                = "/containarium.v1.ContainerService/StopBoxRun"
 	ContainerService_WriteBoxFile_FullMethodName              = "/containarium.v1.ContainerService/WriteBoxFile"
 	ContainerService_WriteBoxFileStream_FullMethodName        = "/containarium.v1.ContainerService/WriteBoxFileStream"
@@ -296,6 +297,11 @@ type ContainerServiceClient interface {
 	// end_offset back as start_offset) and bounded (max_bytes,
 	// follow_seconds). A framed log is demuxed to its stdout.
 	TailBoxRunLog(ctx context.Context, in *TailBoxRunLogRequest, opts ...grpc.CallOption) (*TailBoxRunLogResponse, error)
+	// TailBoxLogs reads one window of a box's logs (#3643): its systemd
+	// journal and the logs of the containers running inside it, merged in
+	// receipt-time order. Resumable through an opaque cursor and bounded
+	// (max_lines, follow_seconds), like TailBoxRunLog; same access rule.
+	TailBoxLogs(ctx context.Context, in *TailBoxLogsRequest, opts ...grpc.CallOption) (*TailBoxLogsResponse, error)
 	// StopBoxRun stops a box's code run (#2603): the daemon-API counterpart to
 	// `containarium code stop`, for a caller with no SSH client. Same access as
 	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
@@ -819,6 +825,16 @@ func (c *containerServiceClient) TailBoxRunLog(ctx context.Context, in *TailBoxR
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TailBoxRunLogResponse)
 	err := c.cc.Invoke(ctx, ContainerService_TailBoxRunLog_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) TailBoxLogs(ctx context.Context, in *TailBoxLogsRequest, opts ...grpc.CallOption) (*TailBoxLogsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TailBoxLogsResponse)
+	err := c.cc.Invoke(ctx, ContainerService_TailBoxLogs_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1503,6 +1519,11 @@ type ContainerServiceServer interface {
 	// end_offset back as start_offset) and bounded (max_bytes,
 	// follow_seconds). A framed log is demuxed to its stdout.
 	TailBoxRunLog(context.Context, *TailBoxRunLogRequest) (*TailBoxRunLogResponse, error)
+	// TailBoxLogs reads one window of a box's logs (#3643): its systemd
+	// journal and the logs of the containers running inside it, merged in
+	// receipt-time order. Resumable through an opaque cursor and bounded
+	// (max_lines, follow_seconds), like TailBoxRunLog; same access rule.
+	TailBoxLogs(context.Context, *TailBoxLogsRequest) (*TailBoxLogsResponse, error)
 	// StopBoxRun stops a box's code run (#2603): the daemon-API counterpart to
 	// `containarium code stop`, for a caller with no SSH client. Same access as
 	// StartBoxRun: ssh:write, and the box owner or one of its collaborators.
@@ -1807,6 +1828,9 @@ func (UnimplementedContainerServiceServer) ListBoxRuns(context.Context, *ListBox
 }
 func (UnimplementedContainerServiceServer) TailBoxRunLog(context.Context, *TailBoxRunLogRequest) (*TailBoxRunLogResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TailBoxRunLog not implemented")
+}
+func (UnimplementedContainerServiceServer) TailBoxLogs(context.Context, *TailBoxLogsRequest) (*TailBoxLogsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TailBoxLogs not implemented")
 }
 func (UnimplementedContainerServiceServer) StopBoxRun(context.Context, *StopBoxRunRequest) (*StopBoxRunResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StopBoxRun not implemented")
@@ -2545,6 +2569,24 @@ func _ContainerService_TailBoxRunLog_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).TailBoxRunLog(ctx, req.(*TailBoxRunLogRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_TailBoxLogs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TailBoxLogsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).TailBoxLogs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_TailBoxLogs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).TailBoxLogs(ctx, req.(*TailBoxLogsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3536,6 +3578,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TailBoxRunLog",
 			Handler:    _ContainerService_TailBoxRunLog_Handler,
+		},
+		{
+			MethodName: "TailBoxLogs",
+			Handler:    _ContainerService_TailBoxLogs_Handler,
 		},
 		{
 			MethodName: "StopBoxRun",

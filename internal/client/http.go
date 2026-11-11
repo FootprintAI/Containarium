@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/boxlogs"
 	"github.com/footprintai/containarium/internal/hostport"
 	"github.com/footprintai/containarium/internal/runlog"
 	"github.com/footprintai/containarium/internal/toolaccess"
@@ -1673,6 +1674,27 @@ func (c *HTTPClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRun
 		return nil, httpError(bodyBytes, resp.StatusCode, "tail box run log")
 	}
 	out := &pb.TailBoxRunLogResponse{}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
+// TailBoxLogs reads one window of a box's journal and container logs via
+// HTTP (#3643).
+func (c *HTTPClient) TailBoxLogs(req *pb.TailBoxLogsRequest) (*pb.TailBoxLogsResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.doRequest(ctx, http.MethodGet, boxlogs.Path(req), nil)
+	if err != nil {
+		return nil, fmt.Errorf("tail box logs: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, httpError(bodyBytes, resp.StatusCode, "tail box logs")
+	}
+	out := &pb.TailBoxLogsResponse{}
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}

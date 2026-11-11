@@ -789,6 +789,14 @@ func (c *GRPCClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRun
 	return c.client.TailBoxRunLog(ctx, req)
 }
 
+// TailBoxLogs reads one window of a box's journal and container logs via
+// gRPC (#3643). The deadline covers the server's follow_seconds wait.
+func (c *GRPCClient) TailBoxLogs(req *pb.TailBoxLogsRequest) (*pb.TailBoxLogsResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.client.TailBoxLogs(ctx, req)
+}
+
 // GetRunApprovalKey returns a box's approval public key via gRPC (#2184).
 func (c *GRPCClient) GetRunApprovalKey(username string) (*pb.GetRunApprovalKeyResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

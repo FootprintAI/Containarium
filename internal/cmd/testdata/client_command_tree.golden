@@ -117,6 +117,7 @@ label set
 list
 login
 logout
+logs
 monitoring disable
 monitoring enable
 monitoring export disable

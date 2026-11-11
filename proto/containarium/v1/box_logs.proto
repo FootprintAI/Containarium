@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// Box logs (#3643): one time-ordered window over a box's systemd journal and
+// the logs of the containers running inside it, read by one fixed script the
+// daemon execs in the box. The first version reads docker-backed boxes only;
+// a box whose containers run on another runtime answers RUNTIME_UNSUPPORTED
+// instead of a partial window.
+
+// BoxLogSourceKind says where a line came from.
+enum BoxLogSourceKind {
+  BOX_LOG_SOURCE_KIND_UNSPECIFIED = 0;
+  // The box's systemd journal; source is the unit, or the syslog
+  // identifier when the entry has no unit.
+  BOX_LOG_SOURCE_KIND_JOURNAL = 1;
+  // A container running inside the box; source is the container's name.
+  BOX_LOG_SOURCE_KIND_CONTAINER = 2;
+}
+
+// BoxLogsStatus says whether the window could be read at all.
+enum BoxLogsStatus {
+  BOX_LOGS_STATUS_UNSPECIFIED = 0;
+  // The window was read; lines may still be empty when nothing new arrived.
+  BOX_LOGS_STATUS_OK = 1;
+  // The box is not running. It is not started and its disk is not read;
+  // the cursor is returned unchanged so the caller can resume later.
+  BOX_LOGS_STATUS_BOX_STOPPED = 2;
+  // The box runs its containers on a runtime this version cannot read
+  // (podman, rootless docker). No lines are returned rather than a window
+  // that silently leaves those containers out.
+  BOX_LOGS_STATUS_RUNTIME_UNSUPPORTED = 3;
+}
+
+// BoxContainerRuntime is the container runtime the collection script found
+// in the box.
+enum BoxContainerRuntime {
+  BOX_CONTAINER_RUNTIME_UNSPECIFIED = 0;
+  // No container runtime with running containers: the journal only.
+  BOX_CONTAINER_RUNTIME_NONE = 1;
+  // Rootful docker.
+  BOX_CONTAINER_RUNTIME_DOCKER = 2;
+  // Podman (rootful or rootless) has running containers. Unsupported.
+  BOX_CONTAINER_RUNTIME_PODMAN = 3;
+  // A rootless docker daemon. Unsupported.
+  BOX_CONTAINER_RUNTIME_DOCKER_ROOTLESS = 4;
+}
+
+// BoxLogLine is one log line.
+message BoxLogLine {
+  // When the source received the line: the journal's realtime timestamp, or
+  // the container runtime's receipt timestamp.
+  google.protobuf.Timestamp time = 1;
+  BoxLogSourceKind source_kind = 2;
+  // The unit, syslog identifier, or container name.
+  string source = 3;
+  // The line as valid UTF-8: invalid bytes and control characters (other
+  // than tab) are replaced with U+FFFD, and the text is capped at 8 KiB.
+  string text = 4;
+  // The line was longer than the cap (or than the journal's 4 KiB field
+  // limit) and text holds only its start.
+  bool truncated = 5;
+}
+
+// TailBoxLogsRequest reads one window of a box's logs.
+message TailBoxLogsRequest {
+  // The box owner's username (the box is <username>-container).
+  string username = 1;
+  // Opaque resume point from a previous response. Empty starts a new read
+  // from since and/or tail. Cannot be combined with since or tail.
+  string cursor = 2;
+  // Start from lines received at or after this time.
+  google.protobuf.Timestamp since = 3;
+  // 0..1000: start with only the last this many lines (after since, when
+  // set). With neither since nor cursor, 0 means 100.
+  int32 tail = 4;
+  // Only these systemd units ("nginx" means "nginx.service"). Each must
+  // match [A-Za-z0-9][A-Za-z0-9@_.:-]* and be a unit loaded in the box.
+  // With units set and containers empty, no container is read.
+  repeated string units = 5;
+  // Only these containers, by name. With containers set and units empty,
+  // the journal is not read.
+  repeated string containers = 6;
+  // Upper bound on lines per window: <= 1000; 0 means 200.
+  int32 max_lines = 7;
+  // 0..10: when no new line is available, wait up to this many seconds for
+  // one before answering with an empty window.
+  int32 follow_seconds = 8;
+}
+
+// TailBoxLogsResponse is one time-ordered window of a box's logs.
+message TailBoxLogsResponse {
+  BoxLogsStatus status = 1;
+  // Human-readable detail for a status other than OK.
+  string reason = 2;
+  // The container runtime the box was found to use.
+  BoxContainerRuntime runtime = 3;
+  // Lines in receipt-time order, oldest first.
+  repeated BoxLogLine lines = 4;
+  // Pass back as cursor to read the lines after this window, with no line
+  // repeated or skipped. Valid for the same units and containers filter.
+  string cursor = 5;
+  // More lines were ready than this window could hold; read again at once.
+  bool more = 6;
+  // Output frames from the box that did not parse and were skipped.
+  int32 dropped_frames = 7;
+}
