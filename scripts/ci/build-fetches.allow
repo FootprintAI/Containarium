@@ -75,7 +75,7 @@ scripts/engineer-crew-e2e.sh	curl	fcf8e5e02022	curl >/dev/null || fail "no curl"
 scripts/engineer-crew-e2e.sh	curl	51b9b7360ae9	curl -sSL -o /dev/null -w '%{http_code}' --max-time 60 -I "$BUNDLE_URL
 scripts/install-agent-runtime.sh	curl	2dc46195e36b	curl -fsSL "${ARTIFACT_BASE_URL}/agent-box-linux-amd64" -o "${PREFIX}/
 scripts/install-agent-runtime.sh	curl	a98178bf1782	curl -fsSL "${ARTIFACT_BASE_URL}/mcp-server-linux-amd64" -o "${MCP_TMP
-scripts/install-agent-runtime.sh	curl	a87695249d37	curl -fsSL "${ARTIFACT_BASE_URL}/agent-runtime-bundle.tar.gz" -o /tmp/
+scripts/install-agent-runtime.sh	curl	df796b6e4b47	curl -fsSL "$1" -o "${tmp}" </dev/null
 scripts/install-agent-runtime.sh	npm ci	bdbe93167d9c	npm ci --omit=dev )
 scripts/install-buf.sh	curl	c7f76bed5dfe	curl --fail --location --silent --show-error --retry 3 "https://github
 scripts/install-lab-phase-b.sh	curl	54ebe4065cdf	curl -fsSL https://pkgs.zabbly.com/key.asc | gpg --dearmor -o /etc/apt
