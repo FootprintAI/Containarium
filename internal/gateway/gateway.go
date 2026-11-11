@@ -1152,7 +1152,10 @@ func incomingHeaderMatcher(key string) (string, bool) {
 		auth.IsReservedIdentityMetadataKey(strings.TrimPrefix(lower, prefix)) {
 		return "", false
 	}
-	return runtime.DefaultHeaderMatcher(key)
+	// grpc-gateway v2.33 moved Grpc-Metadata-* forwarding out of
+	// DefaultHeaderMatcher into LegacyHeaderMatcher; keep forwarding ordinary
+	// client metadata as before. Reserved keys were already rejected above.
+	return runtime.LegacyHeaderMatcher(key)
 }
 
 func annotateContext(ctx context.Context, req *http.Request) metadata.MD {
