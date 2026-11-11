@@ -113,6 +113,10 @@ type RunRecord struct {
 	// Model is the model id the run was started with (StartBoxRunRequest.model,
 	// #3259); empty when none was requested. Additive: older readers ignore it.
 	Model string `json:"model,omitempty"`
+	// Workdir is the run's directory relative to its home, as requested
+	// (StartBoxRunRequest.workdir, #3551); empty for a run started in the home.
+	// Cwd holds the absolute path. Additive: older readers ignore it.
+	Workdir string `json:"workdir,omitempty"`
 	// Resumed is set when the run continued an earlier engine session
 	// (StartBoxRunRequest.session_id or continue_session), so token counts the
 	// engine reports for it are cumulative across that session (#3467).

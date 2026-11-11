@@ -12374,6 +12374,10 @@
         "usage": {
           "$ref": "#/definitions/RunUsage",
           "description": "Tokens the engine reported for this run (capability \"run_usage\"). Always\nset; check usage.status before reading usage.models. UNAVAILABLE means the\ndaemon has no usage for the run (never zeros)."
+        },
+        "workdir": {
+          "type": "string",
+          "description": "The directory the run was started in, relative to the run's home, as\nrequested in StartBoxRunRequest.workdir (#3551). Empty when the run started\nin the home itself, and for a run from before the field. Capability\n\"box_run_workdir\"."
         }
       },
       "description": "BoxRun is one current run record on a box."
@@ -22680,6 +22684,10 @@
         "approval": {
           "$ref": "#/definitions/AgentRunApproval",
           "description": "Set when this run is a re-run a human approved after a refusal: every\nevent of the run records it. Needs command_policy, and is refused with\nsession_id or continue_session (INVALID_ARGUMENT): an approval starts a new\nrun, it never resumes the refused one. Each id must match\n[A-Za-z0-9._:@-]{1,128}."
+        },
+        "workdir": {
+          "type": "string",
+          "description": "The directory the run starts in, relative to the home directory a run\nstarts in without it (#3551): the box user's home, or the unprivileged run\nuser's home on a box with a recorded tool-access level. Empty keeps that\nhome. Applies to prompt and command runs alike; the engine's session\nfolder, and what continue_session resumes, follow the directory. The value\nmust be in the canonical relative form WriteBoxFileRequest.path uses: no\nleading \"/\", no \".\" or \"..\" segment, no empty or trailing segment, no\ncontrol characters, at most 1024 bytes, and not under .ssh or\n.containarium; anything else is INVALID_ARGUMENT before the box is\ntouched. The directory must already exist and be a directory the run user\ncan enter, checked as that user before anything on the box is changed:\notherwise FAILED_PRECONDITION naming it, and no run starts. It is never\ncreated, and there is no fallback to the home. BoxRun.workdir reports it.\nCapability \"box_run_workdir\" in SystemInfo.capabilities."
         }
       },
       "description": "StartBoxRunRequest starts (or resumes) a coding-agent run on a box through\nthe daemon API — no SSH client, no agent-box RPC (#2193): the daemon\nroot-execs the same on-disk contract `containarium code run` leaves via\nagent-box's process_start, so ListBoxRuns and TailBoxRunLog read a\ndaemon-started run exactly like one `code run` started.\n\nThe engine and its credential source are never request fields: they come\nfrom the box's own ~/.containarium/code.json (`code install`, #1727) —\nthis RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of\nscope by the same rule #2030 settled for `code install`: this starts or\nresumes an already-authenticated session only."
@@ -23205,7 +23213,7 @@
           "items": {
             "type": "string"
           },
-          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model),\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds),\n\"box_skill_sets\" (the ApplyBoxSkillSets RPC, #3374), \"box_files\" (the\nWriteBoxFile RPC, #3548) and \"box_files_stream\" (the WriteBoxFileStream\nRPC, files up to 64 MiB, #3548).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
+          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model),\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds),\n\"box_run_workdir\" (StartBoxRunRequest.workdir, BoxRun.workdir, #3551),\n\"box_skill_sets\" (the ApplyBoxSkillSets RPC, #3374), \"box_files\" (the\nWriteBoxFile RPC, #3548) and \"box_files_stream\" (the WriteBoxFileStream\nRPC, files up to 64 MiB, #3548).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
         },
         "storagePools": {
           "type": "array",
