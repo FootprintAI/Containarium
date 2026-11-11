@@ -167,13 +167,15 @@ type fakeActuator struct {
 	running []ContainerSpec
 	stopped []string
 	deleted []string
+	// runningErr, when set, is returned by EnsureRunning.
+	runningErr error
 }
 
 func (a *fakeActuator) EnsureRunning(_ context.Context, s ContainerSpec) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.running = append(a.running, s)
-	return nil
+	return a.runningErr
 }
 func (a *fakeActuator) EnsureStopped(_ context.Context, name string) error {
 	a.mu.Lock()
@@ -456,6 +458,37 @@ func TestReconcileAssignment_RunningCreatesAndReports(t *testing.T) {
 	defer fake.mu.Unlock()
 	if fake.reportedState != "active" || fake.reportedID != "11111111-2222-3333-4444-555555555555" {
 		t.Errorf("report = (%q,%q), want (container-id, active)", fake.reportedID, fake.reportedState)
+	}
+}
+
+// A running container whose desired config cannot be applied (#3520) is
+// reported "degraded"; any other EnsureRunning failure reports nothing so the
+// cloud's last observed state stays and the next snapshot retries.
+func TestReconcileAssignment_RunningFailureReporting(t *testing.T) {
+	cases := []struct {
+		name      string
+		err       error
+		wantState string
+	}{
+		{"degraded", fmt.Errorf("stamp label: %w", ErrContainerDegraded), string(ObservedStateDegraded)},
+		{"other failure", errors.New("incus down"), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{ControlPlane: "bufconn", HostID: "h", Token: "h.b"}
+			c, fake := newTestClient(t, cfg)
+			c.containers = &fakeActuator{runningErr: tc.err}
+
+			c.reconcileAssignment(&cloudv1.Assignment{
+				ContainerId: "11111111-2222-3333-4444-555555555555", DesiredState: "running",
+			})
+
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			if fake.reportedState != tc.wantState {
+				t.Errorf("reported state = %q, want %q", fake.reportedState, tc.wantState)
+			}
+		})
 	}
 }
 

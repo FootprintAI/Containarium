@@ -208,7 +208,7 @@ func runEngineStageReq(t *testing.T, failStage bool, req *pb.StartBoxRunRequest)
 		},
 	}
 	req.Username = "alice"
-	_, r.err = s.StartBoxRun(adminCtx(), req)
+	_, r.err = s.StartBoxRun(adminCtx(), runTokenFor(s, req))
 	return r
 }
 

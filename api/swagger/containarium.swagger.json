@@ -20282,7 +20282,7 @@
       "properties": {
         "state": {
           "type": "string",
-          "description": "Observed state. Must match one of the AssignmentState* values\n(pending / active / stopping / stopped). Empty rejected with\nInvalidArgument; values outside the enum also InvalidArgument."
+          "description": "Observed state. Must match one of the AssignmentState* values\n(pending / active / stopping / stopped / degraded). Empty rejected with\nInvalidArgument; values outside the enum also InvalidArgument."
         },
         "observedAt": {
           "type": "string",
@@ -22679,7 +22679,7 @@
         },
         "runToken": {
           "type": "string",
-          "description": "run_token is reserved for a per-run credential. This daemon does not\nhonour it: the field is accepted and ignored (it is never written to the\nbox), and the daemon does not advertise the box_run_token capability. A\nclient must send it only to a daemon that advertises box_run_token, and\nmust not rely on it for a credential."
+          "description": "run_token is the per-run cloud credential for this run (the agent-run\ntoken, prd/cloud/agent-run-token.md). The daemon writes it to a 0600 file\nowned by the run user, points CONTAINARIUM_JWT_TOKEN_FILE at that file for\nthe run, and deletes it when the run exits or is stopped. The token never\nappears in a command line or a script. At most 8 KiB, with no NUL and no\nline break (INVALID_ARGUMENT otherwise, before anything on the box is\ntouched).\n\nA run as the box's unprivileged run user (a box with a recorded\ntool-access level; prompt and command mode alike) MUST carry run_token:\nthe box principal is no longer copied into the run user's home, so without\nit the run would have no platform credential. Such a request without\nrun_token is FAILED_PRECONDITION, naming run_token and box_run_token,\nbefore anything is rotated or spawned. A run as the box owner (no recorded\nlevel) is unchanged and may omit it.\n\nSend it only to a daemon that advertises \"box_run_token\" in\nSystemInfo.capabilities: an older daemon accepts the field and ignores it."
         },
         "command": {
           "type": "string",

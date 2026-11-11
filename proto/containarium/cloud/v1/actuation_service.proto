@@ -76,7 +76,7 @@ message ReportContainerStateRequest {
   string container_id = 1;
 
   // Observed state. Must match one of the AssignmentState* values
-  // (pending / active / stopping / stopped). Empty rejected with
+  // (pending / active / stopping / stopped / degraded). Empty rejected with
   // InvalidArgument; values outside the enum also InvalidArgument.
   string state = 2;
 
@@ -109,7 +109,7 @@ message Assignment {
   // when calling ReportContainerState.
   string container_id = 2;
   // Host-observed state — what ReportContainerState last wrote
-  // (pending / active / stopping / stopped). Echoed back to the
+  // (pending / active / stopping / stopped / degraded). Echoed back to the
   // host so a freshly-connected daemon can see what the cloud
   // currently believes.
   string state = 3;
