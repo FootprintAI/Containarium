@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Where a run's token lives in the box. The directory is world-writable and
@@ -82,8 +84,11 @@ func (s *ContainerServer) boxRunTokenInstallFn() boxRunTokenInstallFunc {
 const runTokenMaxBytes = 8 << 10
 
 // runTokenInstallTimeout bounds how long StartBoxRun waits for the install while
-// it holds the run's lock. The install itself may finish later; a token it
-// places after this is removed by the run's exit or stop path.
+// it holds the run's lock. The install itself may finish later, after the start
+// has failed. No run was spawned, so no exit or stop path would remove what it
+// places: installRunToken removes it, as root, once that install finishes, and
+// until then another start of the same run name is refused
+// (refuseWhileRunTokenInstallPending).
 var runTokenInstallTimeout = 30 * time.Second
 
 // validateRunToken refuses a token that is too large, or that contains a byte
@@ -103,7 +108,11 @@ func validateRunToken(token string) error {
 
 // installRunToken is the StartBoxRun hook: a run with no token installs nothing.
 // The install is bounded by runTokenInstallTimeout and by the request context.
-func (s *ContainerServer) installRunToken(ctx context.Context, box, runAs, name, token string) error {
+// Whenever it does not succeed, the run's token is removed as root, so a start
+// that gave up never leaves one behind: at once after a failed install (it may
+// have placed the token before it failed), and after the install has finished
+// when the wait ended first.
+func (s *ContainerServer) installRunToken(ctx context.Context, listExec boxScriptFunc, box, runAs, name, token string) error {
 	if token == "" {
 		return nil
 	}
@@ -115,12 +124,40 @@ func (s *ContainerServer) installRunToken(ctx context.Context, box, runAs, name,
 	go func() { done <- install(box, runAs, name, token) }()
 	timer := time.NewTimer(runTokenInstallTimeout)
 	defer timer.Stop()
+	var gaveUp error
 	select {
 	case err := <-done:
+		if err != nil {
+			discardRunToken(listExec, box, name, token)
+		}
 		return err
 	case <-ctx.Done():
-		return ctx.Err()
+		gaveUp = ctx.Err()
 	case <-timer.C:
-		return fmt.Errorf("the token install did not finish within %s", runTokenInstallTimeout)
+		gaveUp = fmt.Errorf("the token install did not finish within %s", runTokenInstallTimeout)
 	}
+	// Marked while the caller still holds the run's lock, so the next start of
+	// this name sees it.
+	key := boxRunLockKey(box, name)
+	s.boxRunTokenPending.Store(key, struct{}{})
+	go func() {
+		<-done
+		discardRunToken(listExec, box, name, token)
+		s.boxRunTokenPending.Delete(key)
+	}()
+	return gaveUp
+}
+
+// refuseWhileRunTokenInstallPending refuses a start of a run name whose earlier
+// start gave up waiting for its token install while that install is still in
+// flight. The install may yet place its token, and the removal that follows it
+// would then take the token of a run started in the meantime; a tokenless run's
+// spawn would fail to remove a token the run user owns. The caller holds the
+// run's lock.
+func (s *ContainerServer) refuseWhileRunTokenInstallPending(box, name, username string) error {
+	if _, pending := s.boxRunTokenPending.Load(boxRunLockKey(box, name)); pending {
+		return status.Errorf(codes.Unavailable,
+			"an earlier start of run %q on %q gave up waiting for its token install, which is still finishing; retry shortly", name, username)
+	}
+	return nil
 }

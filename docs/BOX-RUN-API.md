@@ -334,7 +334,12 @@ daemon only delivers it.
   exports `CONTAINARIUM_JWT_TOKEN_FILE` with that path in the run's shell. The
   token travels as file content only: it is in no command line and no script.
 - The file is removed when the run exits and when it is stopped
-  (`StopBoxRun`), and a start that fails after the install removes it too.
+  (`StopBoxRun`). A start that fails after asking for the install (the install
+  fails, times out after 30 seconds, the request is cancelled, or the spawn
+  fails) removes it too, as root. When the start stopped waiting while the
+  install was still running, the removal runs once that install finishes, and
+  until then another start of the same run name is `UNAVAILABLE` ("still
+  finishing; retry shortly"). Other run names on the box are not affected.
 - At most 8 KiB, with no NUL and no line break; anything else is
   `INVALID_ARGUMENT` before the box is touched.
 - **A run as the unprivileged run user must carry it.** On a box with a

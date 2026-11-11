@@ -162,6 +162,11 @@ type ContainerServer struct {
 	boxRunStartExec boxRunStartFunc
 	// boxRunTokenInstall is the run-token install seam (box_run_token_install.go).
 	boxRunTokenInstall boxRunTokenInstallFunc
+	// boxRunTokenPending holds the (box, name) keys whose start gave up waiting
+	// for its token install while that install is still running (#3622). A new
+	// start of such a name is refused until the install has finished and its
+	// token is removed (box_run_token_install.go).
+	boxRunTokenPending sync.Map // key: box+":"+name -> struct{}
 
 	// WriteBoxFile (#3548, box_file_write.go). boxFileWrite is the file API
 	// seam (nil: the container manager's WriteFile) and boxFileStageDir where

@@ -546,6 +546,12 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	lock.Lock()
 	defer lock.Unlock()
 
+	// #3622: refused, before the box is touched, while an earlier start of
+	// this name that gave up on its token install still has it in flight.
+	if err := s.refuseWhileRunTokenInstallPending(box, name, req.GetUsername()); err != nil {
+		return nil, err
+	}
+
 	// #3510: refused, before the box is touched, while ApplyBoxSkillSets is
 	// changing the box's skills; held until return (the run's record is
 	// written by then) so an apply arriving meanwhile sees this run.
@@ -763,12 +769,12 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		}
 	}
 
-	if err := s.installRunToken(ctx, box, runAs, name, req.GetRunToken()); err != nil {
+	if err := s.installRunToken(ctx, listExec, box, runAs, name, req.GetRunToken()); err != nil {
 		return nil, status.Errorf(codes.Unavailable, "install run token for %q on %q: %v", name, req.GetUsername(), err)
 	}
 	out, err := spawnBoxRun(startExec, listExec, box, runAs, sp, req.GetCommandPolicy() != nil)
 	if err != nil {
-		discardRunToken(startExec, box, runAs, name, req.GetRunToken())
+		discardRunToken(listExec, box, name, req.GetRunToken())
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
 	}
 	pidStr, boot, found := strings.Cut(strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]), " ")
@@ -889,12 +895,12 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 		}
 		command = boxRunPolicyCommandLine(name, int(req.GetTimeoutSeconds()))
 	}
-	if err := s.installRunToken(ctx, box, runAs, name, req.GetRunToken()); err != nil {
+	if err := s.installRunToken(ctx, listExec, box, runAs, name, req.GetRunToken()); err != nil {
 		return nil, status.Errorf(codes.Unavailable, "install run token for %q on %q: %v", name, req.GetUsername(), err)
 	}
 	out, err := spawnBoxRun(startExec, listExec, box, runAs, boxRunSpawn{dir: dir, name: name, command: command, home: home, cwd: cwd, runToken: req.GetRunToken()}, req.GetCommandPolicy() != nil)
 	if err != nil {
-		discardRunToken(startExec, box, runAs, name, req.GetRunToken())
+		discardRunToken(listExec, box, name, req.GetRunToken())
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
 	}
 	pidStr, boot, found := strings.Cut(strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]), " ")
@@ -1048,12 +1054,15 @@ func tokenRemoval(token, tokenPath string) string {
 	return "rm -f " + shellSingleQuote(tokenPath) + "; "
 }
 
-// discardRunToken removes a run's token after its spawn failed, so an
-// installed token never outlives a run that never started. Best effort: the
-// spawn's own error is what the caller reports.
-func discardRunToken(startExec boxRunStartFunc, box, runAs, name, token string) {
+// discardRunToken removes a run's token after a start that asked for its
+// install failed (the install itself, or the spawn after it), so a token never
+// outlives a run that never started. It runs as root: the file may belong to a
+// different user than the next run of this name starts as, and the token
+// directory is sticky. Best effort: the start's own error is what the caller
+// reports.
+func discardRunToken(listExec boxScriptFunc, box, name, token string) {
 	if token == "" {
 		return
 	}
-	_, _ = startExec(box, runAs, "rm -f "+shellSingleQuote(boxRunTokenPath(name))+"\n")
+	_, _ = listExec(box, "rm -f "+shellSingleQuote(boxRunTokenPath(name))+"\n")
 }
