@@ -40,6 +40,9 @@ type appliedSnapshot struct {
 	Reconciled bool // at least one reconcile pass has applied the maps
 	Found      bool // the last pass saw a running box of this tenant
 	Tenant     tenantApplied
+	// SignaturesDegraded: the operator-signature store could not be read on the
+	// latest refresh, so the kernel holds the last good signature set (#3519).
+	SignaturesDegraded bool
 	// ReconciledAt is when the last completed pass ended; Interval is the
 	// enforcer's reconcile interval, which decides when that pass is stale.
 	ReconciledAt time.Time
@@ -168,6 +171,11 @@ func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool, now time
 	// enforcer reports (#2972); said in every state, including enforcer-not-running.
 	if kernelUnsupported {
 		st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED)
+	}
+	// The signature set is host-wide, so this is said in every state once the
+	// enforcer runs (#3519).
+	if snap.Running && snap.SignaturesDegraded {
+		st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_OPERATOR_SIGNATURES_STALE)
 	}
 	switch {
 	case !snap.Running:

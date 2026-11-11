@@ -179,6 +179,12 @@ type NetworkPolicyEnforcer struct {
 	sigStore   NetworkPolicySignatureStore // #661 PR-B: operator signatures (nil = built-ins only)
 	sigNames   map[uint16]string           // signature id -> name, for audit labelling (built at populate)
 	sigLoaded  string                      // last applied signature set fingerprint (skip redundant map writes)
+	// sigGood/sigGoodFP are the last merged set built from a successful store
+	// read; a store error serves them instead of a built-ins-only set (#3519).
+	// sigDegraded is true while the latest read failed. Guarded by mu.
+	sigGood     []netpolicy.Signature
+	sigGoodFP   string
+	sigDegraded bool
 
 	mu                sync.Mutex
 	attached          map[int]string                      // ifindex -> container name currently attached
@@ -375,13 +381,36 @@ func (e *NetworkPolicyEnforcer) armSignatures() {
 // PR-B), built-ins first, capped to the BPF slot budget. A disabled operator
 // signature is skipped. Returns the slice + a fingerprint so refresh can skip a
 // redundant map rewrite when nothing changed.
+//
+// When the store errors, the last good merged set is returned unchanged (same
+// fingerprint) so the refresh does not clear operator signatures already loaded
+// in BPF (#3519); the degraded state is set until a read succeeds again.
 func (e *NetworkPolicyEnforcer) effectiveSignatures() ([]netpolicy.Signature, string) {
 	sigs := netpolicy.BuiltinSignatures()
+	storeOK := false
 	if e.sigStore != nil {
 		ops, err := e.sigStore.List(e.ctx)
 		if err != nil {
-			log.Printf("[netpolicy] list operator signatures: %v", err)
+			e.mu.Lock()
+			wasDegraded := e.sigDegraded
+			e.sigDegraded = true
+			good, goodFP := e.sigGood, e.sigGoodFP
+			e.mu.Unlock()
+			if !wasDegraded {
+				log.Printf("[netpolicy] ALERT: operator signature store unreachable, keeping the last loaded signature set until it answers: %v", err)
+			}
+			if good != nil {
+				return good, goodFP
+			}
 		} else {
+			storeOK = true
+			e.mu.Lock()
+			recovered := e.sigDegraded
+			e.sigDegraded = false
+			e.mu.Unlock()
+			if recovered {
+				log.Printf("[netpolicy] operator signature store answered again; signature set refreshed")
+			}
 			for _, op := range ops {
 				if !op.GetEnabled() {
 					continue
@@ -403,7 +432,20 @@ func (e *NetworkPolicyEnforcer) effectiveSignatures() ([]netpolicy.Signature, st
 	for _, s := range sigs {
 		fmt.Fprintf(&fp, "%d:%s:%x;", s.ID, s.Name, s.Pattern)
 	}
+	if storeOK {
+		e.mu.Lock()
+		e.sigGood, e.sigGoodFP = sigs, fp.String()
+		e.mu.Unlock()
+	}
 	return sigs, fp.String()
+}
+
+// SignatureStoreDegraded reports whether the latest operator-signature read
+// failed, so the enforcer is serving its last good signature set (#3519).
+func (e *NetworkPolicyEnforcer) SignatureStoreDegraded() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.sigDegraded
 }
 
 // refreshSignatureSlots writes the effective signature set into the BPF map
@@ -988,7 +1030,7 @@ func (e *NetworkPolicyEnforcer) recordApplied(a map[string]tenantApplied, at tim
 func (e *NetworkPolicyEnforcer) AppliedState(tenant string) appliedSnapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	snap := appliedSnapshot{Running: e.running, Reconciled: e.applied != nil, ReconciledAt: e.appliedAt, Interval: e.interval}
+	snap := appliedSnapshot{Running: e.running, Reconciled: e.applied != nil, ReconciledAt: e.appliedAt, Interval: e.interval, SignaturesDegraded: e.sigDegraded}
 	if !snap.Running {
 		return appliedSnapshot{}
 	}
