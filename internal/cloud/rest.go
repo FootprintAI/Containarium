@@ -37,6 +37,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/footprintai/containarium/internal/hostport"
 	cloudv1 "github.com/footprintai/containarium/pkg/pb/containarium/cloud/v1"
 )
 
@@ -46,6 +47,17 @@ import (
 func isRESTControlPlane(controlPlane string) bool {
 	cp := strings.TrimSpace(controlPlane)
 	return strings.HasPrefix(cp, "https://") || strings.HasPrefix(cp, "http://")
+}
+
+// warnIfPlaintextControlPlane logs a warning when the control plane is an
+// explicit http:// REST URL on a non-loopback host: the host bearer and join
+// token would cross the network unencrypted (#3517). Loopback is silent.
+func warnIfPlaintextControlPlane(controlPlane string) {
+	cp := strings.TrimSpace(controlPlane)
+	if !strings.HasPrefix(cp, "http://") || hostport.IsLoopback(cp) {
+		return
+	}
+	log.Printf("[cloud] WARNING: control plane %s is plaintext http://; host credentials are sent unencrypted. Use an https:// control plane.", cp)
 }
 
 // restActuation implements the unary actuation RPCs (Heartbeat, ReportHostStatus)

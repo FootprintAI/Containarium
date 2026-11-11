@@ -381,6 +381,21 @@ func (p *PeerPool) LogPlainHTTPOnce(reason error) {
 	})
 }
 
+// EnforceStrictPeerTLS turns the plain-HTTP peer fallback into an error when
+// strict is set (#3517): a daemon with peer calls to make but no peer mTLS
+// refuses to run rather than silently carry them over http. reason is the
+// bootstrap error, or nil when the bootstrap was skipped. With strict false,
+// or with no peer calls to describe, it returns nil (default unchanged).
+func (p *PeerPool) EnforceStrictPeerTLS(strict bool, reason error) error {
+	if !strict || p.PeerMTLSEnabled() || !p.PeerTransportRelevant() {
+		return nil
+	}
+	if reason != nil {
+		return fmt.Errorf("peer mTLS is required (--require-peer-mtls) but bootstrap failed: %w", reason)
+	}
+	return fmt.Errorf("peer mTLS is required (--require-peer-mtls) but bootstrap was skipped (no sentinel URL or HMAC secret)")
+}
+
 // buildPeerHTTPClient returns an http.Client wired to present the
 // daemon's leaf cert and verify peer / sentinel server certs
 // against the pinned CA. When `pki` is nil, returns a plain client
