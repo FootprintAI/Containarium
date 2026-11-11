@@ -102,8 +102,8 @@ func ConsoleRouterServerTLSConfig(certFile, keyFile string) (*tls.Config, error)
 }
 
 // ConsoleRouterClientTLSConfig returns the config a console client uses to
-// verify the router's certificate against the CA bundle in caFile
-// (--console-router-client-ca).
+// verify the router's certificate against the CA bundle in caFile. No client
+// flag is registered for it yet; a future console client supplies caFile.
 func ConsoleRouterClientTLSConfig(caFile string) (*tls.Config, error) {
 	pemBytes, err := os.ReadFile(caFile)
 	if err != nil {

@@ -245,8 +245,8 @@ to serve TLS only: a plaintext client is refused during the handshake before
 any router data is exchanged. Without them the sentinel logs a
 `WARNING: ... plaintext` line at router startup. Plaintext remains the
 default in this release. Clients verify the router certificate against a CA
-bundle supplied via `--console-router-client-ca`
-(`sentinel.ConsoleRouterClientTLSConfig`).
+bundle with `sentinel.ConsoleRouterClientTLSConfig`; no console client or
+client-side CA flag exists yet, so this is a helper only.
 
 ### CLI
 
