@@ -53,7 +53,11 @@ func TestWrite_AtomicReplaceLeavesNoTempAndNewInode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer old.Close()
+	defer func() {
+		if err := old.Close(); err != nil {
+			t.Errorf("close old handle: %v", err)
+		}
+	}()
 	if err := Write(p, []byte("new")); err != nil {
 		t.Fatal(err)
 	}
