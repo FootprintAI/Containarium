@@ -83,6 +83,21 @@ Connection defaults target a per-container local Postgres: user
 `postgres`, host `127.0.0.1`, port `5432`. Override with
 `--db-user/--db-host/--db-port` as needed.
 
+With no `--database` and no hook, `backup create` backs up every
+non-template database it finds in the container. When there is nothing to
+back up because of the container, the call fails with `FAILED_PRECONDITION`
+and says what to do, instead of a generic internal error (#3600):
+
+- **No Postgres answered** at the connection given: psql is not installed,
+  nothing is listening, or the server refused the connection or the
+  credentials. Fix the connection, name a hook, or the container has no
+  Postgres to back up.
+- **No database**: Postgres answered but has no non-template database. Name
+  a database or a hook.
+
+psql's own output stays in the daemon log. A failure to run the listing at
+all, or any other failure, is still an internal error.
+
 The same operations are available as MCP tools (`create_backup`,
 `list_backups`, `restore_backup`, `verify_backup`, and, for a whole-box
 backup, `create_backup` with `scope: "box"` and `restore_box_backup`) and

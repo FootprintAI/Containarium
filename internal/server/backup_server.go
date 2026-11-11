@@ -273,6 +273,14 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 	// hook backup (#1831) names no database and runs exactly once.
 	if backupAllRequested(req) {
 		records, errs := s.mgr.CreateAll(opts)
+		if len(records) == 0 && len(errs) == 1 {
+			// #3600: nothing to back up because of the container, not
+			// the platform. The cause stays in the daemon log.
+			if refusal := backupAllRefusal(req.Username, errs[0]); refusal != nil {
+				log.Printf("[backup] REFUSED user=%q: %v", req.Username, errs[0])
+				return nil, refusal
+			}
+		}
 		if len(records) == 0 {
 			msg := "no databases were backed up"
 			if len(errs) > 0 {
@@ -314,6 +322,23 @@ func (s *BackupServer) CreateBackup(ctx context.Context, req *pb.CreateBackupReq
 		Record:  recordToProto(rec),
 		Records: []*pb.BackupRecord{recordToProto(rec)},
 	}, nil
+}
+
+// backupAllRefusal maps CreateAll's container-side outcomes (#3600) to
+// FAILED_PRECONDITION with a message that says what to do: the request was
+// well formed, but this container has no Postgres that answers, or one with no
+// database. The message names neither the cause nor psql's output, which stay
+// in the daemon log. Any other error is nil here and stays INTERNAL.
+func backupAllRefusal(username string, err error) error {
+	switch {
+	case errors.Is(err, backup.ErrNoDatabaseFound):
+		return status.Errorf(codes.FailedPrecondition,
+			"no database to back up in the container for %q: its Postgres has no non-template database; name a database or a hook", username)
+	case errors.Is(err, backup.ErrDatabaseUnavailable):
+		return status.Errorf(codes.FailedPrecondition,
+			"could not list the databases in the container for %q: no Postgres answered at the connection given (not installed, not running, or it refused the connection or the credentials); fix the connection, name a hook, or this container has no Postgres to back up", username)
+	}
+	return nil
 }
 
 // createBoxBackup takes a BOX-scope backup (#2800 contract, #2801 data
