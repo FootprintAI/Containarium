@@ -276,6 +276,12 @@ enum NetworkPolicyUncoveredPath {
   // that could not be removed keeps allowing traffic the policy no longer does.
   // The failed entries are retried on the next pass.
   NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE = 4;
+  // The tenant's egress allow-list or deny rules failed to compile (e.g. a
+  // CIDR that is not IPv4), so the policy as stored is not what the kernel
+  // holds: the daemon keeps the tenant's last good egress and deny sets
+  // rather than loading a partial or empty one (#3518). The reason is in the
+  // daemon log. Fix the policy to clear it.
+  NETWORK_POLICY_UNCOVERED_PATH_POLICY_COMPILE_FAILED = 5;
 }
 
 // NetworkPolicySource says which policy a tenant's loaded state came from.

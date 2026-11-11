@@ -171,6 +171,10 @@ type NetworkPolicyEnforcer struct {
 	// reconcile.
 	egressNames map[uint32]string
 
+	// compileFailLogged holds the compile failure last logged per tenant id
+	// (#3518), so it is logged once per change. Only touched from reconcile.
+	compileFailLogged map[uint32]compileFailure
+
 	sigEnabled bool                        // #661: populate + scan Tier 2 signatures (operator opt-in)
 	sigStore   NetworkPolicySignatureStore // #661 PR-B: operator signatures (nil = built-ins only)
 	sigNames   map[uint16]string           // signature id -> name, for audit labelling (built at populate)
@@ -213,6 +217,7 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		extraUplinks:      splitCSV(os.Getenv("CONTAINARIUM_NETWORK_POLICY_UPLINKS")),
 		trustedInstalled:  make(map[int]bool),
 		egressNames:       make(map[uint32]string),
+		compileFailLogged: make(map[uint32]compileFailure),
 		attached:          make(map[int]string),
 		idName:            make(map[uint32]string),
 		enforced:          make(map[uint32]bool),
@@ -851,6 +856,12 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 		return err
 	}
 	plan := planReconcile(views, policies, e.enforceEnabled)
+	// Fail closed on a policy that does not compile (#3518): keep the tenant's
+	// last good egress and deny sets, and log the failure once per change.
+	holdLastGood(&plan, e.egressInstalled, e.denyInstalled)
+	for _, line := range noteCompileFailures(e.compileFailLogged, plan.compileFailed) {
+		log.Print(line)
+	}
 	// An older object ignores the egress_mode byte (#2987): fold it into mode
 	// before writing, so what is written and reported is what the kernel does.
 	e.warnEgressModeIgnored(foldEgressModeForObject(&plan, e.loader.SupportsEgressMode()), idName)
