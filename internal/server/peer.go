@@ -381,6 +381,21 @@ func (p *PeerPool) LogPlainHTTPOnce(reason error) {
 	})
 }
 
+// EnforceStrictPeerTLS turns the plain-HTTP peer fallback into an error when
+// strict is set (#3517): a daemon with peer calls to make but no peer mTLS
+// refuses to run rather than silently carry them over http. reason is the
+// bootstrap error, or nil when the bootstrap was skipped. With strict false,
+// or with no peer calls to describe, it returns nil (default unchanged).
+func (p *PeerPool) EnforceStrictPeerTLS(strict bool, reason error) error {
+	if !strict || p.PeerMTLSEnabled() || !p.PeerTransportRelevant() {
+		return nil
+	}
+	if reason != nil {
+		return fmt.Errorf("peer mTLS is required (--require-peer-mtls) but bootstrap failed: %w", reason)
+	}
+	return fmt.Errorf("peer mTLS is required (--require-peer-mtls) but bootstrap was skipped (no sentinel URL or HMAC secret)")
+}
+
 // buildPeerHTTPClient returns an http.Client wired to present the
 // daemon's leaf cert and verify peer / sentinel server certs
 // against the pinned CA. When `pki` is nil, returns a plain client
@@ -402,14 +417,22 @@ func buildPeerHTTPClient(pki *peerPKI) *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:    pki.CACertPool(),
-				MinVersion: tls.VersionTLS12,
-				GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
-					cert := pki.ClientCertificate()
-					return &cert, nil
-				},
-			},
+			TLSClientConfig: peerTLSConfig(pki),
+		},
+	}
+}
+
+// peerTLSConfig is the client TLS config for peer calls: verify against the
+// pinned pool CA and present the daemon's leaf (read per handshake, so a
+// renewal applies without a rebuild). Shared by the HTTPS client and the
+// terminal WebSocket dial.
+func peerTLSConfig(pki *peerPKI) *tls.Config {
+	return &tls.Config{
+		RootCAs:    pki.CACertPool(),
+		MinVersion: tls.VersionTLS12,
+		GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			cert := pki.ClientCertificate()
+			return &cert, nil
 		},
 	}
 }
@@ -1464,9 +1487,28 @@ func (pp *PeerPool) PeerTerminalURL(username, authToken string) (string, error) 
 		}
 		return "", nil
 	}
-	// Build ws:// URL pointing at the peer's terminal endpoint via sentinel proxy
-	wsURL := fmt.Sprintf("ws://%s/v1/containers/%s/terminal", peer.Addr, username)
+	// Build the URL pointing at the peer's terminal endpoint via sentinel
+	// proxy. An https (pool mTLS) peer gets wss:// so the bearer and terminal
+	// I/O are encrypted; a plain-http peer keeps ws:// (#3516).
+	wsScheme := "ws"
+	if peer.urlScheme() == "https" {
+		wsScheme = "wss"
+	}
+	wsURL := fmt.Sprintf("%s://%s/v1/containers/%s/terminal", wsScheme, peer.Addr, username)
 	return wsURL, nil
+}
+
+// PeerTerminalTLSConfig implements gateway.PeerTerminalTLS: the TLS config
+// for a wss:// terminal dial, pinned to the pool CA and presenting this
+// daemon's leaf, the same as the peer HTTPS client. Nil without pool PKI.
+func (pp *PeerPool) PeerTerminalTLSConfig() *tls.Config {
+	pp.mu.RLock()
+	pki := pp.pki
+	pp.mu.RUnlock()
+	if pki == nil {
+		return nil
+	}
+	return peerTLSConfig(pki)
 }
 
 // PeerMetricsFetcherAdapter adapts PeerPool to the metrics.PeerMetricsFetcher interface.

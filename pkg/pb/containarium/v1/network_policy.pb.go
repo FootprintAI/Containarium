@@ -127,6 +127,18 @@ const (
 	// that could not be removed keeps allowing traffic the policy no longer does.
 	// The failed entries are retried on the next pass.
 	NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE NetworkPolicyUncoveredPath = 4
+	// The tenant's egress allow-list or deny rules failed to compile (e.g. a
+	// CIDR that is not IPv4), so the policy as stored is not what the kernel
+	// holds: the daemon keeps the tenant's last good egress and deny sets
+	// rather than loading a partial or empty one (#3518). The reason is in the
+	// daemon log. Fix the policy to clear it.
+	NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_POLICY_COMPILE_FAILED NetworkPolicyUncoveredPath = 5
+	// The operator-signature store could not be read on the latest refresh, so
+	// the enforcer keeps the last good signature set in the kernel. Signatures
+	// added, changed or removed since then are not applied until the store
+	// answers again; the state clears on its own (#3519). Reported only while
+	// the enforcer is running.
+	NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_OPERATOR_SIGNATURES_STALE NetworkPolicyUncoveredPath = 6
 )
 
 // Enum value maps for NetworkPolicyUncoveredPath.
@@ -137,6 +149,8 @@ var (
 		2: "NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG",
 		3: "NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED",
 		4: "NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE",
+		5: "NETWORK_POLICY_UNCOVERED_PATH_POLICY_COMPILE_FAILED",
+		6: "NETWORK_POLICY_UNCOVERED_PATH_OPERATOR_SIGNATURES_STALE",
 	}
 	NetworkPolicyUncoveredPath_value = map[string]int32{
 		"NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED":                 0,
@@ -144,6 +158,8 @@ var (
 		"NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG":          2,
 		"NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED":          3,
 		"NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE": 4,
+		"NETWORK_POLICY_UNCOVERED_PATH_POLICY_COMPILE_FAILED":       5,
+		"NETWORK_POLICY_UNCOVERED_PATH_OPERATOR_SIGNATURES_STALE":   6,
 	}
 )
 
@@ -1041,13 +1057,15 @@ const file_containarium_v1_network_policy_proto_rawDesc = "" +
 	"'NETWORK_POLICY_APPLIED_STATE_NOT_LOADED\x10\x02\x12'\n" +
 	"#NETWORK_POLICY_APPLIED_STATE_LOADED\x10\x03\x121\n" +
 	"-NETWORK_POLICY_APPLIED_STATE_PARTIALLY_LOADED\x10\x04\x12&\n" +
-	"\"NETWORK_POLICY_APPLIED_STATE_STALE\x10\x05*\x9e\x02\n" +
+	"\"NETWORK_POLICY_APPLIED_STATE_STALE\x10\x05*\x94\x03\n" +
 	"\x1aNetworkPolicyUncoveredPath\x12-\n" +
 	")NETWORK_POLICY_UNCOVERED_PATH_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"NETWORK_POLICY_UNCOVERED_PATH_IPV6\x10\x01\x124\n" +
 	"0NETWORK_POLICY_UNCOVERED_PATH_DOMAIN_REFRESH_LAG\x10\x02\x124\n" +
 	"0NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED\x10\x03\x12=\n" +
-	"9NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE\x10\x04*\x86\x01\n" +
+	"9NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE\x10\x04\x127\n" +
+	"3NETWORK_POLICY_UNCOVERED_PATH_POLICY_COMPILE_FAILED\x10\x05\x12;\n" +
+	"7NETWORK_POLICY_UNCOVERED_PATH_OPERATOR_SIGNATURES_STALE\x10\x06*\x86\x01\n" +
 	"\x13NetworkPolicySource\x12%\n" +
 	"!NETWORK_POLICY_SOURCE_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"NETWORK_POLICY_SOURCE_HOST_DEFAULT\x10\x01\x12 \n" +

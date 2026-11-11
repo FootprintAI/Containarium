@@ -137,7 +137,8 @@ verification of a pushed commit.
   bounds what the run user may do as a Unix account (its sudo grant), not what
   a command may invoke. With `command_policy` set, the command is decided like
   an engine run's shell command instead; see the next section.
-- The working directory is the run user's home. A command that needs a checkout
+- The working directory is the run user's home, or `workdir` under it (see
+  Working directory below). A command that needs a checkout
   makes it: for example `git clone <url> work && cd work && git checkout <sha>
   && make test`, through the box's own credential helper.
 - `timeout_seconds` bounds it (default 900, at most 3600; `INVALID_ARGUMENT`
@@ -297,6 +298,32 @@ Limits:
 - A command is decided as one line. Programs that the command or a script it
   runs start in turn are not decided again.
 
+## Working directory: `workdir`
+
+A run starts in its home directory: the box user's home, or the unprivileged
+run user's home on a box with a recorded tool-access level. `workdir` starts it
+in a directory under that home instead, for prompt and command runs alike, so an
+instruction relative to a project (for example "put the slide under
+`slides/<id>/`") lands in the project.
+
+- `workdir` is relative to that home, in the canonical form `WriteBoxFile`'s
+  `path` uses (no leading `/`, no `..`, `.`, empty or trailing segment, no
+  control character, nothing under `.ssh` or `.containarium`). Anything else is
+  `INVALID_ARGUMENT`, before the box is touched.
+- The directory must already exist and be a directory the run user can enter.
+  It is checked as that user before anything on the box changes (a finished run
+  under the same name is not rotated aside); otherwise the call is
+  `FAILED_PRECONDITION` naming the directory and no run starts. It is never
+  created, and there is no fallback to the home.
+- Empty keeps the home, exactly as before.
+- An engine run's session folder follows the directory (Claude Code keys its
+  sessions by the directory it starts in), so session discovery and
+  `continue_session` work in it.
+- `BoxRun.workdir` reports it on `StartBoxRun` and `ListBoxRuns`; it is empty for
+  a run started in the home and for runs from before the field.
+
+The capability name is `box_run_workdir`.
+
 ## Putting a file on the box: `WriteBoxFile`
 
 `WriteBoxFile` (`PUT /v1/containers/{username}/files`, `containarium code
@@ -369,11 +396,11 @@ put-file` then says the daemon needs an upgrade for files above 2 MiB.
 ## Feature detection
 
 The REST gateway rejects request fields it does not know, so a caller must not
-send `run_name`, `structured_output`, `model` or `command` to a daemon that
-predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the optional
-features a daemon supports: `box_run_name`, `box_run_structured_output`,
-`box_run_model`, `box_run_command`, `box_run_command_policy`, `box_files` and
-`box_files_stream`. An older daemon does
+send `run_name`, `structured_output`, `model`, `command` or `workdir` to a
+daemon that predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the
+optional features a daemon supports: `box_run_name`, `box_run_structured_output`,
+`box_run_model`, `box_run_command`, `box_run_command_policy`, `box_run_workdir`,
+`box_files` and `box_files_stream`. An older daemon does
 not send the field at all; treat a missing name as unsupported. Names are only
 added. `GetSystemInfo` requires an admin principal. A caller that cannot read it
 can gate on the daemon version instead: the first release that contains these

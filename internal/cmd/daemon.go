@@ -46,6 +46,7 @@ var (
 	daemonAddress          string
 	daemonPort             int
 	daemonHTTPPort         int
+	restTLSTerminator      bool
 	runJournalRetention    time.Duration
 	runCheckoutMaxAge      time.Duration
 	sshAuthzMaxKeyAge      time.Duration
@@ -90,6 +91,7 @@ var (
 	cpuOvercommitFactor    float64
 	cpuOvercommitEnforce   bool
 	placementCPUAware      bool
+	requirePeerMTLS        bool
 	publicHostname         string
 	publicAliases          []string
 	publicBaseDomains      []string
@@ -161,6 +163,8 @@ func init() {
 
 	// HTTP/REST settings
 	daemonCmd.Flags().IntVar(&daemonHTTPPort, "http-port", 8080, "HTTP/REST port to listen on")
+	daemonCmd.Flags().BoolVar(&restTLSTerminator, "rest-tls-terminator", false,
+		"Declare that an external TLS terminator (reverse proxy or load balancer) sits in front of the HTTP/REST listener. The listener itself serves plain HTTP; without this flag a non-loopback bind logs a startup warning (#3522)")
 	daemonCmd.Flags().DurationVar(&runJournalRetention, "run-journal-retention", server.DefaultRunJournalRetention,
 		"How long a run's journal (/var/log/agent-runtime/runs/<run_id>) stays on an agent box before the daemon's sweep removes it")
 	daemonCmd.Flags().DurationVar(&runCheckoutMaxAge, "run-checkout-max-age", server.DefaultRunCheckoutMaxAge,
@@ -232,6 +236,7 @@ func init() {
 	daemonCmd.Flags().Var(poolHeadroomFloors, "pool-headroom-floor", "Refuse container creates and snapshots on an Incus storage pool once it is this percent used, as <pool>=<percent>. Repeatable, one pool each; whole percent 86-99 (above the 85% \"pool nearly full\" mark). Pools not named use 95. Host status and the built-in alert keep 85/95 (#3128).")
 	daemonCmd.Flags().Float64Var(&cpuOvercommitFactor, "cpu-overcommit-factor", envFloat("CONTAINARIUM_CPU_OVERCOMMIT_FACTOR", 0), "Max CPU overcommit: refuse a create when committed cores would exceed logical-CPUs (vCPUs, incl. SMT threads) × this factor. 0 (default) disables the check. Env: CONTAINARIUM_CPU_OVERCOMMIT_FACTOR (#1029).")
 	daemonCmd.Flags().BoolVar(&cpuOvercommitEnforce, "cpu-overcommit-enforce", envBool("CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE", false), "With --cpu-overcommit-factor > 0, actually reject over-ceiling creates. When false (default), the check is advisory (logs what it would reject). Env: CONTAINARIUM_CPU_OVERCOMMIT_ENFORCE (#1029).")
+	daemonCmd.Flags().BoolVar(&requirePeerMTLS, "require-peer-mtls", envBool("CONTAINARIUM_REQUIRE_PEER_MTLS", false), "Refuse to start when daemon-to-peer calls would fall back to plain HTTP because the peer-PKI bootstrap failed or was skipped. Off by default (the fallback is logged). Env: CONTAINARIUM_REQUIRE_PEER_MTLS (#3517).")
 	daemonCmd.Flags().BoolVar(&placementCPUAware, "placement-cpu-aware", envBool("CONTAINARIUM_PLACEMENT_CPU_AWARE", false), "When a pool create has no explicit backend, place it on the least CPU-committed healthy peer instead of an arbitrary one. Off by default (first-healthy). Env: CONTAINARIUM_PLACEMENT_CPU_AWARE (#1029).")
 }
 
@@ -671,6 +676,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		HTTPPort:            daemonHTTPPort,
 		EnableREST:          enableREST,
 		StartupListener:     early.releaseUnlessServing(enableREST, daemonHTTPPort),
+		RESTTLSTerminator:   restTLSTerminator,
 		JWTSecret:           finalJWTSecret,
 		SwaggerDir:          swaggerDir,
 		EnableAppHosting:    enableAppHosting,
@@ -706,6 +712,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		CPUOvercommitFactor:    cpuOvercommitFactor,
 		CPUOvercommitEnforce:   cpuOvercommitEnforce,
 		PlacementCPUAware:      placementCPUAware,
+		RequirePeerMTLS:        requirePeerMTLS,
 		PublicHostname:         publicHostname,
 		PublicAliases:          publicAliases,
 		PublicBaseDomains:      resolvePublicBaseDomains(publicBaseDomains, baseDomain),

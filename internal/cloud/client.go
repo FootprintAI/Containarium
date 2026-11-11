@@ -247,6 +247,7 @@ func New(cfg *Config, deps Deps) (*Client, error) {
 // not crash the daemon or stop local containers).
 func (c *Client) Start(ctx context.Context) error {
 	if isRESTControlPlane(c.cfg.ControlPlane) {
+		warnIfPlaintextControlPlane(c.cfg.ControlPlane)
 		// REST transport (#722): no gRPC dial. WatchAssignments (streaming) is
 		// unavailable over REST, so the watch loop is skipped — a BYOC host on a
 		// REST-only control plane is push-driven (the cloud drives it via the
@@ -368,6 +369,7 @@ type EnrollOptions struct {
 func Enroll(ctx context.Context, controlPlane, joinToken string, insecureTLS bool, opts EnrollOptions) (hostID, bearerToken string, err error) {
 	// REST control plane (#722): redeem over grpc-gateway instead of gRPC.
 	if isRESTControlPlane(controlPlane) {
+		warnIfPlaintextControlPlane(controlPlane)
 		return enrollREST(ctx, controlPlane, joinToken, opts)
 	}
 	conn, err := dialControlPlane(controlPlane, insecureTLS)

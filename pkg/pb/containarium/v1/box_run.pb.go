@@ -737,7 +737,12 @@ type BoxRun struct {
 	// Tokens the engine reported for this run (capability "run_usage"). Always
 	// set; check usage.status before reading usage.models. UNAVAILABLE means the
 	// daemon has no usage for the run (never zeros).
-	Usage         *RunUsage `protobuf:"bytes,11,opt,name=usage,proto3" json:"usage,omitempty"`
+	Usage *RunUsage `protobuf:"bytes,11,opt,name=usage,proto3" json:"usage,omitempty"`
+	// The directory the run was started in, relative to the run's home, as
+	// requested in StartBoxRunRequest.workdir (#3551). Empty when the run started
+	// in the home itself, and for a run from before the field. Capability
+	// "box_run_workdir".
+	Workdir       string `protobuf:"bytes,12,opt,name=workdir,proto3" json:"workdir,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -847,6 +852,13 @@ func (x *BoxRun) GetUsage() *RunUsage {
 		return x.Usage
 	}
 	return nil
+}
+
+func (x *BoxRun) GetWorkdir() string {
+	if x != nil {
+		return x.Workdir
+	}
+	return ""
 }
 
 // BoxRunTool is one tool the box's run wrapper found on the run's PATH. It says
@@ -1046,7 +1058,22 @@ type StartBoxRunRequest struct {
 	// session_id or continue_session (INVALID_ARGUMENT): an approval starts a new
 	// run, it never resumes the refused one. Each id must match
 	// [A-Za-z0-9._:@-]{1,128}.
-	Approval      *AgentRunApproval `protobuf:"bytes,12,opt,name=approval,proto3" json:"approval,omitempty"`
+	Approval *AgentRunApproval `protobuf:"bytes,12,opt,name=approval,proto3" json:"approval,omitempty"`
+	// The directory the run starts in, relative to the home directory a run
+	// starts in without it (#3551): the box user's home, or the unprivileged run
+	// user's home on a box with a recorded tool-access level. Empty keeps that
+	// home. Applies to prompt and command runs alike; the engine's session
+	// folder, and what continue_session resumes, follow the directory. The value
+	// must be in the canonical relative form WriteBoxFileRequest.path uses: no
+	// leading "/", no "." or ".." segment, no empty or trailing segment, no
+	// control characters, at most 1024 bytes, and not under .ssh or
+	// .containarium; anything else is INVALID_ARGUMENT before the box is
+	// touched. The directory must already exist and be a directory the run user
+	// can enter, checked as that user before anything on the box is changed:
+	// otherwise FAILED_PRECONDITION naming it, and no run starts. It is never
+	// created, and there is no fallback to the home. BoxRun.workdir reports it.
+	// Capability "box_run_workdir" in SystemInfo.capabilities.
+	Workdir       string `protobuf:"bytes,13,opt,name=workdir,proto3" json:"workdir,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1163,6 +1190,13 @@ func (x *StartBoxRunRequest) GetApproval() *AgentRunApproval {
 		return x.Approval
 	}
 	return nil
+}
+
+func (x *StartBoxRunRequest) GetWorkdir() string {
+	if x != nil {
+		return x.Workdir
+	}
+	return ""
 }
 
 type StartBoxRunResponse struct {
@@ -3242,7 +3276,7 @@ var File_containarium_v1_box_run_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\n" +
-	"\x1dcontainarium/v1/box_run.proto\x12\x0fcontainarium.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dcontainarium/v1/sandbox.proto\x1a\x1bcontainarium/v1/agent.proto\x1a\x1fcontainarium/v1/run_usage.proto\x1a)containarium/v1/agent_command_audit.proto\"\xf4\x03\n" +
+	"\x1dcontainarium/v1/box_run.proto\x12\x0fcontainarium.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dcontainarium/v1/sandbox.proto\x1a\x1bcontainarium/v1/agent.proto\x1a\x1fcontainarium/v1/run_usage.proto\x1a)containarium/v1/agent_command_audit.proto\"\x8e\x04\n" +
 	"\x06BoxRun\x12\x19\n" +
 	"\brun_name\x18\x01 \x01(\tR\arunName\x129\n" +
 	"\n" +
@@ -3257,7 +3291,8 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\x05tools\x18\t \x03(\v2\x1b.containarium.v1.BoxRunToolR\x05tools\x12\x14\n" +
 	"\x05model\x18\n" +
 	" \x01(\tR\x05model\x12/\n" +
-	"\x05usage\x18\v \x01(\v2\x19.containarium.v1.RunUsageR\x05usageB\f\n" +
+	"\x05usage\x18\v \x01(\v2\x19.containarium.v1.RunUsageR\x05usage\x12\x18\n" +
+	"\aworkdir\x18\f \x01(\tR\aworkdirB\f\n" +
 	"\n" +
 	"_exit_code\"\xc2\x01\n" +
 	"\n" +
@@ -3267,7 +3302,7 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\n" +
 	"provenance\x18\x03 \x01(\x0e2%.containarium.v1.BoxRunToolProvenanceR\n" +
 	"provenance\x12?\n" +
-	"\blocation\x18\x04 \x01(\x0e2#.containarium.v1.BoxRunToolLocationR\blocation\"\xdb\x03\n" +
+	"\blocation\x18\x04 \x01(\x0e2#.containarium.v1.BoxRunToolLocationR\blocation\"\xf5\x03\n" +
 	"\x12StartBoxRunRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x16\n" +
 	"\x06prompt\x18\x02 \x01(\tR\x06prompt\x12\x1d\n" +
@@ -3282,7 +3317,8 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\acommand\x18\b \x01(\tR\acommand\x12'\n" +
 	"\x0ftimeout_seconds\x18\t \x01(\x05R\x0etimeoutSeconds\x12J\n" +
 	"\x0ecommand_policy\x18\v \x01(\v2#.containarium.v1.AgentCommandPolicyR\rcommandPolicy\x12=\n" +
-	"\bapproval\x18\f \x01(\v2!.containarium.v1.AgentRunApprovalR\bapproval\"@\n" +
+	"\bapproval\x18\f \x01(\v2!.containarium.v1.AgentRunApprovalR\bapproval\x12\x18\n" +
+	"\aworkdir\x18\r \x01(\tR\aworkdir\"@\n" +
 	"\x13StartBoxRunResponse\x12)\n" +
 	"\x03run\x18\x01 \x01(\v2\x17.containarium.v1.BoxRunR\x03run\"8\n" +
 	"\x1aGetBoxRunUserStatusRequest\x12\x1a\n" +
