@@ -378,9 +378,6 @@ containarium code run <box> --prompt '<task>' --name <run> \
   is refused with `PermissionDenied` from that capability check, even against
   a daemon that advertises `box_run_token` and although `StartBoxRun` itself
   accepts the owner. No run is started.
-
-  capability, and no run is started. Reading that list needs an admin
-  principal, so the flag is for a caller that has one.
 - `--prompt`, `--session`, `--continue`, `--name`, `--command` and `--timeout`
   map to the request's fields. `--approvals ask`,
   `--output-format-stream-json` and `--token-ttl` belong to the SSH path and
