@@ -1,0 +1,52 @@
+name: box-logs
+
+# Box logs (#3643): the collection script, frame parser, merge and cursor in
+# internal/boxlogs. There is no repo-wide `go test ./...` lane, so nothing
+# else runs this package. The script tests run the real collector under sh
+# against a fake box (fake journalctl/docker, a fake /proc and docker socket),
+# so this must be Linux. The TailBoxLogs handler tests run in server-race.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'internal/boxlogs/**'
+      - 'proto/containarium/v1/box_logs.proto'
+      - '.github/workflows/box-logs.yml'
+  # No `branches:` filter on pull_request, deliberately (#1215): it would give
+  # stacked PRs zero checks.
+  pull_request:
+    paths:
+      - 'internal/boxlogs/**'
+      - 'proto/containarium/v1/box_logs.proto'
+      - '.github/workflows/box-logs.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: go test -race ./internal/boxlogs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go-cached
+        with:
+          go-version: '1.26.11'
+          cache-name: box-logs
+
+      - name: internal/boxlogs under -race (script tests must not skip)
+        run: |
+          set -o pipefail
+          go test -race -count=1 -v ./internal/boxlogs/... | tee boxlogs.out
+          # The script tests skip when a tool or a unix socket is missing;
+          # on this runner they must run.
+          if grep -q -- '--- SKIP' boxlogs.out; then echo "box-logs tests skipped"; exit 1; fi
