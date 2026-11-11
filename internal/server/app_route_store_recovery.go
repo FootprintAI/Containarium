@@ -350,7 +350,7 @@ func (e *caddyRouteEdge) ensureManagementRoutes(ctx context.Context, st *app.Rou
 			TargetIP:    e.cfg.HostIP,
 			TargetPort:  e.cfg.HTTPPort,
 			Protocol:    "http",
-			Description: "Containarium management UI",
+			Description: managementRouteDescription,
 			Active:      true,
 			CreatedBy:   string(app.RouteCreatorSystem),
 		}
@@ -386,6 +386,11 @@ type routeHosting struct {
 // Caddy edge, no Postgres.
 func newRouteHosting(cfg routeHostingConfig) *routeHosting {
 	proxy := byocIngressFromEnv(wafIngressFromEnv(app.NewProxyManager(cfg.CaddyAdminURL, cfg.BaseDomain).WithDNSChallenge(app.DNSChallengeFromEnv())))
+	if cfg.BYOCBackend {
+		// Also stops the route sync job's self-heal from re-ordering the
+		// wildcard after a Caddy revert (#2262).
+		proxy.WithoutWildcardTLS()
+	}
 	edge := &caddyRouteEdge{cfg: cfg, proxy: proxy, l4: app.NewL4ProxyManager(cfg.CaddyAdminURL), logf: log.Printf}
 	return newRouteHostingWithEdge(proxy, edge)
 }

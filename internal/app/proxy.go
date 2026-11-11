@@ -26,6 +26,10 @@ type ProxyManager struct {
 	// HTTP-01 + TLS-ALPN-01. Configured via WithDNSChallenge /
 	// DNSChallengeFromEnv. See issue #378.
 	dnsChallenge *CaddyACMEChallenges
+	// noWildcardTLS makes ProvisionWildcardTLS a no-op: a BYOC backend serves
+	// no base domain it owns (#2262) so it must never order `*.<base-domain>`,
+	// including from the route sync job's self-heal after a Caddy revert.
+	noWildcardTLS bool
 	// proxyProtocolTrusted records the CIDRs passed to the last successful
 	// EnableProxyProtocol, so the self-healing reconcile (EnsureBaseConfig)
 	// can re-install the PROXY listener wrappers after the bundled Caddy
@@ -118,6 +122,14 @@ func NewProxyManager(caddyAdminURL, baseDomain string) *ProxyManager {
 // Returns the manager for chaining. See DNSChallengeFromEnv and issue #378.
 func (p *ProxyManager) WithDNSChallenge(dns *CaddyACMEChallenges) *ProxyManager {
 	p.dnsChallenge = dns
+	return p
+}
+
+// WithoutWildcardTLS makes ProvisionWildcardTLS a no-op, for a BYOC backend
+// that must not order a wildcard certificate for a base domain it does not own
+// (#2262). Returns the manager for chaining.
+func (p *ProxyManager) WithoutWildcardTLS() *ProxyManager {
+	p.noWildcardTLS = true
 	return p
 }
 
@@ -894,6 +906,9 @@ func (p *ProxyManager) EnsureTLSSubjects(domains []string) error {
 // issue wildcard certificates, so this returns an error rather than silently
 // falling back to a path that can't work.
 func (p *ProxyManager) ProvisionWildcardTLS() error {
+	if p.noWildcardTLS {
+		return nil // BYOC backend: no wildcard for a domain it does not own (#2262)
+	}
 	if p.dnsChallenge == nil {
 		return fmt.Errorf("wildcard TLS requires an ACME DNS-01 provider (set CONTAINARIUM_ACME_DNS_PROVIDER); HTTP-01 / TLS-ALPN-01 cannot issue wildcard certificates")
 	}

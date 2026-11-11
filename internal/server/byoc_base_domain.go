@@ -26,7 +26,8 @@ import (
 
 // The three places that act on it: managementRouteDomains (no apex route),
 // dropStaleManagementRoutes (removes the apex route saved before the host was
-// marked), and the wildcard-certificate step in Start (no `*.<base-domain>`).
+// marked), and the wildcard-certificate step in caddyRouteEdge.setUp (no `*.<base-domain>`),
+// plus ProxyManager.WithoutWildcardTLS for the route sync job's self-heal.
 
 // managementRouteDescription marks the system route the daemon keeps for its
 // own UI/API apex.
