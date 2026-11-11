@@ -7,6 +7,7 @@ import "containarium/v1/config.proto";
 import "containarium/v1/alert.proto";
 import "containarium/v1/secrets.proto";
 import "containarium/v1/box_run.proto";
+import "containarium/v1/box_logs.proto";
 import "google/api/annotations.proto";
 import "protoc-gen-openapiv2/options/annotations.proto";
 
@@ -577,6 +578,21 @@ service ContainerService {
       summary: "Tail a box code run's log";
       description: "Returns one byte window of a code run's log plus the offset to resume from; ended once the run has an exit code and the log is read to its end. Framed logs are demuxed to stdout, with stderr_dropped set when stderr frames were skipped. Box owner or collaborator, ssh:write scope.";
       tags: "Code Runs";
+    };
+  }
+
+  // TailBoxLogs reads one window of a box's logs (#3643): its systemd
+  // journal and the logs of the containers running inside it, merged in
+  // receipt-time order. Resumable through an opaque cursor and bounded
+  // (max_lines, follow_seconds), like TailBoxRunLog; same access rule.
+  rpc TailBoxLogs(TailBoxLogsRequest) returns (TailBoxLogsResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/logs"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Tail a box's journal and container logs";
+      description: "Returns one time-ordered window of a box's systemd journal and the logs of the containers running inside it, each line labelled with its unit or container, plus a cursor to resume from with no line repeated or skipped. since, tail, units and containers narrow the read; an unknown unit or container is INVALID_ARGUMENT listing the valid names. A stopped box is reported as BOX_STOPPED and not started. Docker-backed boxes only: a box whose containers run on podman or rootless docker answers RUNTIME_UNSUPPORTED. Box owner or collaborator, ssh:write scope.";
+      tags: "Containers";
     };
   }
 
