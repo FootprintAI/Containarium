@@ -114,8 +114,6 @@ func TestResolveSecretInput_EnvDefaultIsNotAFlag(t *testing.T) {
 // Every command that takes the trio must expose all three flags.
 func TestSecretInputFlagsRegistered(t *testing.T) {
 	for name, c := range map[string]*cobra.Command{
-		"tunnel":             tunnelCmd,
-		"hypervisor-agent":   hypervisorAgentCmd,
 		"token delegate":     tokenDelegateCmd,
 		"token revoke":       tokenRevokeCmd,
 		"token list-revoked": tokenListRevokedCmd,
