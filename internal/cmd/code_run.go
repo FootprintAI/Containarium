@@ -34,6 +34,10 @@ var (
 	// --timeout; mutually exclusive with everything that means an engine.
 	codeRunCommand string
 	codeRunTimeout time.Duration
+
+	// #3613: --workdir starts the run in a directory under the box user's
+	// home instead of the home itself (StartBoxRunRequest.workdir's rule).
+	codeRunWorkdir string
 )
 
 var codeRunCmd = &cobra.Command{
@@ -54,6 +58,16 @@ short-lived gateway token (bound to this box, this run, and the recorded model)
 and writes it to the engine's gateway.env at 0600 before the run starts. No
 provider key is ever stored on the box. --token-ttl bounds that token; the
 default is 24h and the server caps it.
+
+--workdir <dir> starts the run (an agent run or a --command run) in a
+directory under the box user's home instead of the home itself, for example
+--workdir project. It is a clean relative path: an absolute path, "..", ".",
+an empty or trailing segment, and anything under .ssh or .containarium are
+refused before anything is sent. The directory must already exist and be one
+the box user can enter; it is checked before anything on the box changes, never
+created, and a missing one is an error, not a fallback to the home. With
+--run-token-file the daemon applies the same rule, relative to the home the run
+starts in (the run user's on a box with a tool-access level).
 
 --continue resumes the agent's most recent session for the run's working
 directory instead of starting a fresh one.
@@ -141,6 +155,10 @@ stays on the box, readable via 'containarium code status' or another
 
 func runCodeRun(cmd *cobra.Command, args []string) error {
 	box := args[0]
+	// #3613: a malformed --workdir is refused before anything connects.
+	if err := validateCodeRunWorkdir(); err != nil {
+		return err
+	}
 	// #3610: a per-run token selects the daemon-API path, for an agent run
 	// and a --command run alike. Without the flag nothing below changes.
 	if codeRunTokenFile != "" {
@@ -188,6 +206,13 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = sess.Close() }()
 
+	// #3613: before the gateway token, the approval hook or the run itself
+	// changes anything on the box.
+	cwd, err := sess.ResolveWorkdir(ctx, codeRunWorkdir)
+	if err != nil {
+		return fmt.Errorf("start run on %q: %w", box, err)
+	}
+
 	// #1727: the box's own code.json decides which engine and credential source
 	// this run uses. A box installed before #1727 has no record, and
 	// prepareCodeRun falls back to the Claude + tenant-secret path it was
@@ -208,9 +233,9 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 	// directory against a snapshot taken BEFORE the engine starts (see
 	// engine/session_discovery.go). A resumed run's id is the literal
 	// --session value and needs no discovery.
-	discover := codeRunSession == "" && snapshotSessionDirectory(ctx, sess, eng, name, diag)
+	discover := codeRunSession == "" && snapshotSessionDirectory(ctx, sess, eng, name, cwd, diag)
 
-	started, err := startCodeRun(ctx, sess, diag, box, name, command, coderun.CaptureModeFor(codeRunStreamJSON))
+	started, err := startCodeRun(ctx, sess, diag, box, name, command, cwd, coderun.CaptureModeFor(codeRunStreamJSON))
 	if err != nil {
 		return fmt.Errorf("start run on %q: %w", box, err)
 	}
@@ -220,7 +245,7 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 
 	switch {
 	case discover:
-		startSessionDiscovery(ctx, sess, eng, name, diag)
+		startSessionDiscovery(ctx, sess, eng, name, cwd, diag)
 	case codeRunSession != "":
 		// Known from the flag: record it so `code runs` reports it at once.
 		sidecar := coderun.ShellQuoteSingle(sessionSidecarFor(name))
@@ -259,8 +284,12 @@ func runCodeRunCommand(cmd *cobra.Command, box string) error {
 		return err
 	}
 	defer func() { _ = sess.Close() }()
+	cwd, err := sess.ResolveWorkdir(ctx, codeRunWorkdir)
+	if err != nil {
+		return fmt.Errorf("start command run on %q: %w", box, err)
+	}
 	command := coderun.BuildShellCommand(codeRunCommand, timeoutSeconds)
-	started, err := startCodeRun(ctx, sess, diag, box, name, command, coderun.CaptureModeFor(false))
+	started, err := startCodeRun(ctx, sess, diag, box, name, command, cwd, coderun.CaptureModeFor(false))
 	if err != nil {
 		return fmt.Errorf("start command run on %q: %w", box, err)
 	}
@@ -273,13 +302,14 @@ type codeRunStarter interface {
 	ProcessStart(ctx context.Context, name, command, cwd, captureMode string) (*coderun.ProcessStartResult, error)
 }
 
-// startCodeRun starts the run on box and prints the start's report
+// startCodeRun starts the run on box in cwd (coderun.Session.ResolveWorkdir;
+// empty is process_start's default) and prints the start's report
 // (reportCodeRunStarted): every `code run` path starts here, so a note from
 // the start (#3529) reaches the person on each of them (#3540).
-func startCodeRun(ctx context.Context, sess codeRunStarter, diag io.Writer, box, name, command, captureMode string) (*coderun.ProcessStartResult, error) {
+func startCodeRun(ctx context.Context, sess codeRunStarter, diag io.Writer, box, name, command, cwd, captureMode string) (*coderun.ProcessStartResult, error) {
 	// The function the MCP code_run tool starts its run through too (#3610).
 	// No token here: this is the SSH path.
-	run, err := client.StartCodeRun(ctx, client.CodeRunStart{Session: sess, Name: name, Command: command, CaptureMode: captureMode})
+	run, err := client.StartCodeRun(ctx, client.CodeRunStart{Session: sess, Name: name, Command: command, CaptureMode: captureMode, Cwd: cwd})
 	if err != nil {
 		return nil, err
 	}
@@ -318,6 +348,17 @@ func validateCommandModeFlags() (int, error) {
 	return secs, nil
 }
 
+// validateCodeRunWorkdir applies the canonical home-relative path rule to a
+// non-empty --workdir (#3613), the rule the daemon applies to
+// StartBoxRunRequest.workdir.
+func validateCodeRunWorkdir() error {
+	if codeRunWorkdir == "" {
+		return nil
+	}
+	_, err := coderun.CleanHomeRelPath("--workdir", codeRunWorkdir)
+	return err
+}
+
 // sessionSidecarFor is where the run called name keeps its session sidecar:
 // process_start puts every run's files under coderun.RunLogDir.
 func sessionSidecarFor(name string) string {
@@ -328,7 +369,7 @@ func sessionSidecarFor(name string) string {
 // entries before the run starts, so discovery can tell this run's own entry
 // from older conversations. It reports whether a snapshot was taken; without
 // one discovery is skipped (an absent session id, never a wrong one).
-func snapshotSessionDirectory(ctx context.Context, sess *coderun.Session, eng engine.Engine, name string, diag io.Writer) bool {
+func snapshotSessionDirectory(ctx context.Context, sess *coderun.Session, eng engine.Engine, name, cwd string, diag io.Writer) bool {
 	if eng == nil {
 		return false
 	}
@@ -337,7 +378,7 @@ func snapshotSessionDirectory(ctx context.Context, sess *coderun.Session, eng en
 		fmt.Fprintf(diag, "note: could not resolve $HOME to look for this run's session id: %v\n", err)
 		return false
 	}
-	cmd, ok := engine.SessionDiscoveryPrepareCommand(eng.Name(), home, home, sessionSidecarFor(name))
+	cmd, ok := engine.SessionDiscoveryPrepareCommand(eng.Name(), home, coderun.RunCwd(home, cwd), sessionSidecarFor(name))
 	if !ok {
 		return false
 	}
@@ -357,7 +398,7 @@ func snapshotSessionDirectory(ctx context.Context, sess *coderun.Session, eng en
 // never fatal to the run: it only means `code runs` won't show a session id
 // for it, which the AC already allows ("absent for engines that don't expose
 // one").
-func startSessionDiscovery(ctx context.Context, sess *coderun.Session, eng engine.Engine, name string, diag io.Writer) {
+func startSessionDiscovery(ctx context.Context, sess *coderun.Session, eng engine.Engine, name, cwd string, diag io.Writer) {
 	if eng == nil {
 		return
 	}
@@ -366,13 +407,7 @@ func startSessionDiscovery(ctx context.Context, sess *coderun.Session, eng engin
 		fmt.Fprintf(diag, "note: could not resolve $HOME to look for this run's session id: %v\n", err)
 		return
 	}
-	// process_start was given no --cwd, so the run inherited agent-box's own
-	// cwd — which over an interactive SSH login is $HOME. Best-effort: if the
-	// box's actual login shell lands somewhere else, discovery simply won't
-	// find a match and session_id stays absent, same as any other engine
-	// that exposes none.
-	cwd := home
-	cmd, ok := engine.SessionDiscoveryBackgroundCommand(eng.Name(), home, cwd, sessionSidecarFor(name))
+	cmd, ok := engine.SessionDiscoveryBackgroundCommand(eng.Name(), home, coderun.RunCwd(home, cwd), sessionSidecarFor(name))
 	if !ok {
 		return
 	}

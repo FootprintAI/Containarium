@@ -16,3 +16,10 @@ func TestBoxRunTokenCapability_IsTheDaemons(t *testing.T) {
 		t.Fatalf("client gates on %q, the daemon advertises %q", BoxRunTokenCapability, server.DaemonCapBoxRunToken)
 	}
 }
+
+// #3613: the same for the workdir capability.
+func TestBoxRunWorkdirCapability_IsTheDaemons(t *testing.T) {
+	if BoxRunWorkdirCapability != server.DaemonCapBoxRunWorkdir {
+		t.Fatalf("client gates on %q, the daemon advertises %q", BoxRunWorkdirCapability, server.DaemonCapBoxRunWorkdir)
+	}
+}

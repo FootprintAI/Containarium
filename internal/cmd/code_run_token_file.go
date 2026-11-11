@@ -84,7 +84,11 @@ func codeRunDaemonRequest(box string) (*pb.StartBoxRunRequest, error) {
 	case codeRunTokenTTL != "":
 		return nil, fmt.Errorf("--token-ttl is not available with --run-token-file (it bounds the gateway token the SSH path mints)")
 	}
-	req := &pb.StartBoxRunRequest{Username: box, RunName: codeName}
+	if err := validateCodeRunWorkdir(); err != nil {
+		return nil, err
+	}
+	// #3613: the daemon checks the directory under the home the run starts in.
+	req := &pb.StartBoxRunRequest{Username: box, RunName: codeName, Workdir: codeRunWorkdir}
 	if strings.TrimSpace(codeRunCommand) != "" {
 		if strings.TrimSpace(codeRunPrompt) != "" || codeRunSession != "" || codeRunContinue {
 			return nil, fmt.Errorf("--command is mutually exclusive with --prompt, --session and --continue")

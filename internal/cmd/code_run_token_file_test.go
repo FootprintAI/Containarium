@@ -71,19 +71,19 @@ type codeRunTokenFixture struct {
 func newCodeRunTokenFixture(t *testing.T) *codeRunTokenFixture {
 	t.Helper()
 	saved := struct {
-		prompt, session, name, command, tokenTTL, approvals, tokenFile string
-		cont, streamJSON                                               bool
-		timeout                                                        time.Duration
-		newClient                                                      func() (codeRunDaemonAPI, error)
-	}{codeRunPrompt, codeRunSession, codeName, codeRunCommand, codeRunTokenTTL, codeRunApprovals, codeRunTokenFile,
+		prompt, session, name, command, tokenTTL, approvals, tokenFile, workdir string
+		cont, streamJSON                                                        bool
+		timeout                                                                 time.Duration
+		newClient                                                               func() (codeRunDaemonAPI, error)
+	}{codeRunPrompt, codeRunSession, codeName, codeRunCommand, codeRunTokenTTL, codeRunApprovals, codeRunTokenFile, codeRunWorkdir,
 		codeRunContinue, codeRunStreamJSON, codeRunTimeout, newCodeRunDaemonClient}
 	t.Cleanup(func() {
 		codeRunPrompt, codeRunSession, codeName, codeRunCommand = saved.prompt, saved.session, saved.name, saved.command
-		codeRunTokenTTL, codeRunApprovals, codeRunTokenFile = saved.tokenTTL, saved.approvals, saved.tokenFile
+		codeRunTokenTTL, codeRunApprovals, codeRunTokenFile, codeRunWorkdir = saved.tokenTTL, saved.approvals, saved.tokenFile, saved.workdir
 		codeRunContinue, codeRunStreamJSON, codeRunTimeout = saved.cont, saved.streamJSON, saved.timeout
 		newCodeRunDaemonClient = saved.newClient
 	})
-	codeRunPrompt, codeRunSession, codeName, codeRunCommand, codeRunTokenTTL, codeRunTokenFile = "", "", "", "", "", ""
+	codeRunPrompt, codeRunSession, codeName, codeRunCommand, codeRunTokenTTL, codeRunTokenFile, codeRunWorkdir = "", "", "", "", "", "", ""
 	codeRunApprovals = string(coderun.ApprovalsDeny)
 	codeRunContinue, codeRunStreamJSON, codeRunTimeout = false, false, 0
 

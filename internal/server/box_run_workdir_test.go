@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/footprintai/containarium/internal/agentbox"
+	"github.com/footprintai/containarium/internal/coderun"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -231,9 +232,9 @@ func TestStartBoxRun_Workdir_LevelChecksUnderTheRunUsersHome(t *testing.T) {
 			switch {
 			case script == boxRunHomeAndConfigScript():
 				return "/home/alice\n", nil
-			case strings.Contains(script, boxRunWorkdirMarkerOK):
+			case strings.Contains(script, coderun.WorkdirMarkerOK):
 				checkUser, checkScript = username, script
-				return boxRunWorkdirMarkerOK + "\n", nil
+				return coderun.WorkdirMarkerOK + "\n", nil
 			case strings.Contains(script, "setsid"):
 				spawnScript = script
 				return "4242 boot-1\n", nil
@@ -282,9 +283,9 @@ func TestStartBoxRun_Workdir_LevelPromptRunChecksUnderTheRunUsersHome(t *testing
 				return "/home/alice\n" + `{"version":1,"engine":"claude","credential":"secret","provider":"anthropic"}`, nil
 			case script == signInProbeScript(t):
 				return "interactive\n", nil
-			case strings.Contains(script, boxRunWorkdirMarkerOK):
+			case strings.Contains(script, coderun.WorkdirMarkerOK):
 				checkUser, checkScript = username, script
-				return boxRunWorkdirMarkerOK + "\n", nil
+				return coderun.WorkdirMarkerOK + "\n", nil
 			case strings.Contains(script, "setsid"):
 				spawnUser, spawnScript = username, script
 				return "4242 boot-1\n", nil
@@ -353,10 +354,10 @@ func TestResolveBoxRunWorkdir_MapsEachMarker(t *testing.T) {
 		wantDir  string
 		wantMsg  string
 	}{
-		{name: "ok", out: boxRunWorkdirMarkerOK + "\n", wantCode: codes.OK, wantDir: "/home/ctn-run/project"},
-		{name: "missing", out: boxRunWorkdirMarkerMissing + "\n", wantCode: codes.FailedPrecondition, wantMsg: "does not exist"},
-		{name: "not a directory", out: boxRunWorkdirMarkerNotDir + "\n", wantCode: codes.FailedPrecondition, wantMsg: "not a directory"},
-		{name: "cannot be entered", out: boxRunWorkdirMarkerNoEnter + "\n", wantCode: codes.FailedPrecondition, wantMsg: "cannot be entered by ctn-run"},
+		{name: "ok", out: coderun.WorkdirMarkerOK + "\n", wantCode: codes.OK, wantDir: "/home/ctn-run/project"},
+		{name: "missing", out: coderun.WorkdirMarkerMissing + "\n", wantCode: codes.FailedPrecondition, wantMsg: "does not exist"},
+		{name: "not a directory", out: coderun.WorkdirMarkerNotDir + "\n", wantCode: codes.FailedPrecondition, wantMsg: "not a directory"},
+		{name: "cannot be entered", out: coderun.WorkdirMarkerNoEnter + "\n", wantCode: codes.FailedPrecondition, wantMsg: "cannot be entered by ctn-run"},
 		{name: "unexpected output", out: "garbage\n", wantCode: codes.Unavailable, wantMsg: "unexpected output"},
 		{name: "exec error", execErr: errors.New("exec down"), wantCode: codes.Unavailable, wantMsg: "exec down"},
 	} {

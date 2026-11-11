@@ -45,7 +45,7 @@ func (f *fakeRunStarter) ProcessStart(_ context.Context, name, command, cwd, cap
 func TestStartCodeRun_PrintsTheWarningBeforeTheStartedLine(t *testing.T) {
 	starter := &fakeRunStarter{result: &coderun.ProcessStartResult{Name: "r", PID: 7, Warning: "cleared a stale skill-set apply marker"}}
 	var diag strings.Builder
-	started, err := startCodeRun(context.Background(), starter, &diag, "alice", "r", "cmd", "framed")
+	started, err := startCodeRun(context.Background(), starter, &diag, "alice", "r", "cmd", "", "framed")
 	if err != nil || started != starter.result {
 		t.Fatalf("started = %v, err = %v", started, err)
 	}
@@ -58,7 +58,7 @@ func TestStartCodeRun_PrintsTheWarningBeforeTheStartedLine(t *testing.T) {
 
 	refused := &fakeRunStarter{err: errors.New("skill sets are being applied on this box")}
 	diag.Reset()
-	if _, err := startCodeRun(context.Background(), refused, &diag, "alice", "r", "cmd", ""); err == nil || diag.Len() != 0 {
+	if _, err := startCodeRun(context.Background(), refused, &diag, "alice", "r", "cmd", "", ""); err == nil || diag.Len() != 0 {
 		t.Fatalf("a refused start: err = %v, output = %q; want the error and nothing printed", err, diag.String())
 	}
 }
