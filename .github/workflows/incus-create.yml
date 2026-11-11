@@ -33,7 +33,23 @@ on:
       # The server wiring that decides whether a container is encrypted at
       # all (#1341). Without this the wiring lands untested by the lane that
       # exists to test it.
-      - 'internal/server/**'
+      # Narrowed (#3644 CI): only the create, encryption, snapshot, rollback
+      # and migration code this lane's internal/server tests exercise. The
+      # rest of internal/server (logs, boxrun, peers, KMS, secrets, ...) does
+      # not run here. container_server.go stays because CreateContainer lives in it.
+      - 'internal/server/container_server.go'
+      - 'internal/server/encrypted_create.go'
+      - 'internal/server/container_encryption.go'
+      - 'internal/server/container_snapshot.go'
+      - 'internal/server/container_rollback.go'
+      - 'internal/server/encryption_hooks.go'
+      - 'internal/server/encryption_status.go'
+      - 'internal/server/move_container.go'
+      - 'internal/server/rewrap_container.go'
+      - 'internal/server/prepare_encrypted_migration.go'
+      - 'internal/server/network_tenant_create.go'
+      - 'internal/server/*_integration_test.go'
+      - 'internal/server/container_snapshot_test.go'
       - 'internal/cmd/backup_verify.go'
       - 'proto/containarium/v1/backup.proto'
       # Whole-box backup (#2801) streams through the Incus export/import
@@ -60,7 +76,23 @@ on:
       # The server wiring that decides whether a container is encrypted at
       # all (#1341). Without this the wiring lands untested by the lane that
       # exists to test it.
-      - 'internal/server/**'
+      # Narrowed (#3644 CI): only the create, encryption, snapshot, rollback
+      # and migration code this lane's internal/server tests exercise. The
+      # rest of internal/server (logs, boxrun, peers, KMS, secrets, ...) does
+      # not run here. container_server.go stays because CreateContainer lives in it.
+      - 'internal/server/container_server.go'
+      - 'internal/server/encrypted_create.go'
+      - 'internal/server/container_encryption.go'
+      - 'internal/server/container_snapshot.go'
+      - 'internal/server/container_rollback.go'
+      - 'internal/server/encryption_hooks.go'
+      - 'internal/server/encryption_status.go'
+      - 'internal/server/move_container.go'
+      - 'internal/server/rewrap_container.go'
+      - 'internal/server/prepare_encrypted_migration.go'
+      - 'internal/server/network_tenant_create.go'
+      - 'internal/server/*_integration_test.go'
+      - 'internal/server/container_snapshot_test.go'
       - 'internal/cmd/backup_verify.go'
       - 'proto/containarium/v1/backup.proto'
       # Whole-box backup (#2801) streams through the Incus export/import
