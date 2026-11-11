@@ -402,14 +402,22 @@ func buildPeerHTTPClient(pki *peerPKI) *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:    pki.CACertPool(),
-				MinVersion: tls.VersionTLS12,
-				GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
-					cert := pki.ClientCertificate()
-					return &cert, nil
-				},
-			},
+			TLSClientConfig: peerTLSConfig(pki),
+		},
+	}
+}
+
+// peerTLSConfig is the client TLS config for peer calls: verify against the
+// pinned pool CA and present the daemon's leaf (read per handshake, so a
+// renewal applies without a rebuild). Shared by the HTTPS client and the
+// terminal WebSocket dial.
+func peerTLSConfig(pki *peerPKI) *tls.Config {
+	return &tls.Config{
+		RootCAs:    pki.CACertPool(),
+		MinVersion: tls.VersionTLS12,
+		GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			cert := pki.ClientCertificate()
+			return &cert, nil
 		},
 	}
 }
@@ -1464,9 +1472,28 @@ func (pp *PeerPool) PeerTerminalURL(username, authToken string) (string, error) 
 		}
 		return "", nil
 	}
-	// Build ws:// URL pointing at the peer's terminal endpoint via sentinel proxy
-	wsURL := fmt.Sprintf("ws://%s/v1/containers/%s/terminal", peer.Addr, username)
+	// Build the URL pointing at the peer's terminal endpoint via sentinel
+	// proxy. An https (pool mTLS) peer gets wss:// so the bearer and terminal
+	// I/O are encrypted; a plain-http peer keeps ws:// (#3516).
+	wsScheme := "ws"
+	if peer.urlScheme() == "https" {
+		wsScheme = "wss"
+	}
+	wsURL := fmt.Sprintf("%s://%s/v1/containers/%s/terminal", wsScheme, peer.Addr, username)
 	return wsURL, nil
+}
+
+// PeerTerminalTLSConfig implements gateway.PeerTerminalTLS: the TLS config
+// for a wss:// terminal dial, pinned to the pool CA and presenting this
+// daemon's leaf, the same as the peer HTTPS client. Nil without pool PKI.
+func (pp *PeerPool) PeerTerminalTLSConfig() *tls.Config {
+	pp.mu.RLock()
+	pki := pp.pki
+	pp.mu.RUnlock()
+	if pki == nil {
+		return nil
+	}
+	return peerTLSConfig(pki)
 }
 
 // PeerMetricsFetcherAdapter adapts PeerPool to the metrics.PeerMetricsFetcher interface.
