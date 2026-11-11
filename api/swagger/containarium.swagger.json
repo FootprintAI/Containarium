@@ -20282,7 +20282,7 @@
       "properties": {
         "state": {
           "type": "string",
-          "description": "Observed state. Must match one of the AssignmentState* values\n(pending / active / stopping / stopped). Empty rejected with\nInvalidArgument; values outside the enum also InvalidArgument."
+          "description": "Observed state. Must match one of the AssignmentState* values\n(pending / active / stopping / stopped / degraded). Empty rejected with\nInvalidArgument; values outside the enum also InvalidArgument."
         },
         "observedAt": {
           "type": "string",

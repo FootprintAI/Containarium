@@ -84,6 +84,17 @@ type ContainerActuator interface {
 	EnsureDeleted(ctx context.Context, localName string) error
 }
 
+// ObservedState is the host-observed assignment state carried in
+// ReportContainerStateRequest.state. The wire field is a string owned by the
+// cloud contract (actuation_service.proto); these are its allowed values.
+type ObservedState string
+
+const (
+	ObservedStateActive   ObservedState = "active"
+	ObservedStateStopped  ObservedState = "stopped"
+	ObservedStateDegraded ObservedState = "degraded"
+)
+
 // ErrContainerDegraded is wrapped by EnsureRunning when a container that is
 // already running cannot be brought to its desired configuration (e.g. its
 // tenant label could not be stamped). The container is left running and the
@@ -748,17 +759,17 @@ func (c *Client) reconcileAssignment(a *cloudv1.Assignment) {
 		}); err != nil {
 			log.Printf("[cloud] ensure running %s: %v", name, err)
 			if errors.Is(err, ErrContainerDegraded) {
-				c.report(a.GetContainerId(), "degraded")
+				c.report(a.GetContainerId(), ObservedStateDegraded)
 			}
 			return // leave the cloud's observed state stale; next snapshot retries
 		}
-		c.report(a.GetContainerId(), "active")
+		c.report(a.GetContainerId(), ObservedStateActive)
 	case "stopped":
 		if err := c.containers.EnsureStopped(c.ctx, name); err != nil {
 			log.Printf("[cloud] ensure stopped %s: %v", name, err)
 			return
 		}
-		c.report(a.GetContainerId(), "stopped")
+		c.report(a.GetContainerId(), ObservedStateStopped)
 	case "deleted":
 		if err := c.containers.EnsureDeleted(c.ctx, name); err != nil {
 			log.Printf("[cloud] ensure deleted %s: %v", name, err)
@@ -826,14 +837,14 @@ func (c *Client) terminationDone(id string) bool {
 // report sends observed container state back to the cloud (best-effort). Part
 // of the pull/reconcile path, so it only runs in gRPC mode (the REST transport
 // runs no watch loop); watchAC is nil otherwise.
-func (c *Client) report(containerID, state string) {
+func (c *Client) report(containerID string, state ObservedState) {
 	if c.watchAC == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.authContext(c.ctx), 10*time.Second)
 	defer cancel()
 	if _, err := c.watchAC.ReportContainerState(ctx, &cloudv1.ReportContainerStateRequest{
-		ContainerId: containerID, State: state,
+		ContainerId: containerID, State: string(state),
 	}); err != nil {
 		log.Printf("[cloud] report state %s=%s: %v", containerID, state, err)
 	}
