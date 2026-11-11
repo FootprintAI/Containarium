@@ -17,6 +17,7 @@ import (
 
 	containariumv1alpha1 "github.com/footprintai/containarium/apis/containarium/v1alpha1"
 	box "github.com/footprintai/containarium/pkg/core/box"
+	"github.com/footprintai/containarium/pkg/core/naming"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -61,6 +62,23 @@ func (r *BoxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			}
 		}
 		return ctrl.Result{}, nil
+	}
+
+	// A brand-new Box (no finalizer yet) must pass the shared naming rule;
+	// existing Boxes keep reconciling - they are audited, not rejected (#3630).
+	if !controllerutil.ContainsFinalizer(&b, boxFinalizer) {
+		if err := naming.ValidateTenantName(ref.Tenant); err != nil {
+			b.Status.Phase = containariumv1alpha1.BoxFailed
+			meta.SetStatusCondition(&b.Status.Conditions, metav1.Condition{
+				Type:               "Ready",
+				Status:             metav1.ConditionFalse,
+				Reason:             "InvalidTenantName",
+				Message:            err.Error(),
+				ObservedGeneration: b.Generation,
+			})
+			_ = r.Status().Update(ctx, &b)
+			return ctrl.Result{}, nil
+		}
 	}
 
 	// Ensure the finalizer before creating anything the backend must clean up.

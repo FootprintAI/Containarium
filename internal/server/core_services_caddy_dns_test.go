@@ -28,7 +28,7 @@ Requires=network-online.target
 Type=notify
 User=caddy
 Group=caddy
-ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecStart=/usr/bin/caddy run --config /etc/caddy/Caddyfile
 ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force
 TimeoutStopSec=5s
 LimitNOFILE=1048576
@@ -272,5 +272,16 @@ func TestResolveDNSProviderCredential_CallsVerifierEvenWithNothingResolved(t *te
 
 	if len(gotCalls) != 1 || len(gotCalls[0]) != 0 {
 		t.Errorf("verifier calls = %v, want exactly one call with an empty map", gotCalls)
+	}
+}
+
+// #3631: `caddy run --environ` dumps the process environment (DNS credential
+// included) to the journal, so the unit must never use it.
+func TestCaddyServiceUnit_NoEnviron(t *testing.T) {
+	for _, envVars := range []map[string]string{nil, {"CLOUDFLARE_API_TOKEN": "s3cr3t-dns-token"}} {
+		unit := caddyServiceUnit(envVars)
+		if strings.Contains(unit, "--environ") {
+			t.Errorf("caddyServiceUnit(%v) uses --environ:\n%s", envVars, unit)
+		}
 	}
 }

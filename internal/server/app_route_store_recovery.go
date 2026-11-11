@@ -241,6 +241,10 @@ type routeHostingConfig struct {
 	// ManagementDomains are the apexes the management UI route is ensured
 	// for (managementRouteDomains); none when HostIP is unset.
 	ManagementDomains []string
+	// BYOCBackend marks a tunnel-joined backend (#2262): it orders no
+	// wildcard certificate for a base domain it does not own and drops the
+	// management route saved before it was marked.
+	BYOCBackend bool
 }
 
 // routeHostingConfigFrom reads the route family's configuration. caddyAdminURL
@@ -261,6 +265,7 @@ func routeHostingConfigFrom(cfg *DualServerConfig, caddyAdminURL string) routeHo
 		HostIP:               cfg.HostIP,
 		HTTPPort:             cfg.HTTPPort,
 		ManagementDomains:    managementRouteDomains(cfg),
+		BYOCBackend:          cfg.BYOCBackend,
 	}
 }
 
@@ -299,7 +304,16 @@ func (e *caddyRouteEdge) setUp() {
 	// With DNS-01 configured, one `*.<base-domain>` wildcard covers every
 	// subdomain from one issuance (#389). Best-effort; per-route
 	// ProvisionTLS still covers individual hostnames if this is skipped.
-	if e.proxy.HasDNSChallenge() {
+	if e.cfg.BYOCBackend {
+		// A BYOC backend orders no certificate for a base domain it does not
+		// own (#2262); drop a wildcard subject left by a start before the
+		// host was marked. No-op when there is none.
+		if e.cfg.BaseDomain != "" {
+			if err := e.proxy.RemoveTLSSubject("*." + e.cfg.BaseDomain); err != nil {
+				e.logf("Warning: BYOC backend: failed to drop wildcard TLS subject *.%s: %v", e.cfg.BaseDomain, err)
+			}
+		}
+	} else if e.proxy.HasDNSChallenge() {
 		if err := e.proxy.ProvisionWildcardTLS(); err != nil {
 			e.logf("Warning: failed to provision wildcard TLS (*.%s): %v", e.cfg.BaseDomain, err)
 		} else {
@@ -321,6 +335,11 @@ func (e *caddyRouteEdge) newSyncJob(st *app.RouteStore) routeSyncJob {
 // domain (#213); the sync job pushes each to Caddy. Nothing without a host
 // IP.
 func (e *caddyRouteEdge) ensureManagementRoutes(ctx context.Context, st *app.RouteStore) {
+	// A BYOC backend serves no apex (ManagementDomains is empty) and drops the
+	// one it saved before it was marked (#2262).
+	if e.cfg.BYOCBackend {
+		dropStaleManagementRoutes(ctx, st)
+	}
 	if e.cfg.HostIP == "" {
 		return
 	}
@@ -331,7 +350,7 @@ func (e *caddyRouteEdge) ensureManagementRoutes(ctx context.Context, st *app.Rou
 			TargetIP:    e.cfg.HostIP,
 			TargetPort:  e.cfg.HTTPPort,
 			Protocol:    "http",
-			Description: "Containarium management UI",
+			Description: managementRouteDescription,
 			Active:      true,
 			CreatedBy:   string(app.RouteCreatorSystem),
 		}
@@ -367,6 +386,11 @@ type routeHosting struct {
 // Caddy edge, no Postgres.
 func newRouteHosting(cfg routeHostingConfig) *routeHosting {
 	proxy := byocIngressFromEnv(wafIngressFromEnv(app.NewProxyManager(cfg.CaddyAdminURL, cfg.BaseDomain).WithDNSChallenge(app.DNSChallengeFromEnv())))
+	if cfg.BYOCBackend {
+		// Also stops the route sync job's self-heal from re-ordering the
+		// wildcard after a Caddy revert (#2262).
+		proxy.WithoutWildcardTLS()
+	}
 	edge := &caddyRouteEdge{cfg: cfg, proxy: proxy, l4: app.NewL4ProxyManager(cfg.CaddyAdminURL), logf: log.Printf}
 	return newRouteHostingWithEdge(proxy, edge)
 }

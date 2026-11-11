@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/footprintai/containarium/internal/secretfile"
 	"github.com/footprintai/go-certs/pkg/certs"
 	certsgen "github.com/footprintai/go-certs/pkg/certs/gen"
 )
@@ -133,7 +134,7 @@ func Generate(opts GenerateOptions) error {
 	if err := os.WriteFile(paths.CACert, credentials.CACert.Bytes(), 0644); err != nil {
 		return fmt.Errorf("failed to write CA cert: %w", err)
 	}
-	if err := os.WriteFile(paths.CAKey, credentials.CAKey.Bytes(), 0600); err != nil {
+	if err := secretfile.Write(paths.CAKey, credentials.CAKey.Bytes()); err != nil {
 		return fmt.Errorf("failed to write CA key: %w", err)
 	}
 
@@ -141,7 +142,7 @@ func Generate(opts GenerateOptions) error {
 	if err := os.WriteFile(paths.ServerCert, credentials.ServerCert.Bytes(), 0644); err != nil {
 		return fmt.Errorf("failed to write server cert: %w", err)
 	}
-	if err := os.WriteFile(paths.ServerKey, credentials.ServerKey.Bytes(), 0600); err != nil {
+	if err := secretfile.Write(paths.ServerKey, credentials.ServerKey.Bytes()); err != nil {
 		return fmt.Errorf("failed to write server key: %w", err)
 	}
 
@@ -149,7 +150,7 @@ func Generate(opts GenerateOptions) error {
 	if err := os.WriteFile(paths.ClientCert, credentials.ClientCert.Bytes(), 0644); err != nil {
 		return fmt.Errorf("failed to write client cert: %w", err)
 	}
-	if err := os.WriteFile(paths.ClientKey, credentials.ClientKey.Bytes(), 0600); err != nil {
+	if err := secretfile.Write(paths.ClientKey, credentials.ClientKey.Bytes()); err != nil {
 		return fmt.Errorf("failed to write client key: %w", err)
 	}
 
@@ -227,7 +228,7 @@ func GenerateWithExistingCA(caPath, caKeyPath string, opts GenerateOptions) erro
 	if err := os.WriteFile(paths.ServerCert, credentials.ServerCert.Bytes(), 0644); err != nil {
 		return fmt.Errorf("failed to write server cert: %w", err)
 	}
-	if err := os.WriteFile(paths.ServerKey, credentials.ServerKey.Bytes(), 0600); err != nil {
+	if err := secretfile.Write(paths.ServerKey, credentials.ServerKey.Bytes()); err != nil {
 		return fmt.Errorf("failed to write server key: %w", err)
 	}
 
@@ -235,7 +236,7 @@ func GenerateWithExistingCA(caPath, caKeyPath string, opts GenerateOptions) erro
 	if err := os.WriteFile(paths.ClientCert, credentials.ClientCert.Bytes(), 0644); err != nil {
 		return fmt.Errorf("failed to write client cert: %w", err)
 	}
-	if err := os.WriteFile(paths.ClientKey, credentials.ClientKey.Bytes(), 0600); err != nil {
+	if err := secretfile.Write(paths.ClientKey, credentials.ClientKey.Bytes()); err != nil {
 		return fmt.Errorf("failed to write client key: %w", err)
 	}
 

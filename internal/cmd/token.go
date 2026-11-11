@@ -22,6 +22,10 @@ var (
 	tokenSecretFile string
 	tokenRaw        bool
 
+	// --token-file / --stdin for the commands that authenticate with the
+	// root --token (authToken).
+	adminTokenIn secretInputFlags
+
 	// `token revoke` flags
 	revokeJTI       string
 	revokeReason    string
@@ -264,6 +268,10 @@ func init() {
 	tokenRefreshCmd.Flags().StringVar(&refreshTokenIn, "refresh-token", "", "Refresh token to exchange (mutually exclusive with --refresh-token-file)")
 	tokenRefreshCmd.Flags().StringVar(&refreshTokenFile, "refresh-token-file", "", "Path to file containing the refresh token (mode 0600 recommended)")
 
+	for _, c := range []*cobra.Command{tokenDelegateCmd, tokenRevokeCmd, tokenListRevokedCmd, tokenUnscopedReportCmd} {
+		addSecretInputFlags(c, &adminTokenIn)
+	}
+
 	tokenRevokeCmd.Flags().StringVar(&revokeJTI, "jti", "", "jti claim of the token to revoke (required)")
 	_ = tokenRevokeCmd.MarkFlagRequired("jti")
 	tokenRevokeCmd.Flags().StringVar(&revokeReason, "reason", "", "Free-form reason recorded for forensics (default: 'operator_revoke')")
@@ -473,8 +481,11 @@ func runTokenDelegate(cmd *cobra.Command, args []string) error {
 	if serverAddr == "" {
 		return fmt.Errorf("--server is required (the daemon holds the signing key, not the CLI)")
 	}
+	if err := resolveAdminToken(cmd); err != nil {
+		return err
+	}
 	if authToken == "" {
-		return fmt.Errorf("--token is required (the delegated token is minted on ITS authority)")
+		return fmt.Errorf("--token, --token-file or --stdin is required (the delegated token is minted on ITS authority)")
 	}
 	subject := strings.TrimSpace(delegateSubject)
 	if subject == "" {
@@ -546,8 +557,11 @@ func runTokenRevoke(cmd *cobra.Command, args []string) error {
 	if serverAddr == "" {
 		return fmt.Errorf("--server is required (the daemon does the revocation, not the CLI)")
 	}
+	if err := resolveAdminToken(cmd); err != nil {
+		return err
+	}
 	if authToken == "" {
-		return fmt.Errorf("--token is required (must name an admin JWT)")
+		return fmt.Errorf("--token, --token-file or --stdin is required (must name an admin JWT)")
 	}
 	if strings.TrimSpace(revokeJTI) == "" {
 		return fmt.Errorf("--jti is required")
@@ -577,8 +591,11 @@ func runTokenListRevoked(cmd *cobra.Command, args []string) error {
 	if serverAddr == "" {
 		return fmt.Errorf("--server is required")
 	}
+	if err := resolveAdminToken(cmd); err != nil {
+		return err
+	}
 	if authToken == "" {
-		return fmt.Errorf("--token is required (must name an admin JWT)")
+		return fmt.Errorf("--token, --token-file or --stdin is required (must name an admin JWT)")
 	}
 
 	httpClient, err := client.NewHTTPClient(serverAddr, authToken)
@@ -616,8 +633,11 @@ func runTokenUnscopedReport(cmd *cobra.Command, args []string) error {
 	if serverAddr == "" {
 		return fmt.Errorf("--server is required")
 	}
+	if err := resolveAdminToken(cmd); err != nil {
+		return err
+	}
 	if authToken == "" {
-		return fmt.Errorf("--token is required (must name an admin JWT)")
+		return fmt.Errorf("--token, --token-file or --stdin is required (must name an admin JWT)")
 	}
 
 	httpClient, err := client.NewHTTPClient(serverAddr, authToken)
@@ -641,5 +661,20 @@ func runTokenUnscopedReport(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	fmt.Printf("Unscoped-token calls observed: %d (since %s)\n", report.UnscopedCallCount, report.Since)
+	return nil
+}
+
+// resolveAdminToken applies the shared --token / --token-file / --stdin rule
+// and stores a file- or stdin-supplied token in authToken, which the HTTP
+// client reads. It runs before any request is made.
+func resolveAdminToken(cmd *cobra.Command) error {
+	adminTokenIn.Token = authToken
+	tok, err := resolveSecretInput(cmd, "token", &adminTokenIn)
+	if err != nil {
+		return err
+	}
+	if tok != "" {
+		authToken = tok
+	}
 	return nil
 }

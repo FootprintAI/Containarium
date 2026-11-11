@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/naming"
 	"github.com/footprintai/containarium/pkg/core/ospkg"
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	"github.com/footprintai/containarium/pkg/core/sshdpolicy"
@@ -191,6 +192,13 @@ func (m *Manager) Create(opts CreateOptions) (*incus.ContainerInfo, error) {
 	}
 	createStart := time.Now()
 	containerName := opts.Username + "-container"
+
+	// New owner names must not collide with derived collaborator account
+	// names (#3630). A box that already exists keeps working: existing names
+	// are audited, never rejected.
+	if err := naming.ValidateTenantName(opts.Username); err != nil && !m.ContainerExists(containerName) {
+		return nil, err
+	}
 
 	// An unknown stack is refused before anything is created (#2860):
 	// installPackages silently skips an ID it cannot resolve, which would

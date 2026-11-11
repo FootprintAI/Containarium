@@ -30,6 +30,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -608,11 +609,53 @@ func sidecarObjectURI(dumpLocation, id string) string {
 	return prefix + "/" + id + ".meta.json"
 }
 
+// ErrNoDatabaseFound is CreateAll's error when the container's Postgres
+// answered but has no non-template database to back up (#3600): nothing is
+// wrong with the platform, there is just nothing to dump.
+var ErrNoDatabaseFound = errors.New("no databases found to back up")
+
+// ErrDatabaseUnavailable is ListDatabases' (and so CreateAll's) error when no
+// Postgres answered at the connection given (#3600): psql is not installed in
+// the container, or it could not connect (nothing listening, wrong host or
+// port, credentials refused). It wraps the exec error and carries psql's
+// stderr. A listing that could not be run at all (the container exec itself
+// failed) or that psql failed for another reason is not this error.
+var ErrDatabaseUnavailable = errors.New("no Postgres answered in the container")
+
+// listDatabasesExitMarker is printed on stderr, followed by psql's exit
+// status, when the listing's psql fails. It tells psql's own failure apart
+// from a failure to run the command in the container, which has no marker.
+const listDatabasesExitMarker = "CBK_PSQL_EXIT="
+
+// psqlExitUnavailable reports whether a psql exit status means no Postgres
+// answered: 2 is psql's "the connection to the server went bad" (connection
+// refused, no such host, authentication failed), and 127 is the shell's
+// "command not found" (no psql in the container).
+func psqlExitUnavailable(code int) bool { return code == 2 || code == 127 }
+
+// splitListDatabasesExit removes the exit marker line from stderr and returns
+// psql's exit status; ok is false when there is no marker (psql did not run
+// and fail: the exec itself failed).
+func splitListDatabasesExit(stderr string) (rest string, code int, ok bool) {
+	var kept []string
+	for _, line := range strings.Split(stderr, "\n") {
+		if v, found := strings.CutPrefix(strings.TrimSpace(line), listDatabasesExitMarker); found {
+			if n, err := strconv.Atoi(v); err == nil {
+				code, ok = n, true
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n")), code, ok
+}
+
 // ListDatabases enumerates the non-template databases visible inside the
 // container's Postgres — the same connection info used for pg_dump/
 // pg_restore, just pointed at the always-present "postgres" maintenance
 // database to run a catalog query instead of a dump. Used by CreateAll so
 // a backup never requires the caller to already know a database name (#954).
+// When no Postgres answers, the error matches ErrDatabaseUnavailable (#3600).
 func (m *Manager) ListDatabases(containerName string, conn PgConn) ([]string, error) {
 	conn = conn.withDefaults()
 	if containerName == "" {
@@ -620,12 +663,16 @@ func (m *Manager) ListDatabases(containerName string, conn PgConn) ([]string, er
 	}
 	const query = "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname;"
 	script := fmt.Sprintf(
-		"psql -h %s -p %d -U %s -d postgres -Atc %s",
-		shellQuote(conn.Host), conn.Port, shellQuote(conn.User), shellQuote(query),
+		"psql -h %s -p %d -U %s -d postgres -Atc %s || { rc=$?; echo %s\"$rc\" >&2; exit \"$rc\"; }",
+		shellQuote(conn.Host), conn.Port, shellQuote(conn.User), shellQuote(query), listDatabasesExitMarker,
 	)
 	stdout, stderr, err := m.ops.ExecWithOutput(containerName, wrapPg(conn.Password, script))
 	if err != nil {
-		return nil, fmt.Errorf("list databases: %w: %s", err, strings.TrimSpace(stderr))
+		psqlStderr, code, ran := splitListDatabasesExit(stderr)
+		if ran && psqlExitUnavailable(code) {
+			return nil, fmt.Errorf("list databases: %w (psql exit %d): %w: %s", ErrDatabaseUnavailable, code, err, psqlStderr)
+		}
+		return nil, fmt.Errorf("list databases: %w: %s", err, psqlStderr)
 	}
 	var dbs []string
 	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
@@ -651,13 +698,18 @@ func (m *Manager) ListDatabases(containerName string, conn PgConn) ([]string, er
 // alongside the record for every database that DID succeed, so a caller
 // can surface "7 of 8 databases backed up, orders_db failed: <reason>"
 // instead of an all-or-nothing result.
+//
+// When nothing can be backed up because of the container rather than the
+// platform, the one error matches ErrDatabaseUnavailable (no Postgres
+// answered) or ErrNoDatabaseFound (it answered with no database), so a caller
+// can tell the person what to do instead of reporting a fault (#3600).
 func (m *Manager) CreateAll(opts CreateOptions) ([]*Record, []error) {
 	dbs, err := m.ListDatabases(opts.ContainerName, opts.Conn)
 	if err != nil {
 		return nil, []error{fmt.Errorf("list databases: %w", err)}
 	}
 	if len(dbs) == 0 {
-		return nil, []error{fmt.Errorf("no databases found to back up")}
+		return nil, []error{ErrNoDatabaseFound}
 	}
 
 	var records []*Record

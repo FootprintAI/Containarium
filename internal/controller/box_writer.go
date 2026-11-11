@@ -11,6 +11,7 @@ import (
 
 	containariumv1alpha1 "github.com/footprintai/containarium/apis/containarium/v1alpha1"
 	box "github.com/footprintai/containarium/pkg/core/box"
+	"github.com/footprintai/containarium/pkg/core/naming"
 )
 
 // BoxWriter upserts a Box CR from a runtime-neutral box.BoxSpec. It is the
@@ -52,6 +53,9 @@ func upsertBox(ctx context.Context, cl ctrlclient.Client, namespace string, spec
 	var existing containariumv1alpha1.Box
 	err := cl.Get(ctx, ctrlclient.ObjectKey{Namespace: namespace, Name: desired.Name}, &existing)
 	if apierrors.IsNotFound(err) {
+		if err := naming.ValidateTenantName(spec.Ref.Tenant); err != nil {
+			return err
+		}
 		return cl.Create(ctx, desired)
 	}
 	if err != nil {

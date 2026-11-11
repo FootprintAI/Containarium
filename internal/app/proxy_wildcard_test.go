@@ -99,3 +99,19 @@ func TestProvisionWildcardTLS_AddsWildcardSubjectViaDNS01(t *testing.T) {
 		t.Error("expected the wildcard policy's issuers to carry a DNS-01 challenge")
 	}
 }
+
+// A BYOC backend never orders a wildcard certificate (#2262): even with a
+// DNS-01 provider and a base domain, ProvisionWildcardTLS makes no request.
+func TestProvisionWildcardTLS_NoopWhenWithoutWildcardTLS(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++ }))
+	defer srv.Close()
+
+	pm := NewProxyManager(srv.URL, "example.com").WithDNSChallenge(dnsChallengeForTest()).WithoutWildcardTLS()
+	if err := pm.ProvisionWildcardTLS(); err != nil {
+		t.Fatalf("ProvisionWildcardTLS: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("expected no Caddy requests, got %d", calls)
+	}
+}

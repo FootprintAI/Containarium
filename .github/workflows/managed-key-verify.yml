@@ -18,7 +18,7 @@ on:
     inputs:
       release_tag:
         description: Published release under test (has the managed-key detection)
-        default: v0.122.0
+        default: v0.134.0
         required: true
         type: string
       older_tag:
@@ -36,7 +36,7 @@ concurrency:
 
 jobs:
   verify:
-    name: backup status against published ${{ inputs.release_tag || 'v0.122.0' }} and ${{ inputs.older_tag || 'v0.120.2' }}
+    name: backup status against published ${{ inputs.release_tag || 'v0.134.0' }} and ${{ inputs.older_tag || 'v0.120.2' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -99,7 +99,7 @@ jobs:
 
       - name: Verify backup status against the published binaries
         env:
-          RELEASE_TAG: ${{ inputs.release_tag || 'v0.122.0' }}
+          RELEASE_TAG: ${{ inputs.release_tag || 'v0.134.0' }}
           OLDER_TAG: ${{ inputs.older_tag || 'v0.120.2' }}
           OUTPUT_DIR: ${{ runner.temp }}/managed-key-evidence
           PG_URL: postgres://containarium:lane-only-not-a-credential@127.0.0.1:5432/containarium?sslmode=disable
