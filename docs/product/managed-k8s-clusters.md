@@ -330,9 +330,14 @@ acceptance criteria if it is overturned.
   effect within 60 seconds. Both are numbers for `/architect:design` to
   confirm.
 - **Open:** existing clusters that were issued cluster-admin kubeconfigs.
-  Proposed default: rotate their cluster CA before the zero-admin metric is
-  claimed for them, or re-create them. Blocks the rollout plan, not the
-  design.
+  Rotating the cluster CA alone is not sufficient: it does not remove
+  ServiceAccounts, RoleBindings, or workloads created with the old
+  kubeconfig, and their credentials can survive the rotation. Proposed
+  default: before the zero-admin metric is claimed for such a cluster,
+  either (a) inventory and clean up every legacy access path (ServiceAccounts
+  and their tokens, RoleBindings, and workloads or credentials created with
+  the old kubeconfig) and then rotate the CA, or (b) re-create the cluster.
+  Blocks the rollout plan, not the design.
 - **Assumption (evidence gap):** demand is inferred from the kubeflow
   recipe's DIY-k3s design and issue #857, not from external user asks.
   The adoption metric above is deliberately the validation instrument;
