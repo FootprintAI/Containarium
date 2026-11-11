@@ -42,6 +42,14 @@ const CorePostgresService = "containarium.core_postgres"
 // start the collector (fail closed) and app-emitted telemetry is off.
 const OTelCollectorAuthService = "containarium.otel_collector_auth"
 
+// AuditAnchorService is the readiness entry for audit hash-chain anchoring
+// (#3549). NOT_SERVING means the anchor sink refuses the chain's current
+// checkpoint on every tick (the chain is behind the anchor file's last
+// checkpoint, or a checkpoint is anchored with a different root), so
+// tamper-evidence against a privileged rewrite is degraded. The daemon reports
+// SERVING otherwise, including when audit logging is off.
+const AuditAnchorService = "containarium.audit_anchor"
+
 var (
 	registryMu sync.RWMutex
 	// registered is the service of each store family the daemon's
@@ -53,6 +61,7 @@ var (
 		pb.CodingToolEgressPolicyService_ServiceDesc.ServiceName: "coding-tool egress policy store",
 		CorePostgresService:      "core Postgres (database-backed stores)",
 		OTelCollectorAuthService: "OTel collector auth requirement",
+		AuditAnchorService:       "audit hash-chain anchoring",
 	}
 )
 
@@ -75,16 +84,17 @@ func Register(service, displayName string) {
 }
 
 // Services returns the health service name of each policy store, then each
-// registered store family, then the core Postgres entry, in report order.
+// registered store family, then the core Postgres, OTel collector auth and
+// audit anchoring entries, in report order.
 func Services() []string {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
-	out := make([]string, 0, 3+len(registered))
+	out := make([]string, 0, 5+len(registered))
 	out = append(out,
 		pb.GuardrailPolicyService_ServiceDesc.ServiceName,
 		pb.CodingToolEgressPolicyService_ServiceDesc.ServiceName)
 	out = append(out, registered...)
-	return append(out, CorePostgresService, OTelCollectorAuthService)
+	return append(out, CorePostgresService, OTelCollectorAuthService, AuditAnchorService)
 }
 
 // CheckFunc asks for one service's serving status. An error means the
@@ -125,6 +135,8 @@ func (r Result) Detail() string {
 		return "unavailable (DEGRADED): the daemon's startup Postgres check failed, so database-backed stores were skipped; store families with their own readiness entry are retried in-process, the rest stay off until the daemon restarts (CONTAINARIUM_RESTART_ON_POSTGRES_RECOVERY=1 restarts it once Postgres answers and no in-process retry is pending)"
 	case r.Status == healthpb.HealthCheckResponse_NOT_SERVING && r.Service == OTelCollectorAuthService:
 		return "unavailable (DEGRADED): CONTAINARIUM_OTEL_REQUIRE_AUTH is set but the OTel bearer could not be loaded or minted, so the collector was NOT started (app-emitted telemetry is off); fix the bearer source (CONTAINARIUM_OTEL_BEARER, CONTAINARIUM_OTEL_BEARER_FILE or /etc/containarium/otel.bearer) and restart the daemon"
+	case r.Status == healthpb.HealthCheckResponse_NOT_SERVING && r.Service == AuditAnchorService:
+		return "unavailable (DEGRADED): every anchoring tick refuses the audit chain's current checkpoint, because the chain is behind the anchor file's last checkpoint (the audit database was recreated or restored from an older copy, or its rows were rewritten) or a checkpoint is anchored with a different root, so tamper-evidence against a privileged rewrite is degraded; the daemon log names the checkpoints, keep the anchor file, and see \"The daemon refuses to anchor the audit chain\" in docs/security/OPERATOR-SECURITY-RUNBOOK.md"
 	case r.Status == healthpb.HealthCheckResponse_NOT_SERVING:
 		return "unavailable: Postgres is configured but the store is not installed; its APIs fail closed (or answer UNAVAILABLE) and its background work (such as the credential-expiry watch) does not run until the daemon's in-process retry reaches the database; a family refused by configuration (the daemon log names it) needs a config fix and a restart instead"
 	case r.Status == healthpb.HealthCheckResponse_SERVICE_UNKNOWN:

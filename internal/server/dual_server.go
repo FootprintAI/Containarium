@@ -330,6 +330,7 @@ type DualServer struct {
 	auditStore               *audit.Store
 	auditEventSubscriber     *audit.EventSubscriber
 	auditAnchorManager       *audit.AnchorManager // periodic hash-chain-root anchoring (#1706)
+	readinessHealth          *health.Server       // the readiness entries doctor, /health and the status probe read (#2483); the anchor manager reports to it (#3549)
 	sshCollector             *audit.SSHCollector
 	revocationCleanup        *revocationCleanup // Phase 1.2 expired-row pruning; starts once the store and Start's context are both in (#3365)
 	alertPool                *pgxpool.Pool      // the alert family's startup pool; nil when it installed late (#3334)
@@ -662,6 +663,8 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	policyStoreHealth := health.NewServer()
 	healthpb.RegisterHealthServer(grpcServer, policyStoreHealth)
 	reportOTelCollectorReadiness(policyStoreHealth, nil) // SERVING until the collector is refused (#3443)
+	// SERVING until the anchor sink refuses the chain (#3549).
+	reportAuditAnchorReadiness(policyStoreHealth, audit.AnchorState{})
 
 	// One bounded Postgres check gates every database-backed store below
 	// (#2824): if it fails, they are skipped rather than each retried.
@@ -2914,6 +2917,7 @@ skipAppHosting:
 		threatDetectNotifier:   threatDetectNotifier,
 		sentryHealthStore:      healthStore,
 		threatSentryArmed:      threatCfg.SentryEnabled,
+		readinessHealth:        policyStoreHealth,
 	}
 
 	// Auto-sleep ticker is constructed in Start() once the traffic
@@ -3551,7 +3555,11 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 				log.Printf("[audit-anchor] stamping anchors at TSA %s, tokens in %s (file first)", tsaSink.URI(), tsaSink.TokenDir())
 			}
 			anchorSink := audit.ComposeAnchorSink(fileSink, bucketSink, tsaSink)
-			opts := audit.AnchorOptions{}
+			// #3549: a refusing sink turns the readiness entry NOT_SERVING, so
+			// /health, doctor and the status probe report it.
+			opts := audit.AnchorOptions{OnStateChange: func(st audit.AnchorState) {
+				reportAuditAnchorReadiness(ds.readinessHealth, st)
+			}}
 			if raw := os.Getenv("CONTAINARIUM_AUDIT_ANCHOR_INTERVAL"); raw != "" {
 				if d, err := time.ParseDuration(raw); err == nil && d > 0 {
 					opts.Interval = d
@@ -3662,6 +3670,13 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 			ds.metricsCollector.SetPeerFetcher(&PeerMetricsFetcherAdapter{
 				Pool:    ds.peerPool,
 				TokenFn: svcTokens.Token,
+			})
+		}
+		if ds.auditAnchorManager != nil {
+			anchor := ds.auditAnchorManager
+			ds.metricsCollector.SetAuditAnchorFunc(func() (bool, int64) {
+				st := anchor.State()
+				return st.Refused, st.Refusals
 			})
 		}
 		// Wire the egress fan-out fetcher (crawler-detection signal) when the

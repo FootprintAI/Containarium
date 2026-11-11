@@ -32,10 +32,14 @@ func TestHealthEndpoint_CorePostgresReadiness(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			check := func(_ context.Context, service string) (healthpb.HealthCheckResponse_ServingStatus, error) {
-				if service != policyreadiness.CorePostgresService {
-					t.Errorf("checked %q, want the core Postgres startup readiness", service)
+				switch service {
+				case policyreadiness.CorePostgresService:
+					return tc.status, tc.err
+				case policyreadiness.AuditAnchorService:
+					return healthpb.HealthCheckResponse_SERVING, nil
 				}
-				return tc.status, tc.err
+				t.Errorf("checked %q, want only the core Postgres and audit anchor readiness", service)
+				return healthpb.HealthCheckResponse_UNKNOWN, nil
 			}
 			rec := httptest.NewRecorder()
 			healthHandlerWithReadiness(check)(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
@@ -60,6 +64,47 @@ func TestHealthEndpoint_CorePostgresReadiness(t *testing.T) {
 				if got[key] != value {
 					t.Errorf("%s = %q, want %q", key, got[key], value)
 				}
+			}
+		})
+	}
+}
+
+// #3549: a refusing audit anchor makes /health degraded with its own fixed
+// reason, and only an explicit NOT_SERVING does; Postgres being unavailable
+// is reported first.
+func TestHealthEndpoint_AuditAnchorReadiness(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		postgres, anchor healthpb.HealthCheckResponse_ServingStatus
+		anchorErr        error
+		wantStatus       healthStatus
+		wantReason       string
+	}{
+		{"anchoring", healthpb.HealthCheckResponse_SERVING, healthpb.HealthCheckResponse_SERVING, nil, healthStatusHealthy, ""},
+		{"not reported", healthpb.HealthCheckResponse_SERVING, healthpb.HealthCheckResponse_SERVICE_UNKNOWN, nil, healthStatusHealthy, ""},
+		{"unreadable entry", healthpb.HealthCheckResponse_SERVING, healthpb.HealthCheckResponse_UNKNOWN, errors.New("no entry"), healthStatusHealthy, ""},
+		{"refused", healthpb.HealthCheckResponse_SERVING, healthpb.HealthCheckResponse_NOT_SERVING, nil, healthStatusDegraded, "audit anchor refused"},
+		{"refused, Postgres not configured", healthpb.HealthCheckResponse_SERVICE_UNKNOWN, healthpb.HealthCheckResponse_NOT_SERVING, nil, healthStatusDegraded, "audit anchor refused"},
+		{"Postgres unavailable first", healthpb.HealthCheckResponse_NOT_SERVING, healthpb.HealthCheckResponse_NOT_SERVING, nil, healthStatusDegraded, "postgres unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			check := func(_ context.Context, service string) (healthpb.HealthCheckResponse_ServingStatus, error) {
+				if service == policyreadiness.AuditAnchorService {
+					return tc.anchor, tc.anchorErr
+				}
+				return tc.postgres, nil
+			}
+			rec := httptest.NewRecorder()
+			healthHandlerWithReadiness(check)(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("HTTP %d, want 200 so a degraded backend remains live", rec.Code)
+			}
+			var got healthResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != tc.wantStatus || got.Reason != tc.wantReason {
+				t.Errorf("health = %+v, want status %q reason %q", got, tc.wantStatus, tc.wantReason)
 			}
 		})
 	}

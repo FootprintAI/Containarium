@@ -37,6 +37,7 @@ func TestServices_OnePerPolicyServicePlusCorePostgres(t *testing.T) {
 		pb.CodingToolEgressPolicyService_ServiceDesc.ServiceName,
 		CorePostgresService,
 		OTelCollectorAuthService,
+		AuditAnchorService,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("Services() = %v, want %v", got, want)
@@ -66,6 +67,7 @@ func TestRegister_DrivesServicesAndNames(t *testing.T) {
 		"containarium.other_family",
 		CorePostgresService,
 		OTelCollectorAuthService,
+		AuditAnchorService,
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("Services() = %v, want %v", got, want)
@@ -102,6 +104,24 @@ func TestDetail_CorePostgresDegradedNamesInProcessRecovery(t *testing.T) {
 	}
 	if strings.Contains(d, "they stay off until the daemon restarts") {
 		t.Errorf("Detail() = %q, still claims every store stays off until restart", d)
+	}
+}
+
+// #3549: a refusing audit anchor says what the refusal means, that the anchor
+// file must be kept, and where the runbook covers it.
+func TestDetail_AuditAnchorRefusedNamesCauseAndRunbook(t *testing.T) {
+	r := Result{Service: AuditAnchorService, Status: healthpb.HealthCheckResponse_NOT_SERVING}
+	if n := r.Name(); n != "audit hash-chain anchoring" {
+		t.Errorf("Name() = %q, want the operator-facing name", n)
+	}
+	d := r.Detail()
+	for _, want := range []string{"DEGRADED", "behind the anchor file", "recreated or restored", "different root", "keep the anchor file", "OPERATOR-SECURITY-RUNBOOK.md"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("Detail() = %q, want it to mention %q", d, want)
+		}
+	}
+	if strings.Contains(d, "Postgres is configured but the store is not installed") {
+		t.Errorf("Detail() = %q, falls through to the store-family text", d)
 	}
 }
 

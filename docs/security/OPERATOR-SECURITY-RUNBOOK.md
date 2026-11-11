@@ -1487,6 +1487,51 @@ attacker, not a host-root one who could edit both. Back it up
 off-host (it's a plain append-only JSON-lines file) for anything
 stronger.
 
+### The daemon refuses to anchor the audit chain
+
+The anchor file only moves forward. If the chain's current checkpoint
+is below the file's last checkpoint, the daemon refuses to anchor it.
+That refusal is the rollback protection: it stops a privileged writer
+from presenting an older chain. A checkpoint that is already anchored
+with a different root is refused the same way. Each anchoring tick
+retries and is refused again, until the chain passes the last anchored
+checkpoint or a publish otherwise succeeds. While it lasts:
+
+| Where | What it shows |
+| --- | --- |
+| `GET /health` | `"status": "degraded"`, `"reason": "audit anchor refused"` (HTTP 200: the daemon is still live). A failed startup Postgres check is reported first. |
+| `containarium doctor` | `! audit hash-chain anchoring — unavailable (DEGRADED): ...` in the advisory daemon-readiness section (readiness entry `containarium.audit_anchor`; the exit code is unchanged). The cloud status probe carries the same entry. |
+| Metrics | `containarium.audit.anchor.degraded` is 1, and the counter `containarium.audit.anchor.refusals` grows by one per refused tick. Both are emitted only on a daemon with audit logging and metrics on. |
+| Daemon log | One `[audit-anchor] DEGRADED: ...` line when the refusals start, naming both checkpoints. Then the existing `ERROR: publish anchor at checkpoint N: ...` line on each tick, and `anchoring resumed` once a publish succeeds. |
+
+All of them clear at the first successful publish. A failure that may
+pass on its own, such as an unreadable database, a full disk or a bucket
+timeout, is not a refusal. It is logged on each tick as before and
+changes none of the signals above.
+
+The usual cause of "behind the anchor" is that the audit database was
+recreated, or restored from an older copy, while the anchor file on the
+host survived. The chain then starts again near checkpoint 1. The daemon
+cannot tell that apart from a rewrite. Confirm what happened before
+acting on it:
+
+- Compare the anchor file's last checkpoint and its `anchored_at` with
+  when the platform Postgres was recreated or restored. A first refusal
+  just after the database came back points at the database.
+- `containarium audit verify` still checks the new chain's internal
+  consistency.
+- Keep the anchor file. Do not delete, truncate or edit it: once the old
+  rows are gone, it is the only remaining evidence of the anchored
+  history, and editing it is exactly what the refusal guards against.
+
+Anchoring resumes on its own once the chain passes the last anchored
+checkpoint. A recorded recovery that starts a new anchor epoch, so that
+`verify-anchor` treats the break as a documented break and not as
+tampering, is tracked in #3549. A conflict (a checkpoint already anchored
+with a different root) is never the "database recreated" case: run
+`containarium audit verify-anchor` and treat a mismatch as a possible
+rewrite.
+
 ### Anchoring to a bucket
 
 The local anchor file is only as trustworthy as the host: a host-root
