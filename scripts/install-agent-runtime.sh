@@ -29,6 +29,16 @@
 #   ARTIFACT_BASE_URL  optional — overrides the computed release base URL
 set -euo pipefail
 
+# fetch_bundle URL: download URL to a fresh private temp file (mktemp, 0600)
+# and print its path. The bundle is extracted as root, so a fixed name in /tmp
+# would let a symlink planted there redirect the download (#3657).
+fetch_bundle() {
+  local tmp
+  tmp="$(mktemp)"
+  curl -fsSL "$1" -o "${tmp}" </dev/null
+  printf '%s\n' "${tmp}"
+}
+
 INSTALL_AGENT_RUNTIME=1
 for arg in "$@"; do
   case "$arg" in
@@ -85,8 +95,9 @@ fi
 
 echo "==> installing agent-runtime component into ${APP_DIR}"
 mkdir -p "${APP_DIR}"
-curl -fsSL "${ARTIFACT_BASE_URL}/agent-runtime-bundle.tar.gz" -o /tmp/agent-runtime-bundle.tar.gz </dev/null
-tar -xzf /tmp/agent-runtime-bundle.tar.gz -C "${APP_DIR}"
+BUNDLE_TMP="$(fetch_bundle "${ARTIFACT_BASE_URL}/agent-runtime-bundle.tar.gz")"
+tar -xzf "${BUNDLE_TMP}" -C "${APP_DIR}"
+rm -f "${BUNDLE_TMP}"
 # The bundle ships dist/ + package manifests; install runtime deps (the agent
 # harness SDKs) in-box. --omit=dev: we only need the runtime deps, not tsc.
 ( cd "${APP_DIR}" && npm ci --omit=dev )
