@@ -886,8 +886,15 @@ type DeployRecipeRequest struct {
 	// Required for such a recipe (absent is FAILED_PRECONDITION); ignored for
 	// an ungated one. A gated recipe cannot be deployed async.
 	GuardrailInput *GuardrailGateInput `protobuf:"bytes,10,opt,name=guardrail_input,json=guardrailInput,proto3" json:"guardrail_input,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// SSH public keys to authorize (optional, can be added later).
+	// Forwarded unchanged to the inner CreateContainer; same validation and
+	// limits (at most 32 keys, each at most 8 KiB, each a well-formed OpenSSH
+	// public key). An invalid or over-bound key refuses the whole deploy with
+	// INVALID_ARGUMENT before any container is created. Empty keeps the
+	// key-less behaviour: add keys later with AddSSHKey / SetSSHKeys.
+	SshKeys       []string `protobuf:"bytes,11,rep,name=ssh_keys,json=sshKeys,proto3" json:"ssh_keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DeployRecipeRequest) Reset() {
@@ -986,6 +993,13 @@ func (x *DeployRecipeRequest) GetAsync() bool {
 func (x *DeployRecipeRequest) GetGuardrailInput() *GuardrailGateInput {
 	if x != nil {
 		return x.GuardrailInput
+	}
+	return nil
+}
+
+func (x *DeployRecipeRequest) GetSshKeys() []string {
+	if x != nil {
+		return x.SshKeys
 	}
 	return nil
 }
@@ -1224,7 +1238,7 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\x10GetRecipeRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"D\n" +
 	"\x11GetRecipeResponse\x12/\n" +
-	"\x06recipe\x18\x01 \x01(\v2\x17.containarium.v1.RecipeR\x06recipe\"\xda\x04\n" +
+	"\x06recipe\x18\x01 \x01(\v2\x17.containarium.v1.RecipeR\x06recipe\"\xf5\x04\n" +
 	"\x13DeployRecipeRequest\x12\x1b\n" +
 	"\trecipe_id\x18\x01 \x01(\tR\brecipeId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x10\n" +
@@ -1239,7 +1253,8 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\x06labels\x18\b \x03(\v20.containarium.v1.DeployRecipeRequest.LabelsEntryR\x06labels\x12\x14\n" +
 	"\x05async\x18\t \x01(\bR\x05async\x12L\n" +
 	"\x0fguardrail_input\x18\n" +
-	" \x01(\v2#.containarium.v1.GuardrailGateInputR\x0eguardrailInput\x1a=\n" +
+	" \x01(\v2#.containarium.v1.GuardrailGateInputR\x0eguardrailInput\x12\x19\n" +
+	"\bssh_keys\x18\v \x03(\tR\asshKeys\x1a=\n" +
 	"\x0fParametersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a9\n" +

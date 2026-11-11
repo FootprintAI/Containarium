@@ -482,6 +482,13 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 			req.BackendId)
 	}
 
+	// SSH keys (#3514): an invalid or over-bound key refuses the whole
+	// deploy here, before the guardrail gate snapshots anything and before
+	// the container exists. The inner create re-checks the same rules.
+	if err := validateRecipeSSHKeys(req.SshKeys); err != nil {
+		return nil, err
+	}
+
 	// Guardrail gate (#2368): verified BEFORE the container exists, so a
 	// refused deploy leaves nothing behind. dataset is the verified
 	// snapshot; it is what gets copied into the box below.
@@ -503,12 +510,16 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 	//    Caller labels (e.g. a control plane's tenant-attribution labels) are
 	//    forwarded so a recipe-deployed box is labeled the same as a plain
 	//    CreateContainer — otherwise a label-filtering front-end can't see it.
+	//    Caller SSH keys (#3514) take the plain create's path too: seeded
+	//    into the guest's authorized_keys and mirrored to the jump account
+	//    and key registry while the box is brought up, before post_start.
 	createReq := &pb.CreateContainerRequest{
 		Username:     req.Name,
 		Image:        recipeBaseImage,
 		EnablePodman: true,
 		Resources:    resourceLimits(recipe, req.ResourceOverrides),
 		Labels:       req.Labels,
+		SshKeys:      req.SshKeys,
 	}
 	// A recipe requests a single GPU device; map it onto the container's
 	// repeated `gpus` (the singular `gpu` is no longer honored — #673).

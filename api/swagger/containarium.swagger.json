@@ -14695,6 +14695,13 @@
         "guardrailInput": {
           "$ref": "#/definitions/GuardrailGateInput",
           "description": "The dataset and attestation for a recipe with guardrail_gate set.\nRequired for such a recipe (absent is FAILED_PRECONDITION); ignored for\nan ungated one. A gated recipe cannot be deployed async."
+        },
+        "sshKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "SSH public keys to authorize (optional, can be added later).\nForwarded unchanged to the inner CreateContainer; same validation and\nlimits (at most 32 keys, each at most 8 KiB, each a well-formed OpenSSH\npublic key). An invalid or over-bound key refuses the whole deploy with\nINVALID_ARGUMENT before any container is created. Empty keeps the\nkey-less behaviour: add keys later with AddSSHKey / SetSSHKeys."
         }
       },
       "description": "DeployRecipeRequest provisions a new dedicated container from a recipe."

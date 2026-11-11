@@ -14,6 +14,10 @@
 # version running post_start (slides-agent's image); a caller's `release`
 # parameter is for what the caller pins on purpose (agent-box, skills).
 #
+# A deploy's ssh_keys are authorized when the box is created, before
+# post_start runs. A post_start that writes authorized_keys must append to
+# it, never replace it, or it removes the deploying user's keys.
+#
 # These recipes ship in-tree and are reviewed; post_start runs with the same
 # trust level as a stack's post_install. Remote/community catalogs are a
 # separate, signed mechanism (not loaded here).
