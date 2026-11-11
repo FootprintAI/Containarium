@@ -56,6 +56,9 @@ jobs:
         # real value into the daemon Secret.
         run: scripts/ci/helm-chart-jwt-secret.sh charts/containarium-k8s
 
+      - name: Template test — daemon.insecureIgnoreHostKey default (#3628)
+        run: scripts/ci/helm-chart-host-key.sh charts/containarium-k8s
+
       - name: Template render — gateway disabled (#1526)
         # values.yaml documents clearing gateway.namespace as how to disable
         # gateway routing entirely, but namespace.yaml had no
