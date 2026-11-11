@@ -233,6 +233,14 @@ type DualServerConfig struct {
 	PublicBaseDomains []string // suffix-match anchors advertised to the sentinel; <anything>.<one-of-these> routes here. List multiple to host workloads under different parent domains on the same backend (see docs/PER-POOL-BASE-DOMAIN.md)
 	PublicPort        int      // TLS port the sentinel forwards to (typically 443)
 
+	// BYOCBackend marks a tunnel-joined (BYOC) backend (--byoc-backend, set
+	// by `containarium pool join --byoc`). The control plane owns every
+	// public domain there, so BaseDomain is not served: no management apex
+	// route, no wildcard certificate, nothing advertised for it. BaseDomain
+	// is still passed to the proxy, only so existing ingress routes keep the
+	// IDs they were created under (#2262). See byoc_base_domain.go.
+	BYOCBackend bool
+
 	// SSHHost is the public host clients dial to SSH into this daemon's
 	// containers — the sentinel's SSH endpoint (e.g. region-a.example.com),
 	// from --ssh-host. Surfaced on each Container.ssh_host so clients build
@@ -280,9 +288,9 @@ type DualServerConfig struct {
 // serves and what the sentinel routes here stay identical by construction
 // (#213). Falls back to the single BaseDomain when PublicBaseDomains is
 // unset (e.g. configs built without resolvePublicBaseDomains), keeping
-// single-domain deployments unchanged.
+// single-domain deployments unchanged. A BYOC backend serves no apex (#2262).
 func managementRouteDomains(cfg *DualServerConfig) []string {
-	if cfg == nil {
+	if cfg == nil || cfg.BYOCBackend {
 		return nil
 	}
 	if len(cfg.PublicBaseDomains) > 0 {
