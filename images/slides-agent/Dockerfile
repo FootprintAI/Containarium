@@ -31,7 +31,7 @@
 #   docker build -f images/slides-agent/Dockerfile -t containarium-slides-agent .
 
 ARG NODE_IMAGE=docker.io/library/node:22.23.4-bookworm-slim
-ARG GO_IMAGE=docker.io/library/golang:1.26.10-bookworm
+ARG GO_IMAGE=docker.io/library/golang:1.26.11-bookworm
 
 # --- the proxy binary -------------------------------------------------------
 # Caddy is built from source rather than copied from the upstream image: the
