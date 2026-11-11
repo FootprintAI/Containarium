@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,7 +21,8 @@ type tokenFile struct {
 	mu       sync.Mutex
 	placed   bool
 	removals int
-	removed  chan struct{} // closed by the first root removal
+	failNext int           // root removals that fail before one goes through
+	removed  chan struct{} // closed by the first root removal that goes through
 }
 
 func newTokenFile() *tokenFile { return &tokenFile{removed: make(chan struct{})} }
@@ -45,6 +47,11 @@ func (f *tokenFile) wire(t *testing.T, s *ContainerServer, name string) {
 	s.boxRunExec = func(box, script string) (string, error) {
 		if script == removal {
 			f.mu.Lock()
+			if f.failNext > 0 {
+				f.failNext--
+				f.mu.Unlock()
+				return "", errors.New("exec: transport closed")
+			}
 			f.placed = false
 			f.removals++
 			if f.removals == 1 {
@@ -172,7 +179,7 @@ func TestStartBoxRun_LateTokenInstallIsRemovedOnceItFinishes(t *testing.T) {
 				return nil
 			}
 			_, err = s.StartBoxRun(adminCtx(), req)
-			if status.Code(err) != codes.Unavailable || !strings.Contains(err.Error(), "still finishing") {
+			if status.Code(err) != codes.Unavailable || !strings.Contains(err.Error(), "has not finished") {
 				close(release)
 				t.Fatalf("second start err = %v, want Unavailable while the first install is in flight", err)
 			}
@@ -236,5 +243,85 @@ func TestInstallRunToken_CancelledInstallIsRemovedOnceItFinishes(t *testing.T) {
 	waitNotPending(t, s, "box1", "r1")
 	if err := s.refuseWhileRunTokenInstallPending("box1", "r1", "alice"); err != nil {
 		t.Errorf("the name is still refused after the install finished: %v", err)
+	}
+}
+
+// A removal after a failed start that does not go through is retried, and the
+// run name stays refused until it does: a start in the meantime could
+// otherwise run into the run user's token. Once the token is gone the name
+// starts normally.
+func TestStartBoxRun_FailedTokenRemovalIsRetried(t *testing.T) {
+	old := runTokenDiscardRetries
+	runTokenDiscardRetries = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	defer func() { runTokenDiscardRetries = old }()
+	for mode, base := range tokenRunModes() {
+		t.Run(mode, func(t *testing.T) {
+			s, _ := newTokenRunServer(t, "none")
+			f := newTokenFile()
+			f.failNext = 2
+			f.wire(t, s, "r1")
+			// The retries wait until the refusal below has been checked; the
+			// first, synchronous removal attempt does not.
+			hold := make(chan struct{})
+			removal := "rm -f " + shellSingleQuote(boxRunTokenPath("r1")) + "\n"
+			var attempts atomic.Int32
+			inner := s.boxRunExec
+			s.boxRunExec = func(box, script string) (string, error) {
+				if script == removal && attempts.Add(1) > 1 {
+					<-hold
+				}
+				return inner(box, script)
+			}
+			s.boxRunTokenInstall = func(string, string, string, string) error {
+				f.place()
+				return errors.New("place run token: exit 1: transport closed")
+			}
+			req := base
+			req.RunToken = testBoxRunToken
+			if _, err := s.StartBoxRun(adminCtx(), req); status.Code(err) != codes.Unavailable || !strings.Contains(err.Error(), "install run token") {
+				t.Fatalf("err = %v, want Unavailable from the failed install", err)
+			}
+			_, err := s.StartBoxRun(adminCtx(), req)
+			if status.Code(err) != codes.Unavailable || !strings.Contains(err.Error(), "has not finished") {
+				close(hold)
+				t.Fatalf("start while the removal is retried: err = %v, want Unavailable", err)
+			}
+			close(hold)
+			f.waitRemoved(t)
+			waitNotPending(t, s, "alice-container", "r1")
+			if placed, _ := f.state(); placed {
+				t.Fatal("the token is still placed after the retries")
+			}
+
+			s.boxRunToolAccess = func(context.Context, string) (string, error) { return "", nil }
+			req.RunToken = ""
+			if _, err := s.StartBoxRun(adminCtx(), req); err != nil {
+				t.Fatalf("a tokenless owner run under the same name failed: %v", err)
+			}
+		})
+	}
+}
+
+// When every attempt fails the name is released anyway, so an unreachable box
+// does not block it forever.
+func TestDiscardRunTokenOrRetry_ReleasesTheNameAfterTheLastAttempt(t *testing.T) {
+	old := runTokenDiscardRetries
+	runTokenDiscardRetries = []time.Duration{time.Millisecond, time.Millisecond}
+	defer func() { runTokenDiscardRetries = old }()
+	var mu sync.Mutex
+	attempts := 0
+	root := func(box, script string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		attempts++
+		return "", errors.New("exec: box unreachable")
+	}
+	s := &ContainerServer{}
+	s.discardRunTokenOrRetry(root, "box1", "r1", "tok")
+	waitNotPending(t, s, "box1", "r1")
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts != 1+len(runTokenDiscardRetries) {
+		t.Errorf("removal attempts = %d, want %d", attempts, 1+len(runTokenDiscardRetries))
 	}
 }

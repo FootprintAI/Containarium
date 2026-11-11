@@ -546,8 +546,8 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	lock.Lock()
 	defer lock.Unlock()
 
-	// #3622: refused, before the box is touched, while an earlier start of
-	// this name that gave up on its token install still has it in flight.
+	// #3622: refused, before the box is touched, while an earlier failed
+	// start of this name still has its token install or removal in flight.
 	if err := s.refuseWhileRunTokenInstallPending(box, name, req.GetUsername()); err != nil {
 		return nil, err
 	}
@@ -774,7 +774,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	}
 	out, err := spawnBoxRun(startExec, listExec, box, runAs, sp, req.GetCommandPolicy() != nil)
 	if err != nil {
-		discardRunToken(listExec, box, name, req.GetRunToken())
+		s.discardRunTokenOrRetry(listExec, box, name, req.GetRunToken())
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
 	}
 	pidStr, boot, found := strings.Cut(strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]), " ")
@@ -900,7 +900,7 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 	}
 	out, err := spawnBoxRun(startExec, listExec, box, runAs, boxRunSpawn{dir: dir, name: name, command: command, home: home, cwd: cwd, runToken: req.GetRunToken()}, req.GetCommandPolicy() != nil)
 	if err != nil {
-		discardRunToken(listExec, box, name, req.GetRunToken())
+		s.discardRunTokenOrRetry(listExec, box, name, req.GetRunToken())
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
 	}
 	pidStr, boot, found := strings.Cut(strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]), " ")
@@ -1059,10 +1059,11 @@ func tokenRemoval(token, tokenPath string) string {
 // outlives a run that never started. It runs as root: the file may belong to a
 // different user than the next run of this name starts as, and the token
 // directory is sticky. Best effort: the start's own error is what the caller
-// reports.
-func discardRunToken(listExec boxScriptFunc, box, name, token string) {
+// reports; the error says whether the removal ran.
+func discardRunToken(listExec boxScriptFunc, box, name, token string) error {
 	if token == "" {
-		return
+		return nil
 	}
-	_, _ = listExec(box, "rm -f "+shellSingleQuote(boxRunTokenPath(name))+"\n")
+	_, err := listExec(box, "rm -f "+shellSingleQuote(boxRunTokenPath(name))+"\n")
+	return err
 }
