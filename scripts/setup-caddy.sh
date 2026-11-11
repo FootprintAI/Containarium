@@ -22,7 +22,7 @@ EMAIL=""
 CADDY_USER="caddy"
 CADDY_BIN="/usr/local/bin/caddy"
 CADDYFILE="/etc/caddy/Caddyfile"
-INSTALL_DIR="/tmp/caddy-build"
+INSTALL_DIR=""   # set via mktemp -d in build_caddy
 
 # DNS provider to module mapping
 declare -A DNS_MODULES=(
@@ -122,7 +122,8 @@ build_caddy() {
 
     log_info "Building Caddy with $DNS_PROVIDER DNS plugin..."
 
-    mkdir -p "$INSTALL_DIR"
+    INSTALL_DIR="$(mktemp -d /tmp/caddy-build.XXXXXXXX)"   # 0700, unpredictable
+    trap 'rm -rf "$INSTALL_DIR"' EXIT
     cd "$INSTALL_DIR"
 
     xcaddy build --with "$dns_module" --output "$CADDY_BIN"
@@ -244,7 +245,7 @@ Requires=network-online.target
 Type=notify
 User=$CADDY_USER
 Group=$CADDY_USER
-ExecStart=$CADDY_BIN run --environ --config $CADDYFILE
+ExecStart=$CADDY_BIN run --config $CADDYFILE
 ExecReload=$CADDY_BIN reload --config $CADDYFILE --force
 TimeoutStopSec=5s
 LimitNOFILE=1048576
