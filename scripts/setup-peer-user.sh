@@ -20,6 +20,16 @@ USERNAME="${1:-}"
 # leaks the sentinel hostname per CLAUDE.md.
 SENTINEL_PUBKEY="${2:-${SENTINEL_PUBKEY:-}}"
 
+# refuse_symlink PATH: abort if PATH is a symlink. This script runs as root
+# against a home the account may own, so a symlink there would redirect a
+# write or chown to an arbitrary target.
+refuse_symlink() {
+    if [[ -L "$1" ]]; then
+        echo "Error: $1 is a symlink; refusing to write through it" >&2
+        exit 1
+    fi
+}
+
 if [[ -z "$USERNAME" ]]; then
     echo "Usage: sudo $0 <username> [sentinel_pubkey]"
     echo "Example: sudo $0 <tenant-username>"
@@ -110,13 +120,16 @@ fi
 
 # Unlock the account (useradd creates locked accounts by default, sshd rejects them)
 passwd -d "$USERNAME" >/dev/null 2>&1
+refuse_symlink "/home/$USERNAME"
 chmod 755 "/home/$USERNAME"
 
 # 3. Setup authorized_keys
 echo "==> Setting up SSH keys..."
+refuse_symlink "/home/$USERNAME/.ssh"
 mkdir -p "/home/$USERNAME/.ssh"
 
 # Start with sentinel upstream key
+refuse_symlink "/home/$USERNAME/.ssh/authorized_keys"
 echo "$SENTINEL_PUBKEY" > "/home/$USERNAME/.ssh/authorized_keys"
 
 # Try to copy user's SSH key from the container
@@ -130,7 +143,7 @@ if incus info "$CONTAINER" &>/dev/null; then
     fi
 fi
 
-chown -R "$USERNAME:$USERNAME" "/home/$USERNAME/.ssh"
+chown -R -h "$USERNAME:$USERNAME" "/home/$USERNAME/.ssh"
 chmod 700 "/home/$USERNAME/.ssh"
 chmod 600 "/home/$USERNAME/.ssh/authorized_keys"
 
