@@ -1,7 +1,7 @@
 # PRD: Managed Kubernetes clusters on Containarium VMs
 
 **Date:** 2026-11-11 (revised; first drafted 2026-08-17)
-**Status:** draft — revised for namespace-scoped tenant access
+**Status:** draft — revised after review of PR #3626 (blocking findings addressed)
 **Owner:** devops (platform operator)
 
 > **Naming note.** The word "serverless" is already taken inside this
@@ -13,11 +13,11 @@
 
 > **Revision, 2026-11-11.** Tenants no longer receive a cluster-admin
 > kubeconfig. A tenant gets a short-lived credential scoped to its own
-> namespaces inside its own cluster, and the platform installs and owns
+> namespaces inside its own cluster. The platform installs and owns
 > everything cluster-wide. Tenants cannot install CRDs, ClusterRoles,
-> operators or webhooks. The earlier wording ("a kubeconfig that just
-> works", `kubectl get nodes` from outside, Knative as a tenant
-> install) is withdrawn. See Story 1, Story 6 and Out of scope.
+> operators, webhooks, NetworkPolicies or ServiceAccounts. Network
+> isolation is enforced below the Kubernetes API, so a tenant cannot
+> weaken it.
 
 ## Problem
 
@@ -52,13 +52,22 @@ design, and open issue #857 (node-pool fleet autoscaling) approaching
 the same gap from the fleet side. No external user tickets yet; see
 Assumptions.
 
+## Terms
+
+- **Tenant:** the account that owns a managed cluster (the existing
+  `owner` in the code). One tenant, one cluster.
+- **Team:** a group of people inside a tenant. A team is a namespace (or
+  namespaces) inside the tenant's cluster. The platform creates team
+  namespaces; a tenant asks for them and does not create them itself.
+- **Credential:** a kubeconfig user minted by the platform for one tenant
+  and scoped to that tenant's team namespaces.
+
 ## Target user
 
-A tenant team that runs Kubernetes-packaged workloads (Helm charts,
-plain manifests) inside its own namespaces, on Containarium
-infrastructure — including GPU hosts the hyperscalers don't offer
-cheaply — **without becoming a cluster operator**. Job-to-be-done: "give
-me a namespace I can deploy into; you own the cluster, its add-ons and
+A tenant that runs Kubernetes-packaged workloads (Helm charts, plain
+manifests) in its team namespaces, on Containarium infrastructure,
+**without becoming a cluster operator**. Job-to-be-done: "give me a
+namespace I can deploy into; you own the cluster, its add-ons and
 everything cluster-wide."
 
 Explicitly *not* the target:
@@ -74,20 +83,21 @@ Explicitly *not* the target:
 | Metric | Baseline | Target |
 |--------|----------|--------|
 | Time from `cluster create` to first tenant pod `Running` in its namespace | N/A (feature absent; DIY k3s ≈ hours) | ≤ 10 min |
-| Human actions (tenant or operator) needed for a pending-pods load spike to schedule | all manual (`resize` by hand) | 0 — node joins and pod schedules unattended |
+| Human actions for a pending-pods load spike to schedule | all manual (`resize` by hand) | 0 for scale-up within `nodes-max`; a request beyond it is refused and shown in `status` (Story 5), which is an operator decision |
 | Managed clusters created (adoption; first external demand signal) | 0 | instrument first; any external cluster in the first release window validates demand |
-| Tenant credentials that grant cluster-scoped rights | all (today: cluster-admin) | 0 |
+| Credentials granting cluster-scoped rights | all (today: cluster-admin) | 0 for clusters created or rotated after release; existing clusters count until rotated (see Open questions) |
 
 ## MVP scope — the core journey
 
 > A tenant runs `containarium cluster create demo`, gets a namespace-scoped
 > kubeconfig in under 10 minutes, and `kubectl apply`s a Helm-rendered app
-> into its namespace. When the app's pods no longer fit, a new worker node —
-> a Containarium VM — provisions and joins within minutes and the pods
-> schedule, with no action from the tenant or the operator. When load
-> drops, the extra node drains and is deleted. The tenant never sees the
-> control plane, never SSHes a node, never sees other tenants' namespaces,
-> and never files a resize request.
+> into its team namespace. It reaches the app with `kubectl port-forward`.
+> When the app's pods no longer fit, a new worker node — a Containarium VM
+> — provisions and joins within minutes and the pods schedule, with no
+> action from the tenant or the operator. When load drops, the extra node
+> drains and is deleted. The tenant never sees the control plane, never
+> SSHes a node, never sees other tenants' namespaces, and never files a
+> resize request.
 
 Nodes are **Containarium VMs** (Incus `virtual-machine` instances, the
 substrate the `containariumd node` scaffold already targets), not LXC
@@ -103,26 +113,34 @@ cluster-autoscaler and VPA are the brains; Containarium implements only
 the thin provider seams they are designed to call.
 
 **Story 1 — managed cluster lifecycle.**
-As a tenant, I want `containarium cluster {create,list,get,delete}` and
-`cluster kubeconfig`, so I get a working namespace in a cluster without
-operating one.
+As a tenant, I want `containarium cluster {create,list,get,delete}`,
+`cluster kubeconfig` and `cluster access revoke`, so I get a working
+namespace in a cluster without operating one.
 **Acceptance criteria:**
 - [ ] `cluster create <name>` provisions a platform-managed k3s control
-  plane and the tenant's namespace(s); `cluster kubeconfig <name>` emits a
-  kubeconfig whose credential is **namespace-scoped and short-lived**
-  (minted on demand, never the k3s admin file).
+  plane and the tenant's team namespace(s).
+- [ ] `cluster kubeconfig <name>` mints a credential that is
+  **namespace-scoped** and **short-lived** (maximum lifetime 1 hour,
+  re-minted through the CLI). It is never the k3s admin file, and every
+  mint is audited.
 - [ ] With that kubeconfig, `kubectl` can create and manage workloads in
-  the tenant's namespace(s) and is denied on every cluster-scoped resource
-  (nodes, namespaces, CRDs, ClusterRoles, webhooks, PersistentVolumes).
-- [ ] Revoking a tenant's access removes its binding; a new kubeconfig
-  must be minted to regain access.
-- [ ] The control plane is not tenant-reachable except via the K8s API:
-  no SSH route, no box listed in the tenant's `containarium list`.
-- [ ] `cluster delete` removes control plane and all worker VMs; a
-  re-created cluster of the same name is empty (no state leakage).
-- [ ] Proto-first: `ClusterService` RPCs + typed messages land in
-  `proto/containarium/v1/`, CLI is a cobra subcommand, MCP tool thin-wraps
-  the same client function (per CLAUDE.md conventions).
+  the tenant's team namespace(s). A negative e2e shows it is denied on
+  every cluster-scoped resource (nodes, namespaces, CRDs, ClusterRoles,
+  webhooks, PersistentVolumes) and on NetworkPolicy, Role, RoleBinding,
+  ServiceAccount and ServiceAccount token creation.
+- [ ] `cluster access revoke <name>` makes every outstanding credential
+  fail within 60 seconds. Re-granting access mints new credentials and
+  does not revive revoked ones.
+- [ ] `cluster delete` also invalidates outstanding credentials, removes
+  the control plane and all worker VMs, and a re-created cluster of the
+  same name is empty (no state leakage).
+- [ ] The control plane is not tenant-reachable except via the K8s API
+  endpoint: no SSH route, no box listed in the tenant's `containarium
+  list`.
+- [ ] Proto-first: `ClusterService` RPCs (mint, revoke, namespace fields)
+  and typed messages land in `proto/containarium/v1/`, CLI is a cobra
+  subcommand, MCP tool thin-wraps the same client function (per CLAUDE.md
+  conventions).
 **Priority:** P0
 
 **Story 2 — worker nodes are Containarium VMs.**
@@ -142,7 +160,10 @@ health is reported through `cluster status`.)
   back to at least `nodes-min`).
 - [ ] Worker VMs are internal to the cluster: not SSH-routable as tenant
   boxes, not listed in `containarium list`.
-- [ ] Tenant pods never schedule onto the control-plane node.
+- [ ] Tenant pods cannot be placed on the control-plane node. This is
+  enforced by admission (Story 6), not only by the scheduler taint.
+- [ ] A non-admin request for container-class node isolation is refused.
+  Container-class nodes also need the operator's per-host permission.
 **Priority:** P0
 
 **Story 3 — node autoscaling (scale up and down).**
@@ -169,15 +190,17 @@ workload needs more than it requested, so hand-tuned limits stop being a
 ceiling.
 **Acceptance criteria:**
 - [ ] Implemented as upstream Vertical Pod Autoscaler installed by the
-  platform with the cluster; the tenant may create VPA objects in its own
-  namespace. In-place pod resize is used where the workload allows it — no
-  bespoke resizing loop.
+  platform with the cluster; the tenant may create VPA objects in its
+  team namespace. In-place pod resize is used where the workload allows
+  it — no bespoke resizing loop.
 - [ ] E2E: a workload opted in (`cluster` default or per-workload VPA
   object) that sustains load above its request gets its request raised
   without tenant action; the pod is not stuck OOM-killing in a loop.
 - [ ] Pod growth beyond node capacity composes with Story 3: the
   resized pod that no longer fits triggers node scale-up, not a
   scheduling deadlock.
+- [ ] Growth beyond the namespace ResourceQuota is refused and reported
+  in `cluster status`, not left as a pod that cannot be re-created.
 **Priority:** P0
 
 **Story 5 — cluster visibility and bounded spend.**
@@ -194,23 +217,32 @@ the automation is doing, and hard caps on what it may consume.
   `containarium list`-level tooling (operator view, not tenant view).
 **Priority:** P0
 
-**Story 6 — namespace isolation and per-namespace limits.**
-As a tenant, I want my namespaces to be mine alone and bounded, and as
-the operator I want a tenant's workloads unable to affect the cluster or
-other tenants.
+**Story 6 — isolation the tenant cannot weaken.**
+As a tenant, I want my team namespace to be mine alone and bounded; as
+the operator, I want a tenant's workloads unable to reach the cluster's
+internals, the host, or other tenants, whatever the tenant creates.
 **Acceptance criteria:**
-- [ ] Each tenant namespace gets a platform-applied default-deny
-  NetworkPolicy (DNS allowed); the tenant cannot edit it.
-- [ ] Each tenant namespace is enforced at Pod Security `restricted`; the
+- [ ] Tenants cannot create or change NetworkPolicy objects. The platform
+  applies a default-deny policy for ingress and egress in each team
+  namespace, allowing same-namespace traffic and DNS only. A negative e2e
+  confirms the tenant's attempt to add an allow rule is refused.
+- [ ] Pod egress from worker VMs to the host bridge, the Containarium
+  daemon, the autoscaler provider listener, the control-plane VM's
+  non-API ports, and other tenants' VMs is blocked by a layer below the
+  Kubernetes API (a host firewall or Incus ACL on the worker VMs) that
+  the tenant cannot change. A negative e2e confirms a pod cannot reach
+  each target.
+- [ ] Pods that set `nodeName` or tolerate the control-plane taint are
+  rejected at admission, in every namespace. A negative e2e confirms both
+  are refused.
+- [ ] Each team namespace is enforced at Pod Security `restricted`; the
   tenant cannot relax the level.
-- [ ] Each tenant namespace has a platform-set ResourceQuota and
-  LimitRange (CPU, memory, ephemeral storage, pods, services, PVCs, and
-  no LoadBalancer or NodePort services by default). The tenant cannot
-  change them.
-- [ ] A tenant cannot create namespaces, or Roles and RoleBindings that
-  widen its own access.
-- [ ] Tenant workloads cannot tolerate or be placed on the control-plane
-  node.
+- [ ] Each team namespace has a platform-set ResourceQuota and LimitRange
+  (CPU, memory, ephemeral storage, pods, services, PVCs). Services of type
+  NodePort or LoadBalancer are refused in the MVP; the tenant cannot change
+  the quota or the limits.
+- [ ] Tenants cannot create namespaces, Roles, RoleBindings, ServiceAccounts
+  or ServiceAccount tokens. The platform issues every credential.
 **Priority:** P0
 
 ## Later phases
@@ -218,8 +250,9 @@ other tenants.
 - **P1 — managed ingress:** a K8s `Service`/`Ingress` maps onto the
   existing subdomain + TLS routing (`route`, `hosting`) so cluster
   workloads get public URLs the same way apps do. Deferred: the MVP
-  journey is provable with `kubectl port-forward`/NodePort, and ingress
-  doubles the routing surface to design.
+  journey is provable with `kubectl port-forward`, and ingress doubles
+  the routing surface to design. NodePort and LoadBalancer services stay
+  refused until this lands.
 - **P1 — cluster auto-sleep:** an idle cluster's worker pool scales to
   `nodes-min=0` and the control-plane VM sleeps via the existing
   auto-sleep machinery, waking on API/traffic. This is where the two
@@ -243,15 +276,14 @@ other tenants.
 
 - **Managed clusters run on the backend hosts of the owning customer's
   account** (for BYOC, the customer's own hosts), never on the
-  box-runtime Kubernetes cluster. Each tenant cluster is a separate k3s
+  box-runtime Kubernetes cluster. Each tenant's cluster is a separate k3s
   instance on Incus VMs with its own control plane.
-- **One cluster per tenant organisation.** Tenant teams are namespaces
-  inside that cluster. Namespace-scoped access applies only within one
-  organisation's cluster; it does not make a shared cluster across
-  organisations.
-- **Container-class nodes are not offered to tenants.** Shared-kernel
-  container nodes exist only as an operator-gated option for development
-  or single-trust-domain hosts.
+- **One cluster per tenant.** Teams are namespaces inside that cluster.
+  The platform, not the tenant, creates team namespaces.
+- **Container-class nodes are operator-only.** A tenant cannot request
+  them. The operator's per-host permission must also allow them, and
+  shared-kernel container nodes are for development or single-trust-domain
+  hosts.
 
 ## Out of scope
 
@@ -259,17 +291,16 @@ other tenants.
   VPA only; Containarium ships provider seams. Contradicting the
   "inherit, don't invent" position note requires re-litigating that
   note, not this PRD.
-- **Tenant-installed operators, CRDs, ClusterRoles, webhooks or other
-  cluster-wide components.** The platform curates cluster-wide add-ons
-  (VPA is the first). A CRD plus a webhook is cluster-admin by another
-  route, so tenants do not get either.
+- **Tenant-installed operators, CRDs, ClusterRoles, webhooks,
+  NetworkPolicies or other cluster-wide components.** The platform
+  curates cluster-wide add-ons (VPA is the first). A CRD plus a webhook
+  is cluster-admin by another route, so tenants do not get either.
 - **Cluster-admin access for tenants,** including a kubeconfig carrying
   the k3s admin credential.
-- **Shared multi-tenant clusters across organisations** (many
-  organisations, one control plane) — one cluster per organisation.
-  Hard multi-tenancy inside one K8s control plane is its own security
-  product; the per-tenant-VM boundary is exactly what we already know how
-  to isolate.
+- **Shared multi-tenant clusters** (many tenants, one control plane) —
+  one cluster per tenant. Hard multi-tenancy inside one K8s control plane
+  is its own security product; the per-tenant-VM boundary is exactly what
+  we already know how to isolate.
 - **Replacing or merging with the K8s box backend** (`pkg/core/box/k8s/`)
   — that lane puts boxes on a customer's cluster; this one hosts
   clusters. Different directions, both stay.
@@ -280,10 +311,28 @@ other tenants.
 - **Per-request metering / billing** — no billing machinery exists to
   hook into; bounded spend is handled by Story 5's hard caps.
 - **Windows nodes, service meshes, cluster marketplace/add-ons
-  installed by tenants.**
+  installed by tenants, and NodePort or LoadBalancer services in the MVP.**
 
 ## Open questions & assumptions
 
+Defaults below are what the PRD currently assumes. Each one changes the
+acceptance criteria if it is overturned.
+
+- **Decided (default):** one cluster per tenant. The code keys clusters by
+  owner and name, and the earlier MVP scope said the same. Teams are
+  namespaces inside it.
+- **Decided (default):** tenants may not create ServiceAccounts, tokens,
+  RoleBindings or NetworkPolicies. The platform issues every credential and
+  network policy.
+- **Decided (default):** container-class nodes are refused for non-admin
+  requests, and also need the operator's per-host permission.
+- **Proposed:** credential lifetime maximum 1 hour, and revocation takes
+  effect within 60 seconds. Both are numbers for `/architect:design` to
+  confirm.
+- **Open:** existing clusters that were issued cluster-admin kubeconfigs.
+  Proposed default: rotate their cluster CA before the zero-admin metric is
+  claimed for them, or re-create them. Blocks the rollout plan, not the
+  design.
 - **Assumption (evidence gap):** demand is inferred from the kubeflow
   recipe's DIY-k3s design and issue #857, not from external user asks.
   The adoption metric above is deliberately the validation instrument;
@@ -310,9 +359,6 @@ other tenants.
   Containarium's *own* fleet using someone's K8s; this PRD scales a
   *tenant's* K8s using Containarium VMs. The cluster-autoscaler provider
   shim may be shareable machinery; confirm before scheduling either.
-- **Open:** existing clusters that were issued cluster-admin kubeconfigs —
-  rotate them when this ships, or leave them until they expire. Blocks the
-  rollout plan, not the design.
-- **Open (for design):** tenant credential lifetime (proposed 1–24 h,
-  re-minted through the CLI); whether a tenant may request more than the
-  default namespace; and the default quota values per namespace.
+- **Open (for design):** the mechanism for the host-level egress block
+  (host firewall or Incus ACL), and which layer enforces Pod Security and
+  quota when a tenant edits its own manifests.
