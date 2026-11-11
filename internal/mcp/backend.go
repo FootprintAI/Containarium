@@ -51,6 +51,8 @@ type API interface {
 	TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogResponse, error)
 	ListBoxRuns(username string) ([]*pb.BoxRun, error)
 	TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error)
+	// A box's journal and container logs (#3643).
+	TailBoxLogs(req *pb.TailBoxLogsRequest) (*pb.TailBoxLogsResponse, error)
 	// Permission requests of a box run (#2184).
 	ListRunInputs(req *pb.ListRunInputsRequest) (*pb.ListRunInputsResponse, error)
 	AnswerRunInput(req *pb.AnswerRunInputRequest) (*pb.AnswerRunInputResponse, error)

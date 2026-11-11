@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/boxlogs"
 	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/internal/limitio"
 	"github.com/footprintai/containarium/internal/runlog"
@@ -571,6 +572,20 @@ func (c *Client) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogR
 		return nil, err
 	}
 	out := &pb.TailBoxRunLogResponse{}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, out); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return out, nil
+}
+
+// TailBoxLogs reads one window of a box's journal and container logs
+// (#3643), over the same REST path the CLI's HTTP client uses.
+func (c *Client) TailBoxLogs(req *pb.TailBoxLogsRequest) (*pb.TailBoxLogsResponse, error) {
+	respBody, err := c.doRequest("GET", boxlogs.Path(req), nil)
+	if err != nil {
+		return nil, err
+	}
+	out := &pb.TailBoxLogsResponse{}
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, out); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
