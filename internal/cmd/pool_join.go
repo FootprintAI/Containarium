@@ -14,6 +14,7 @@ import (
 	"github.com/footprintai/containarium/internal/cloud"
 	"github.com/footprintai/containarium/internal/hostcheck"
 	"github.com/footprintai/containarium/internal/hostharden"
+	"github.com/footprintai/containarium/internal/secretfile"
 	"github.com/footprintai/containarium/internal/sentinel"
 )
 
@@ -533,7 +534,7 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("create config directory: %w", err)
 		}
 		content := fmt.Sprintf("CONTAINARIUM_SENTINEL_AUTH_SECRET=%s\n", poolJoinSentinelAuthSecret)
-		if err := os.WriteFile(authSecretFile, []byte(content), 0600); err != nil {
+		if err := secretfile.Write(authSecretFile, []byte(content)); err != nil {
 			return fmt.Errorf("write sentinel auth secret file: %w", err)
 		}
 	}
@@ -544,7 +545,7 @@ func runPoolJoin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 	tokenContent := fmt.Sprintf("CONTAINARIUM_TUNNEL_TOKEN=%s\n", poolJoinToken)
-	if err := os.WriteFile(tunnelTokenSecretFile, []byte(tokenContent), 0600); err != nil {
+	if err := secretfile.Write(tunnelTokenSecretFile, []byte(tokenContent)); err != nil {
 		return fmt.Errorf("write tunnel token secret file: %w", err)
 	}
 	// 2. --pool drop-in on the daemon unit.

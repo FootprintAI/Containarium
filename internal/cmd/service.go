@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/footprintai/containarium/internal/hostcheck"
+	"github.com/footprintai/containarium/internal/secretfile"
 )
 
 const systemdServicePath = "/etc/systemd/system/containarium.service"
@@ -294,7 +295,7 @@ func ensureDaemonUnitAndSecret() error {
 		if err := os.MkdirAll("/etc/containarium", 0700); err != nil {
 			return fmt.Errorf("failed to create config directory: %w", err)
 		}
-		if err := os.WriteFile(jwtPath, []byte(generateRandomSecret()), 0600); err != nil {
+		if err := secretfile.Write(jwtPath, []byte(generateRandomSecret())); err != nil {
 			return fmt.Errorf("failed to write JWT secret: %w", err)
 		}
 		log.Printf("Generated JWT secret: %s", jwtPath)
