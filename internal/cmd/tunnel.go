@@ -21,6 +21,7 @@ var (
 	tunnelSentinelAddr      string
 	tunnelSentinelPin       string
 	tunnelToken             string
+	tunnelSecretIn          secretInputFlags
 	tunnelSpotID            string
 	tunnelPorts             string
 	tunnelPool              string
@@ -58,7 +59,8 @@ func init() {
 
 	tunnelCmd.Flags().StringVar(&tunnelSentinelAddr, "sentinel-addr", "", "Sentinel address (host:port) to connect to (required)")
 	tunnelCmd.Flags().StringVar(&tunnelSentinelPin, "sentinel-pin", "", sentinelPinFlagUsage)
-	tunnelCmd.Flags().StringVar(&tunnelToken, "token", "", "Pre-shared authentication token (or CONTAINARIUM_TUNNEL_TOKEN env)")
+	tunnelCmd.Flags().StringVar(&tunnelToken, "token", "", "Pre-shared authentication token (or CONTAINARIUM_TUNNEL_TOKEN env). Deprecated: the value is visible in process listings; use --token-file or --stdin")
+	addSecretInputFlags(tunnelCmd, &tunnelSecretIn)
 	tunnelCmd.Flags().StringVar(&tunnelSpotID, "spot-id", "", "Unique identifier for this spot instance (required)")
 	tunnelCmd.Flags().StringVar(&tunnelPorts, "ports", "22,80,443,3389,8080", "Comma-separated local ports to expose through the tunnel")
 	tunnelCmd.Flags().StringVar(&tunnelPool, "pool", "", "Pool name to register this peer in (optional; empty = unpooled)")
@@ -77,12 +79,16 @@ func runTunnel(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--spot-id is required")
 	}
 
-	token := tunnelToken
+	tunnelSecretIn.Token = tunnelToken
+	token, err := resolveSecretInput(cmd, "token", &tunnelSecretIn)
+	if err != nil {
+		return err
+	}
 	if token == "" {
 		token = os.Getenv("CONTAINARIUM_TUNNEL_TOKEN")
 	}
 	if token == "" {
-		return fmt.Errorf("--token or CONTAINARIUM_TUNNEL_TOKEN is required")
+		return fmt.Errorf("--token-file, --stdin or CONTAINARIUM_TUNNEL_TOKEN is required")
 	}
 
 	pins, err := resolveSentinelPins(tunnelSentinelPin)
