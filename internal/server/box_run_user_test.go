@@ -234,7 +234,7 @@ func TestStartBoxRun_IdentityFollowsTheRecordedLevel(t *testing.T) {
 					return "", nil
 				},
 			}
-			if _, err := s.StartBoxRun(adminCtx(), &pb.StartBoxRunRequest{Username: "alice", Prompt: "do it"}); err != nil {
+			if _, err := s.StartBoxRun(adminCtx(), runTokenFor(s, &pb.StartBoxRunRequest{Username: "alice", Prompt: "do it"})); err != nil {
 				t.Fatalf("StartBoxRun: %v", err)
 			}
 			var stagedAsRoot bool
@@ -316,7 +316,7 @@ func signInRun(t *testing.T, probeOut string, probeErr error) (spawned bool, use
 			return "", nil
 		},
 	}
-	_, err = s.StartBoxRun(adminCtx(), &pb.StartBoxRunRequest{Username: "alice", Prompt: "do it"})
+	_, err = s.StartBoxRun(adminCtx(), runTokenFor(s, &pb.StartBoxRunRequest{Username: "alice", Prompt: "do it"}))
 	return spawned, user, err
 }
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/footprintai/containarium/internal/client"
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/coderun/engine"
 	"github.com/footprintai/containarium/internal/connectcore"
@@ -128,12 +129,7 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 	// discovery adopts only a session this run creates (a resumed run's id is
 	// the literal sessionID and needs none).
 	discover := sessionID == "" && mcpSnapshotSessionDirectory(ctx, sess, name)
-	started, err := sess.ProcessStart(ctx,
-		name,
-		command,
-		"",
-		coderun.CaptureModeFor(streamJSON),
-	)
+	started, err := mcpStartCodeRun(ctx, sess, name, command, coderun.CaptureModeFor(streamJSON))
 	if err != nil {
 		return "", fmt.Errorf("start run on %q: %w", box, err)
 	}
@@ -143,6 +139,22 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 
 	out, next := readCodeWindow(ctx, sess, started.LogPath, 0, streamJSON)
 	return codeRunReply(started, box, out, next), nil
+}
+
+// startCodeRunFn is the function `containarium code run` starts its run
+// through (#3610). A variable only so a test can check it is the CLI's.
+var startCodeRunFn = client.StartCodeRun
+
+// mcpStartCodeRun starts code_run's run through that function, over the box's
+// SSH session. The tool takes no per-run token (a credential in tool arguments
+// would sit in the model's context), so it never selects the daemon-API path:
+// `containarium code run --run-token-file` is the way to that.
+func mcpStartCodeRun(ctx context.Context, sess client.CodeRunSessionStarter, name, command, captureMode string) (*coderun.ProcessStartResult, error) {
+	run, err := startCodeRunFn(ctx, client.CodeRunStart{Session: sess, Name: name, Command: command, CaptureMode: captureMode})
+	if err != nil {
+		return nil, err
+	}
+	return run.Process, nil
 }
 
 // codeRunReply is code_run's reply for a started run: a note from the start

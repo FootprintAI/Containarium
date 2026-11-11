@@ -43,7 +43,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           cache-name: shared
       - name: Install actual SSH, jail, tracing and isolated firewall tools
         run: |
@@ -103,7 +103,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           cache-name: shared
       - name: Install real backend SSH and jail prerequisites
         run: |
@@ -133,7 +133,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           cache-name: shared
       - name: Install TCP syscall tracer
         run: |
@@ -199,7 +199,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-go-cached
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           cache-name: shared
       - name: Install pinned upstream SSH binaries
         env:

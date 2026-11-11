@@ -2757,9 +2757,14 @@ type GuardStatus struct {
 	// Instances carrying no user.containarium.* key (made directly in Incus,
 	// or a VM). Left unguarded and listed for information only; unlike
 	// unresolved they do not degrade the verdict (#2396).
-	Unmanaged     []string `protobuf:"bytes,10,rep,name=unmanaged,proto3" json:"unmanaged,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Unmanaged []string `protobuf:"bytes,10,rep,name=unmanaged,proto3" json:"unmanaged,omitempty"`
+	// isolation_degraded is true while containers are created or kept without
+	// tenant-to-tenant isolation because this host cannot carry bridge NIC
+	// ACLs and the create was allowed to proceed (fail-open, #3521). Clears
+	// once a supported check passes.
+	IsolationDegraded bool `protobuf:"varint,11,opt,name=isolation_degraded,json=isolationDegraded,proto3" json:"isolation_degraded,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *GuardStatus) Reset() {
@@ -2860,6 +2865,13 @@ func (x *GuardStatus) GetUnmanaged() []string {
 		return x.Unmanaged
 	}
 	return nil
+}
+
+func (x *GuardStatus) GetIsolationDegraded() bool {
+	if x != nil {
+		return x.IsolationDegraded
+	}
+	return false
 }
 
 type GetNetworkGuardStatusRequest struct {
@@ -3486,7 +3498,7 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"\bacl_name\x18\x04 \x01(\tR\aaclName\x12\x1a\n" +
 	"\battached\x18\x05 \x01(\bR\battached\x12\x1d\n" +
 	"\n" +
-	"last_error\x18\x06 \x01(\tR\tlastError\"\xf6\x02\n" +
+	"last_error\x18\x06 \x01(\tR\tlastError\"\xa5\x03\n" +
 	"\vGuardStatus\x12.\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x1a.containarium.v1.GuardModeR\x04mode\x12'\n" +
 	"\x0ffirewall_driver\x18\x02 \x01(\tR\x0efirewallDriver\x12 \n" +
@@ -3502,7 +3514,8 @@ const file_containarium_v1_network_proto_rawDesc = "" +
 	"unresolved\x12\x1a\n" +
 	"\bsubjects\x18\t \x01(\x05R\bsubjects\x12\x1c\n" +
 	"\tunmanaged\x18\n" +
-	" \x03(\tR\tunmanaged\"\x1e\n" +
+	" \x03(\tR\tunmanaged\x12-\n" +
+	"\x12isolation_degraded\x18\v \x01(\bR\x11isolationDegraded\"\x1e\n" +
 	"\x1cGetNetworkGuardStatusRequest\"|\n" +
 	"\x12NetworkGuardStatus\x120\n" +
 	"\x04core\x18\x01 \x01(\v2\x1c.containarium.v1.GuardStatusR\x04core\x124\n" +

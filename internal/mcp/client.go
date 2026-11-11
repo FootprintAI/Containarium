@@ -280,6 +280,7 @@ type DeployRecipeRequest struct {
 	Pool           string                 `json:"pool,omitempty"`
 	Parameters     map[string]string      `json:"parameters,omitempty"`
 	GuardrailInput *pb.GuardrailGateInput `json:"guardrail_input,omitempty"`
+	SSHKeys        []string               `json:"ssh_keys,omitempty"`
 }
 
 // DeployRecipeContainer is the deployed container's MCP summary.
@@ -309,7 +310,14 @@ func (c *Client) DeployRecipe(req DeployRecipeRequest) (*DeployRecipeResponse, e
 	if err != nil {
 		return nil, err
 	}
-	resp, err := typed.DeployRecipe(req.RecipeID, req.Name, req.GPU, req.BackendID, req.Pool, req.Parameters, req.GuardrailInput)
+	resp, err := typed.DeployRecipe(req.RecipeID, req.Name, client.DeployRecipeOptions{
+		GPU:            req.GPU,
+		BackendID:      req.BackendID,
+		Pool:           req.Pool,
+		Parameters:     req.Parameters,
+		GuardrailInput: req.GuardrailInput,
+		SSHKeys:        req.SSHKeys,
+	})
 	if err != nil {
 		return nil, err
 	}

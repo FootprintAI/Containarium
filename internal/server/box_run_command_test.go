@@ -120,7 +120,7 @@ func TestStartBoxRun_CommandMode_RunsAsTheRunUserWithoutASignIn(t *testing.T) {
 			return "", nil
 		},
 	}
-	resp, err := s.StartBoxRun(adminCtx(), &pb.StartBoxRunRequest{Username: "alice", Command: "make verify", RunName: "verify-2", TimeoutSeconds: 120})
+	resp, err := s.StartBoxRun(adminCtx(), runTokenFor(s, &pb.StartBoxRunRequest{Username: "alice", Command: "make verify", RunName: "verify-2", TimeoutSeconds: 120}))
 	if err != nil {
 		t.Fatalf("StartBoxRun: %v", err)
 	}

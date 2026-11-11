@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/client"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -83,6 +85,14 @@ func TestBackupCreate_BoxFlagRefusals(t *testing.T) {
 				t.Error("the refused request reached the daemon")
 			}
 		})
+	}
+}
+
+// The CLI calls the function the MCP tool create_backup calls for scope
+// "box" (CLI-first, CLAUDE.md, #3504).
+func TestBackupCreate_BoxUsesTheSharedClientFunction(t *testing.T) {
+	if reflect.ValueOf(createBoxBackupFn).Pointer() != reflect.ValueOf(client.CreateBoxBackup).Pointer() {
+		t.Fatal("backup create --box does not call client.CreateBoxBackup")
 	}
 }
 

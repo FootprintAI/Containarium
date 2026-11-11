@@ -694,6 +694,20 @@ service ContainerService {
     };
   }
 
+  // ListRunCommandEvents reads a box run's command events (#3582): the START,
+  // END and BLOCKED records the run's audit sink wrote, in order, after a
+  // given sequence number. Read-only. Same access as ListRunInputs.
+  rpc ListRunCommandEvents(ListRunCommandEventsRequest) returns (ListRunCommandEventsResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/code-runs/{run_name}/command-events"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List a box code run's command events";
+      description: "Returns the run's command events (START, END, BLOCKED) with after_seq < seq, in seq order, at most limit (default and maximum 500), read from the run's audit file, which only root on the box can write. seq starts at 1 and is assigned by the audit sink. ended is true once the sink has finished and the page reaches the last event. state says the same as an enum (OPEN, ENDED) and adds INCOMPLETE: the run has stopped and its sink is gone without finishing the feed, so the page holds the last events there will be but ended stays false. A run that does not exist is NOT_FOUND; a run started without a command policy has no events. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
   // AnswerRunInput answers one permission request of a box run (#2184).
   // Answering a request that is already closed or expired changes nothing
   // and reports the existing outcome. StartBoxRun's access rule plus the

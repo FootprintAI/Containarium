@@ -67,9 +67,9 @@ func DefaultPolicy(tenant string, extras DefaultEgressExtras) (CompiledPolicy, e
 	if err != nil {
 		return CompiledPolicy{}, err
 	}
-	// The BPF compile is IPv4-only and the reconcile plan drops a tenant's
-	// whole egress set when it fails, so an IPv6 extra would silently empty the
-	// allow-list of every tenant on the default. Refuse it here instead.
+	// The BPF compile is IPv4-only and the reconcile plan refuses a tenant's
+	// whole egress set when it fails (#3518), so an IPv6 extra would leave every
+	// tenant on the default degraded. Refuse it here instead.
 	for _, pfx := range c.EgressCIDRs {
 		if !pfx.Addr().Is4() {
 			return CompiledPolicy{}, fmt.Errorf("default network policy: extra CIDR %s is not IPv4 (the egress allow-list is IPv4-only)", pfx)
