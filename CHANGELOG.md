@@ -7,6 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.134.0] - 2026-11-11
+
+
+### Added
+
+- **Recipe deploys can authorize SSH keys at create time** (#3514).
+  `DeployRecipeRequest` gains `ssh_keys`, `containarium recipe deploy` gains a
+  repeatable `--ssh-key <path>`, and the MCP `deploy_recipe` tool gains an
+  optional `ssh_keys` array. The keys take the same path as
+  `containarium create --ssh-key`: seeded into the box's `authorized_keys` and
+  the key registry before the recipe's post_start runs, so the person a box
+  was deployed for can reach it without a second `ssh-keys set` call. An
+  invalid key, more than 32 keys, or a key over 8 KiB refuses the whole deploy
+  with `InvalidArgument` before any box is created. Omitting the keys keeps
+  the previous behaviour. A daemon older than this release ignores the field
+  and creates the box without the keys.
+- **`StartBoxRun` takes a `workdir`** (#3551). A prompt or command run can now
+  start in a directory under the run's home (for example a project
+  subdirectory) instead of the home itself. The value follows the same canonical
+  relative-path rule as `WriteBoxFile`'s `path`; a directory that does not exist
+  or is not a directory is refused with `FAILED_PRECONDITION` naming it before
+  the run starts, and is never created. `BoxRun.workdir` reports it when listing
+  runs. Advertised as the `box_run_workdir` capability.
+- **`containarium code run --run-token-file <path>`** (#3610). Starts the run
+  through the daemon API (`StartBoxRun`) instead of over SSH and sends the
+  per-run token in the file as `run_token`. The file holds the token on one
+  line; it is read, never printed or logged, and the token is never an
+  argument. An unreadable or empty file is an error before any request. The
+  token is sent only to a daemon that advertises the `box_run_token`
+  capability; any other daemon is refused with a message naming it, and no run
+  starts. The capability is read with the admin-only `GetSystemInfo`, so the
+  flag needs an admin token; a non-admin box owner is refused
+  (`PermissionDenied` from the capability check). No released daemon
+  advertises it yet, so until one does the flag always ends in that refusal.
+  `--approvals ask`, `--output-format-stream-json` and `--token-ttl` are
+  refused with the flag. Without the flag `code run` is
+  unchanged. The MCP tool `code_run` starts its run through the same function
+  and takes no token parameter.
+
+### Changed
+
+- **Tenant guard reports degraded isolation on hosts without bridge NIC ACL support** (#3521). `GetNetworkGuardStatus` now sets `isolation_degraded` on the tenant guard whenever a create or a reconcile pass finds the host unable to carry NIC ACLs, and clears it once the host is supported. Creates still proceed (fail-open is unchanged); the signal is the status field plus the existing log line.
+
+### Fixed
+
+- **A failing operator-signature store no longer removes loaded signatures** (#3519).
+  The enforcer keeps the last good signature set in the kernel when the store
+  cannot be read, reports `OPERATOR_SIGNATURES_STALE` in the network-policy
+  status, logs an alert, and recovers on its own when the store answers.
+
+### Security
+
+- **Box and skill names are quoted in in-box agent errors** (#3472). A box or
+  skill name containing a newline or escape byte no longer reaches the logs
+  raw through the error text of the in-box agent run and serve-mode paths; the
+  names are quoted where the error is built. Other error paths are tracked as
+  a follow-up.
+- **Peer terminals use TLS when pool mTLS is on** (#3516). A terminal opened
+  to a box on a peer backend was always proxied over `ws://`, so the user's
+  bearer token and terminal I/O crossed the pool in plaintext even with peer
+  mTLS enabled. An https peer is now dialled over `wss://`, verified against
+  the pinned pool CA and presenting the daemon's leaf certificate. Pools
+  without peer mTLS keep `ws://` as before.
+- **Plaintext fallbacks now warn, and the peer fallback can be refused** (#3517). A new `--require-peer-mtls` daemon flag (env `CONTAINARIUM_REQUIRE_PEER_MTLS`) makes the plain-HTTP peer fallback a startup error. A scheme-less, non-loopback server endpoint in the CLI (stderr) and web UI (console) still falls back to `http://` but now warns; acknowledge with `CONTAINARIUM_ALLOW_PLAINTEXT_FALLBACK=1` (CLI) or the `containarium.allowPlaintextFallback` localStorage key (web UI). A non-loopback `http://` cloud control plane logs a warning. Defaults are unchanged; loopback never warns.
+- **A network policy rule that fails to compile no longer empties the tenant's deny or egress list** (#3518). One non-IPv4 deny or egress CIDR used to drop the tenant's whole set silently, leaving denied destinations reachable. The daemon now keeps the tenant's last good egress and deny sets, logs the failure once per change, and `containarium network-policy status` reports the new `POLICY_COMPILE_FAILED` uncovered path for that tenant until the policy is fixed.
+- **A failed tenant-label stamp no longer lets a cloud container start or be routed** (#3520). When the label on an existing cloud-assigned container is missing or stale and re-stamping fails, the container is not started and its routes are not applied; one that is already running is left running and reported `degraded`. The next reconcile cycle retries.
+- **The daemon warns when its REST listener serves plain HTTP off the host** (#3522). The HTTP/REST listener binds all interfaces without TLS; at startup the daemon now logs a warning for a non-loopback bind unless an external TLS terminator is declared with the new `--rest-tls-terminator` daemon flag. Loopback binds never warn. Nothing else changes: the listener still serves plain HTTP, so put a reverse proxy or load balancer with TLS in front of it and set the flag. See `docs/REST-API-QUICKSTART.md`.
+- **Opt-in TLS for the sentinel console router** (#3523). `--console-router-tls-cert` and `--console-router-tls-key` make the router accept TLS only and refuse plaintext clients; without them it stays plaintext and logs a startup warning. Plaintext is still the default in this release.
+- **Go toolchain 1.26.11** (GO-2026-6859, `net/http`). `go.mod`, every CI workflow and the image builds moved from 1.26.10; the `govulncheck` gate was failing on the standard library advisory. No code change.
+
+### Upgrading
+
+- **Runs as the unprivileged run user now need a per-run token; the box
+  principal is no longer staged for them** (#3581). This re-lands the change
+  reverted in v0.132.0, now together with its senders and readers.
+  - **What changes on the daemon.** `StartBoxRunRequest.run_token` is honoured:
+    the daemon writes it to a 0600 file owned by the run's user
+    (`/run/containarium/run-tokens/<run_name>.token`), exports
+    `CONTAINARIUM_JWT_TOKEN_FILE` with that path for the run, and removes the
+    file when the run exits or is stopped. The token is never in a command line
+    or a script. The daemon advertises the `box_run_token` capability. It no
+    longer copies the box principal into the run user's home
+    (`~/.config/containarium/box-token`) and removes a copy an earlier daemon
+    left there.
+  - **Senders: upgrade every client that starts runs before, or together
+    with, the daemon.** On a box with a recorded tool-access level, a
+    `StartBoxRun` without `run_token` is now refused with
+    `FAILED_PRECONDITION` naming `run_token` and `box_run_token`, before
+    anything on the box is changed (prompt and command mode alike). An older
+    client against a new daemon therefore cannot start runs on such a box; it
+    is not silently left without a credential. A client must check
+    `box_run_token` in `SystemInfo.capabilities` and then send the token. In
+    this repo that is `containarium code run --run-token-file <path>` and the
+    typed client's `StartBoxRun`. Runs on a box with no recorded level execute
+    as the box owner and are unchanged, as are `containarium code run` without
+    the flag and the MCP `code_run` tool (both use an SSH session).
+  - **Readers: read `CONTAINARIUM_JWT_TOKEN_FILE`.** Anything a run starts that
+    presented the staged principal (a credential helper, an MCP server, an MCP
+    configuration that names `~/.config/containarium/box-token`) must take its
+    credential from the file that variable names. `mcp-server` and the agent
+    runtime in this repo already do. The daemon does not rewrite a staged MCP
+    configuration.
+  - **Order.** Upgrading clients first is safe: they send a token only to a
+    daemon that advertises `box_run_token`. A daemon rolled back to a version
+    without the capability ignores the field again, and stages the principal
+    again on its next run.
+
 ## [0.133.1] - 2026-11-10
 
 
