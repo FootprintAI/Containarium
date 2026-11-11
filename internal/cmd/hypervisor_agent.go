@@ -20,6 +20,7 @@ var (
 	hvSentinelAddr string
 	hvSentinelPin  string
 	hvTunnelToken  string
+	hvSecretIn     secretInputFlags
 	hvSpotID       string
 	hvConsolePort  int
 	hvConsoleToken string
@@ -66,7 +67,8 @@ func init() {
 
 	hypervisorAgentCmd.Flags().StringVar(&hvSentinelAddr, "sentinel-addr", "", "Sentinel address (host:port) to connect to (required)")
 	hypervisorAgentCmd.Flags().StringVar(&hvSentinelPin, "sentinel-pin", "", sentinelPinFlagUsage)
-	hypervisorAgentCmd.Flags().StringVar(&hvTunnelToken, "token", "", "Pre-shared tunnel registration token (or CONTAINARIUM_TUNNEL_TOKEN env) — authorizes joining the tunnel, distinct from --console-token")
+	hypervisorAgentCmd.Flags().StringVar(&hvTunnelToken, "token", "", "Pre-shared tunnel registration token (or CONTAINARIUM_TUNNEL_TOKEN env) — authorizes joining the tunnel, distinct from --console-token. Deprecated: the value is visible in process listings; use --token-file or --stdin")
+	addSecretInputFlags(hypervisorAgentCmd, &hvSecretIn)
 	hypervisorAgentCmd.Flags().StringVar(&hvSpotID, "spot-id", "", "Unique identifier for this hypervisor host (required) — its own identity, not any guest's")
 	hypervisorAgentCmd.Flags().IntVar(&hvConsolePort, "console-port", 8082, "Local port to advertise through the tunnel and listen on for console requests")
 	hypervisorAgentCmd.Flags().StringVar(&hvConsoleToken, "console-token", "", "Pre-shared token a caller must present to open a console (or CONTAINARIUM_CONSOLE_TOKEN env) — a separate, narrower credential from --token")
@@ -84,12 +86,16 @@ func runHypervisorAgent(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--vbox-console-dir is required")
 	}
 
-	tunnelToken := hvTunnelToken
+	hvSecretIn.Token = hvTunnelToken
+	tunnelToken, err := resolveSecretInput(cmd, "token", &hvSecretIn)
+	if err != nil {
+		return err
+	}
 	if tunnelToken == "" {
 		tunnelToken = os.Getenv("CONTAINARIUM_TUNNEL_TOKEN")
 	}
 	if tunnelToken == "" {
-		return fmt.Errorf("--token or CONTAINARIUM_TUNNEL_TOKEN is required")
+		return fmt.Errorf("--token-file, --stdin or CONTAINARIUM_TUNNEL_TOKEN is required")
 	}
 
 	pins, err := resolveSentinelPins(hvSentinelPin)
