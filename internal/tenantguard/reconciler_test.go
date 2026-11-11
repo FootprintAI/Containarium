@@ -510,6 +510,48 @@ func TestPrepare_UnsupportedHostIsFailOpen(t *testing.T) {
 	}
 }
 
+// #3521: the fail-open create path must leave a degraded status behind, and
+// the status must clear once the host can carry NIC ACLs again.
+func TestPrepare_UnsupportedHostReportsIsolationDegraded(t *testing.T) {
+	f := twoTenantHost()
+	f.firewall = "xtables"
+	r := NewReconciler(f, enforceCfg())
+	if r.Status().IsolationDegraded {
+		t.Fatal("degraded before any check")
+	}
+	if err := r.Prepare(context.Background(), "cld-new", "org-new"); err != nil {
+		t.Fatalf("Prepare must stay fail-open: %v", err)
+	}
+	if !r.Status().IsolationDegraded {
+		t.Error("Prepare on an unsupported host did not report isolation degraded")
+	}
+
+	f.firewall = "nftables"
+	if err := r.Prepare(context.Background(), "cld-new", "org-new"); err != nil {
+		t.Fatalf("Prepare on a supported host: %v", err)
+	}
+	if r.Status().IsolationDegraded {
+		t.Error("degraded not cleared by Prepare on a supported host")
+	}
+}
+
+func TestReconcile_IsolationDegradedFollowsSupport(t *testing.T) {
+	f := twoTenantHost()
+	f.noBridgeACL = true
+	r := NewReconciler(f, enforceCfg())
+	_ = r.ReconcileOnce(context.Background())
+	if !r.Status().IsolationDegraded {
+		t.Error("pass on an unsupported host did not report isolation degraded")
+	}
+	f.noBridgeACL = false
+	if err := r.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("pass on a supported host: %v", err)
+	}
+	if r.Status().IsolationDegraded {
+		t.Error("degraded not cleared by a pass on a supported host")
+	}
+}
+
 func TestReconcile_ACLWriteFailureIsPerTenant(t *testing.T) {
 	f := twoTenantHost()
 	r := NewReconciler(f, enforceCfg())
