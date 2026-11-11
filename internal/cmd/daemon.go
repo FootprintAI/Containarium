@@ -46,6 +46,7 @@ var (
 	daemonAddress          string
 	daemonPort             int
 	daemonHTTPPort         int
+	restTLSTerminator      bool
 	runJournalRetention    time.Duration
 	runCheckoutMaxAge      time.Duration
 	sshAuthzMaxKeyAge      time.Duration
@@ -162,6 +163,8 @@ func init() {
 
 	// HTTP/REST settings
 	daemonCmd.Flags().IntVar(&daemonHTTPPort, "http-port", 8080, "HTTP/REST port to listen on")
+	daemonCmd.Flags().BoolVar(&restTLSTerminator, "rest-tls-terminator", false,
+		"Declare that an external TLS terminator (reverse proxy or load balancer) sits in front of the HTTP/REST listener. The listener itself serves plain HTTP; without this flag a non-loopback bind logs a startup warning (#3522)")
 	daemonCmd.Flags().DurationVar(&runJournalRetention, "run-journal-retention", server.DefaultRunJournalRetention,
 		"How long a run's journal (/var/log/agent-runtime/runs/<run_id>) stays on an agent box before the daemon's sweep removes it")
 	daemonCmd.Flags().DurationVar(&runCheckoutMaxAge, "run-checkout-max-age", server.DefaultRunCheckoutMaxAge,
@@ -673,6 +676,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		HTTPPort:            daemonHTTPPort,
 		EnableREST:          enableREST,
 		StartupListener:     early.releaseUnlessServing(enableREST, daemonHTTPPort),
+		RESTTLSTerminator:   restTLSTerminator,
 		JWTSecret:           finalJWTSecret,
 		SwaggerDir:          swaggerDir,
 		EnableAppHosting:    enableAppHosting,

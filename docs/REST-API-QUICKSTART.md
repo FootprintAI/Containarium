@@ -309,6 +309,25 @@ chown root:root /etc/containarium/jwt.secret
 
 ### 2. Use HTTPS in Production
 
+The REST listener (`--http-port`, default 8080) serves **plain HTTP** on all
+interfaces; the daemon does not terminate TLS on it (`--mtls` covers only the
+external gRPC listener). In production, put a TLS terminator in front of it
+and declare it with `--rest-tls-terminator`:
+
+```bash
+containariumd daemon --rest --rest-tls-terminator --jwt-secret-file /etc/containarium/jwt.secret
+```
+
+Until a terminator is declared, a non-loopback bind logs this at startup:
+
+```
+Warning: the HTTP/REST listener on [::]:8080 serves plain HTTP (no TLS) on a non-loopback address. Put a TLS terminator (reverse proxy or load balancer) in front of it and start the daemon with --rest-tls-terminator to declare it, or keep this port off untrusted networks
+```
+
+The flag only states that a terminator is there; it does not change what the
+listener serves, so set it only when one really is. A loopback bind never
+warns.
+
 Use a reverse proxy (nginx, caddy) with TLS:
 
 ```nginx

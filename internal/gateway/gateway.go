@@ -47,6 +47,7 @@ type GatewayServer struct {
 	certsDir               string                                          // Optional: for mTLS connection to gRPC server
 	internalDialer         func(context.Context, string) (net.Conn, error) // in-process transport to the gRPC server (preferred)
 	startupListener        *StartupListener                                // HTTP port bound before the startup waits (#3130); nil = bind in Start
+	restTLSTerminator      bool                                            // an external TLS terminator fronts this listener (#3522)
 	readinessCheck         policyreadiness.CheckFunc                       // in-process core Postgres startup readiness (#3044)
 	caddyCertDir           string                                          // Optional: Caddy certificate directory for /certs endpoint
 	grafanaBackendURL      string                                          // Optional: internal Grafana URL for reverse proxy (e.g., "http://10.0.3.229:3000")
@@ -206,6 +207,13 @@ func (gs *GatewayServer) SetInternalDialer(dial func(context.Context, string) (n
 // before its startup waits (#3130), instead of binding the port itself.
 func (gs *GatewayServer) SetStartupListener(sl *StartupListener) {
 	gs.startupListener = sl
+}
+
+// SetRESTTLSTerminator records whether an external TLS terminator sits in
+// front of the REST listener (--rest-tls-terminator). It only silences the
+// plain-HTTP startup warning; the listener serves plain HTTP either way.
+func (gs *GatewayServer) SetRESTTLSTerminator(declared bool) {
+	gs.restTLSTerminator = declared
 }
 
 // SetGrafanaBackendURL sets the internal Grafana URL for the reverse proxy
@@ -1057,6 +1065,14 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 	log.Printf("Web UI available at http://localhost%s/webui/", addr)
 	log.Printf("Swagger UI available at http://localhost%s/swagger-ui/", addr)
 	log.Printf("OpenAPI spec available at http://localhost%s/swagger.json", addr)
+
+	boundAddr := addr
+	if gs.startupListener != nil {
+		boundAddr = gs.startupListener.Addr().String()
+	}
+	if w := RESTTLSWarning(boundAddr, gs.restTLSTerminator); w != "" {
+		log.Print(w)
+	}
 
 	if gs.startupListener != nil {
 		// #3130: the port has been bound (answering "degraded") since
