@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/collaborator"
+	"github.com/footprintai/containarium/pkg/core/naming"
 	"github.com/footprintai/containarium/pkg/core/ospkg"
 	"github.com/footprintai/containarium/pkg/core/ostype"
 )
@@ -379,7 +380,12 @@ func isValidCollaboratorUsername(username string) bool {
 
 	// Cannot start with digit or dash
 	firstChar := rune(username[0])
-	return (firstChar < '0' || firstChar > '9') && firstChar != '-'
+	if (firstChar >= '0' && firstChar <= '9') || firstChar == '-' {
+		return false
+	}
+
+	// Shared naming rule: no "-container-" infix, no "-container" suffix (#3630).
+	return naming.ValidateTenantName(username) == nil
 }
 
 // SyncCollaboratorAccounts recreates jump server accounts for all collaborators.
