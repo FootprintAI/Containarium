@@ -99,7 +99,7 @@ func runPolicyReq(t *testing.T, level string, req *pb.StartBoxRunRequest) policy
 	if req.Prompt == "" && req.Command == "" {
 		req.Prompt = "do it"
 	}
-	_, r.err = s.StartBoxRun(adminCtx(), req)
+	_, r.err = s.StartBoxRun(adminCtx(), runTokenFor(s, req))
 	return r
 }
 
@@ -622,7 +622,7 @@ func TestStartBoxRun_CommandPolicy_SetupFailureRestoresTheRotatedRun(t *testing.
 			return "", nil
 		},
 	}
-	_, err := s.StartBoxRun(adminCtx(), &pb.StartBoxRunRequest{Username: "alice", Prompt: "p", RunName: "fix-1", CommandPolicy: withPolicy("make lint")})
+	_, err := s.StartBoxRun(adminCtx(), runTokenFor(s, &pb.StartBoxRunRequest{Username: "alice", Prompt: "p", RunName: "fix-1", CommandPolicy: withPolicy("make lint")}))
 	if err == nil {
 		t.Fatal("a failed audit setup must refuse the run")
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/footprintai/containarium/internal/agentbox"
 	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/internal/coderun/engine"
+	"github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/internal/runhook"
 	corecontainer "github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/toolchain"
@@ -155,6 +156,10 @@ type boxRunSpawn struct {
 	// already shown to exist). Empty or equal to home keeps the home, entered
 	// best-effort as before; any other value must be entered or the spawn fails.
 	cwd string
+	// runToken, when set, is written to <name>.token (0600, owned by the run
+	// user), exported as CONTAINARIUM_JWT_TOKEN_FILE for the run, and removed
+	// when the run exits. Empty for a run with no token.
+	runToken string
 	// prelaunch runs before the engine is launched (the session-directory
 	// snapshot a fresh run's discovery compares against). Empty for none.
 	prelaunch string
@@ -209,6 +214,8 @@ func boxRunSpawnPrepareScript(sp boxRunSpawn) string {
 	sessionPath := dir + "/" + name + ".session"
 	toolsPath := dir + "/" + name + ".tools"
 	toolsTmp := toolsPath + ".tmp"
+	tokenPath := boxRunTokenPath(name)
+
 	script := "set -e\n" +
 		"d=" + q(dir) + "\n" +
 		"mkdir -p \"$d\"\n" +
@@ -218,7 +225,13 @@ func boxRunSpawnPrepareScript(sp boxRunSpawn) string {
 		script += ": > " + q(stderrPath) + "\n" +
 			"chmod 600 " + q(stderrPath) + " 2>/dev/null || true\n"
 	}
-	script += "rm -f " + q(exitPath) + " " + q(sessionPath) + " " + q(sessionPath+".snap") + " " + q(toolsPath) + " " + q(toolsTmp) + " " + q(toolsTmp+".e.") + "*\n"
+	// A run without a token clears any stale token of the same name. A run with
+	// one must not: its token was installed just before this script ran.
+	tokenStale := ""
+	if sp.runToken == "" {
+		tokenStale = "rm -f " + q(tokenPath) + "\n"
+	}
+	script += "rm -f " + q(exitPath) + " " + q(sessionPath) + " " + q(sessionPath+".snap") + " " + q(toolsPath) + " " + q(toolsTmp) + " " + q(toolsTmp+".e.") + "*\n" + tokenStale
 	if sp.runDir() == sp.home {
 		script += "cd " + q(sp.home) + " 2>/dev/null || true\n"
 	} else {
@@ -253,10 +266,17 @@ func boxRunSpawnInner(sp boxRunSpawn) string {
 	// run's own shell, so it is written whatever the engine's exit status and costs no
 	// model tokens. It lands BEFORE the exit sidecar, so a reader that sees the run
 	// finished also sees its tools.
-	return boxRunToolsPreProbe(toolsTmp) + "( " + sp.command + " ) " + redirect + "; __cx=$?; " +
+	tokenPath := boxRunTokenPath(name)
+	inner := boxRunToolsPreProbe(toolsTmp) + "( " + sp.command + " ) " + redirect + "; __cx=$?; " +
 		boxRunToolsPostProbe(toolsTmp, toolsPath) +
+		tokenRemoval(sp.runToken, tokenPath) +
 		"printf '%s %s' \"$__cx\" \"$(date -u +%s)\" > " + q(exitPath+".tmp") + " 2>/dev/null && " +
 		"mv -f " + q(exitPath+".tmp") + " " + q(exitPath) + "; exit $__cx"
+	if sp.runToken != "" {
+		// The engine and the credential helper read the run's own token file.
+		inner = "export " + config.EnvJWTTokenFile + "=" + q(tokenPath) + "; " + inner
+	}
+	return inner
 }
 
 // boxRunSupervisedLaunchScript runs as root: it starts the root-owned
@@ -442,6 +462,10 @@ func (s *ContainerServer) boxRunLockFor(key string) *sync.Mutex {
 // StartBoxRun starts (or resumes) a coding-agent run on a box with no SSH
 // client needed (#2193).
 func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRequest) (*pb.StartBoxRunResponse, error) {
+	// Refused before any side effect: a bad token never reaches the box.
+	if err := validateRunToken(req.GetRunToken()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	if err := validateBoxRunOwner(req.GetUsername()); err != nil {
 		return nil, err
 	}
@@ -621,6 +645,9 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"%q has no tool-access level recorded; command_policy needs one", req.GetUsername())
 	}
+	if err := requireRunTokenForRunUser(req, level); err != nil {
+		return nil, err
+	}
 
 	// Lazily attach the release to old boxes before rotating any previous run.
 	// Only BUILD_TOOLS requires it; the other levels keep working on hosts
@@ -713,7 +740,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		command += policy.commandFlags()
 	}
 
-	sp := boxRunSpawn{dir: dir, name: name, command: command, home: home, cwd: cwd, structured: req.GetStructuredOutput()}
+	sp := boxRunSpawn{dir: dir, name: name, command: command, home: home, cwd: cwd, structured: req.GetStructuredOutput(), runToken: req.GetRunToken()}
 	sidecar := dir + "/" + name + ".session"
 	switch {
 	case req.GetSessionId() != "":
@@ -736,8 +763,12 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		}
 	}
 
+	if err := s.installRunToken(ctx, box, runAs, name, req.GetRunToken()); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "install run token for %q on %q: %v", name, req.GetUsername(), err)
+	}
 	out, err := spawnBoxRun(startExec, listExec, box, runAs, sp, req.GetCommandPolicy() != nil)
 	if err != nil {
+		discardRunToken(startExec, box, runAs, name, req.GetRunToken())
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
 	}
 	pidStr, boot, found := strings.Cut(strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]), " ")
@@ -803,6 +834,9 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"%q has no tool-access level recorded; command_policy needs one", req.GetUsername())
 	}
+	if err := requireRunTokenForRunUser(req, level); err != nil {
+		return nil, err
+	}
 	ensureTools := s.boxRunEnsureToolchain
 	if ensureTools == nil && s.manager != nil {
 		ensureTools = s.manager.EnsureManagedToolchains
@@ -855,8 +889,12 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 		}
 		command = boxRunPolicyCommandLine(name, int(req.GetTimeoutSeconds()))
 	}
-	out, err := spawnBoxRun(startExec, listExec, box, runAs, boxRunSpawn{dir: dir, name: name, command: command, home: home, cwd: cwd}, req.GetCommandPolicy() != nil)
+	if err := s.installRunToken(ctx, box, runAs, name, req.GetRunToken()); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "install run token for %q on %q: %v", name, req.GetUsername(), err)
+	}
+	out, err := spawnBoxRun(startExec, listExec, box, runAs, boxRunSpawn{dir: dir, name: name, command: command, home: home, cwd: cwd, runToken: req.GetRunToken()}, req.GetCommandPolicy() != nil)
 	if err != nil {
+		discardRunToken(startExec, box, runAs, name, req.GetRunToken())
 		return nil, status.Errorf(codes.Unavailable, "start run %q on %q: %v", name, req.GetUsername(), err)
 	}
 	pidStr, boot, found := strings.Cut(strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]), " ")
@@ -900,6 +938,10 @@ const (
 	DaemonCapBoxRunStructuredOutput = "box_run_structured_output"
 	// DaemonCapBoxRunModel: StartBoxRunRequest.model and BoxRun.model (#3259).
 	DaemonCapBoxRunModel = "box_run_model"
+
+	// DaemonCapBoxRunToken: StartBoxRunRequest.run_token is honoured: the run
+	// gets a per-run token file and no longer relies on a staged box principal.
+	DaemonCapBoxRunToken = "box_run_token"
 	// DaemonCapBoxRunCommand: StartBoxRunRequest.command and timeout_seconds (#3322).
 	DaemonCapBoxRunCommand = "box_run_command"
 	// DaemonCapRunUsage: BoxRun.usage, RunAgentSkillResponse.usage and CrewRun.usage (#3467).
@@ -914,7 +956,7 @@ const (
 
 // daemonCapabilities is the list GetSystemInfo reports.
 func daemonCapabilities() []string {
-	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxRunCommandPolicy, DaemonCapBoxRunWorkdir, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream}
+	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunToken, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxRunCommandPolicy, DaemonCapBoxRunWorkdir, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream}
 }
 
 // boxRunNameCollidesWithDerivedFile reports whether name would alias a file or
@@ -978,4 +1020,40 @@ func validBoxRunModel(id string) bool { return boxRunModelPattern.MatchString(id
 // whose usage the engine then reports cumulatively (#3467).
 func boxRunResumed(req *pb.StartBoxRunRequest) bool {
 	return req.GetSessionId() != "" || req.GetContinueSession()
+}
+
+// requireRunTokenForRunUser refuses a run as the unprivileged run user (a box
+// with a recorded tool-access level, engine and command mode alike) that
+// carries no per-run token (#3581). The box principal is no longer copied into
+// the run user's home, so such a run would have no platform credential. It is
+// called once the level is known to be enforceable and before anything on the
+// box is changed. A run as the box owner (no level) is not affected.
+func requireRunTokenForRunUser(req *pb.StartBoxRunRequest, level string) error {
+	if level == "" || req.GetRunToken() != "" {
+		return nil
+	}
+	return status.Errorf(codes.FailedPrecondition,
+		"%q has a tool-access level recorded, so its runs start as the unprivileged run user and must carry a per-run token: "+
+			"set StartBoxRunRequest.run_token (capability %s). The box principal is no longer copied into the run user's home; "+
+			"the client that starts the run must be upgraded to send one",
+		req.GetUsername(), DaemonCapBoxRunToken)
+}
+
+// tokenRemoval is the exit-path cleanup for a run's token file, placed in the
+// run's own shell after the engine exits. Empty when the run has no token.
+func tokenRemoval(token, tokenPath string) string {
+	if token == "" {
+		return ""
+	}
+	return "rm -f " + shellSingleQuote(tokenPath) + "; "
+}
+
+// discardRunToken removes a run's token after its spawn failed, so an
+// installed token never outlives a run that never started. Best effort: the
+// spawn's own error is what the caller reports.
+func discardRunToken(startExec boxRunStartFunc, box, runAs, name, token string) {
+	if token == "" {
+		return
+	}
+	_, _ = startExec(box, runAs, "rm -f "+shellSingleQuote(boxRunTokenPath(name))+"\n")
 }
