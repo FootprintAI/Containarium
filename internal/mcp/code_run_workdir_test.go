@@ -23,6 +23,16 @@ func TestCodeRunTool_NonCanonicalWorkdirIsRefusedBeforeConnecting(t *testing.T) 
 	}
 }
 
+// A workdir that is present but not a string is refused, not read as the home.
+func TestCodeRunTool_NonStringWorkdirIsRefused(t *testing.T) {
+	for _, bad := range []interface{}{42, true, []interface{}{"a"}, map[string]interface{}{}} {
+		_, err := handleCodeRun(nil, map[string]interface{}{"box": "alice", "prompt": "fix the bug", "workdir": bad})
+		if err == nil || !strings.Contains(err.Error(), "`workdir` must be a string") {
+			t.Errorf("workdir %v: err = %v, want a type refusal", bad, err)
+		}
+	}
+}
+
 // The resolved directory reaches process_start as its cwd, through the shared
 // start function.
 func TestCodeRunTool_StartsInTheResolvedWorkdir(t *testing.T) {

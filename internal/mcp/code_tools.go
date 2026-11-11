@@ -110,7 +110,14 @@ func handleCodeRun(client API, args map[string]interface{}) (string, error) {
 	name := codeRunNameArg(args)
 	sessionID := strings.TrimSpace(getStringArg(args, "session_id", ""))
 	// #3613: the rule `code run --workdir` applies, refused before connecting.
-	workdir := getStringArg(args, "workdir", "")
+	// A present non-string value is refused, not read as the home.
+	var workdir string
+	if raw, present := args["workdir"]; present && raw != nil {
+		var ok bool
+		if workdir, ok = raw.(string); !ok {
+			return "", fmt.Errorf("`workdir` must be a string")
+		}
+	}
 	if workdir != "" {
 		if _, err := coderun.CleanHomeRelPath("`workdir`", workdir); err != nil {
 			return "", err
