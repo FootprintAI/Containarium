@@ -30,6 +30,14 @@
 
 set -euo pipefail
 
+# create_keyfile PATH: write 32 random bytes to PATH, readable by its owner
+# only. umask 077 covers the file from its first byte (dd would otherwise
+# create it at the default umask); chmod 0400 then sets the final mode.
+create_keyfile() {
+    (umask 077; dd if=/dev/urandom of="$1" bs=32 count=1 status=none)
+    chmod 0400 "$1"
+}
+
 # ============================================================
 # Pinned versions — update these when upgrading
 # ============================================================
@@ -315,8 +323,7 @@ if [ ! -f /var/lib/incus/.initialized ]; then
         mkdir -p "$(dirname "$ZFS_ENCRYPTION_KEYFILE")"
         if [ ! -f "$ZFS_ENCRYPTION_KEYFILE" ]; then
             echo "  Generating ZFS encryption keyfile at $ZFS_ENCRYPTION_KEYFILE"
-            dd if=/dev/urandom of="$ZFS_ENCRYPTION_KEYFILE" bs=32 count=1 status=none
-            chmod 0400 "$ZFS_ENCRYPTION_KEYFILE"
+            create_keyfile "$ZFS_ENCRYPTION_KEYFILE"
             echo "  WARNING: back up $ZFS_ENCRYPTION_KEYFILE off-host. Loss = unrecoverable pool."
         else
             echo "  Reusing existing ZFS encryption keyfile at $ZFS_ENCRYPTION_KEYFILE"
