@@ -22,6 +22,16 @@
 
 set -euo pipefail
 
+# write_secret_unit PATH: stdin -> PATH with mode 0600. The unit carries the
+# tunnel token in ExecStart, so it must never be readable by other users.
+# umask 077 keeps a new file private from the first byte; the explicit chmod
+# also tightens a file that already existed (> keeps the old mode).
+write_secret_unit() {
+    local path="$1"
+    (umask 077; cat > "$path")
+    chmod 0600 "$path"
+}
+
 # Defaults
 SPOT_ID=""
 NETWORK_SUBNET="10.0.3.1/24"
@@ -147,7 +157,7 @@ if [[ -n "$PUBLIC_HOSTNAME" ]]; then
     # Tunnel must forward the public TLS port too so the sentinel can route SNI traffic into this primary.
     TUNNEL_PORTS="${TUNNEL_PORTS},${PUBLIC_PORT}"
 fi
-cat > /etc/systemd/system/containarium-tunnel.service <<TUNNEL
+write_secret_unit /etc/systemd/system/containarium-tunnel.service <<TUNNEL
 [Unit]
 Description=Containarium Tunnel Client (GPU Spot)
 Documentation=https://github.com/footprintai/Containarium
