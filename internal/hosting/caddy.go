@@ -164,10 +164,11 @@ func (m *CaddyManager) InstallCaddy(ctx context.Context) error {
 		return fmt.Errorf("no module defined for provider: %s", m.config.Provider)
 	}
 
-	buildDir := "/tmp/caddy-build"
-	if err := os.MkdirAll(buildDir, 0755); err != nil { //nolint:gosec // G301: ephemeral build dir, no secrets
+	buildDir, err := newCaddyBuildDir()
+	if err != nil {
 		return fmt.Errorf("create build dir: %w", err)
 	}
+	defer func() { _ = os.RemoveAll(buildDir) }()
 
 	// #nosec G204 -- args are a DNS-provider module name resolved from config,
 	// compile-time-constant module paths, and the configured output path; no
@@ -291,7 +292,7 @@ Requires=network-online.target
 Type=notify
 User=caddy
 Group=caddy
-ExecStart={{.CaddyBin}} run --environ --config {{.Caddyfile}}
+ExecStart={{.CaddyBin}} run --config {{.Caddyfile}}
 ExecReload={{.CaddyBin}} reload --config {{.Caddyfile}} --force
 TimeoutStopSec=5s
 LimitNOFILE=1048576
@@ -305,11 +306,17 @@ Environment={{.EnvVar}}={{.Credential}}
 WantedBy=multi-user.target
 `
 
-// WriteSystemdService creates the Caddy systemd service file
-func (m *CaddyManager) WriteSystemdService() error {
+// newCaddyBuildDir creates a private (0700), unpredictably named directory for
+// the xcaddy build. The caller removes it. (#3631)
+func newCaddyBuildDir() (string, error) {
+	return os.MkdirTemp("", "caddy-build-")
+}
+
+// renderSystemdUnit renders the Caddy systemd unit text.
+func (m *CaddyManager) renderSystemdUnit() (string, error) {
 	tmpl, err := template.New("systemd").Parse(systemdTemplate)
 	if err != nil {
-		return fmt.Errorf("parse template: %w", err)
+		return "", fmt.Errorf("parse template: %w", err)
 	}
 
 	data := struct {
@@ -324,14 +331,28 @@ func (m *CaddyManager) WriteSystemdService() error {
 		Credential: m.config.ProviderCredential,
 	}
 
+	var buf strings.Builder
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("execute template: %w", err)
+	}
+	return buf.String(), nil
+}
+
+// WriteSystemdService creates the Caddy systemd service file
+func (m *CaddyManager) WriteSystemdService() error {
+	unit, err := m.renderSystemdUnit()
+	if err != nil {
+		return err
+	}
+
 	f, err := os.Create(DefaultCaddyService)
 	if err != nil {
 		return fmt.Errorf("create service file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
-	if err := tmpl.Execute(f, data); err != nil {
-		return fmt.Errorf("execute template: %w", err)
+	if _, err := f.WriteString(unit); err != nil {
+		return fmt.Errorf("write service file: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close service file: %w", err)
