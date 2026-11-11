@@ -12,6 +12,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/agentengine"
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/internal/boxlogs"
 	"github.com/footprintai/containarium/internal/releasecheck"
 	"github.com/footprintai/containarium/internal/runlog"
 	"github.com/footprintai/containarium/internal/safecast"
@@ -19,6 +20,7 @@ import (
 	"github.com/footprintai/containarium/pkg/core/ostype"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // ephemeralKeyDir returns the directory the MCP server writes ephemeral
@@ -1241,6 +1243,31 @@ func (s *Server) registerTools() {
 			Handler: handleCodeLogs,
 		},
 		{
+			Name: "box_logs",
+			Description: "Read one window of a box's logs through the daemon API, no SSH needed: " +
+				"its systemd journal and the logs of the docker containers running inside it, " +
+				"merged oldest first, each line labelled journal/<unit> or container/<name>. " +
+				"Returns a cursor; pass it back to read on with no line repeated or skipped " +
+				"(more=true means lines are already waiting). Without cursor or since it starts " +
+				"with the last 100 lines. A stopped box, or one whose containers run on podman " +
+				"or rootless docker, is an error naming why. Same reader as `containarium logs`.",
+			InputSchema: map[string]interface{}{
+				"type":     "object",
+				"required": []string{"box"},
+				"properties": map[string]interface{}{
+					"box":            map[string]interface{}{"type": "string", "description": "Box (owner username)."},
+					"cursor":         map[string]interface{}{"type": "string", "description": "Cursor from a previous call; resumes right after it. Not with since or tail."},
+					"since":          map[string]interface{}{"type": "string", "description": "RFC 3339 time: start with lines received at or after it."},
+					"tail":           map[string]interface{}{"type": "number", "description": "Start with only the last N lines (0-1000)."},
+					"units":          map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Only these systemd units (\"nginx\" means nginx.service). Unknown names are an error listing the valid ones."},
+					"containers":     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Only these containers, by name. Unknown names are an error listing the valid ones."},
+					"max_lines":      map[string]interface{}{"type": "number", "description": "Most lines in the window (default 200, at most 1000)."},
+					"follow_seconds": map[string]interface{}{"type": "number", "description": "Wait up to this many seconds (0-10) for a line when none is ready."},
+				},
+			},
+			Handler: handleBoxLogs,
+		},
+		{
 			Name: "code_pending",
 			Description: "List the open permission requests of a code run started with " +
 				"--approvals ask: request id, age, time left before it expires into a deny, " +
@@ -1982,6 +2009,7 @@ func toolScopeAssignments() map[string]string {
 		"code_status":          auth.ScopeCodeWrite,
 		"code_runs":            auth.ScopeSSHWrite,
 		"code_logs":            auth.ScopeSSHWrite,
+		"box_logs":             auth.ScopeSSHWrite, // #3643: TailBoxLogs needs ssh:write, like TailBoxRunLog
 		"code_pending":         auth.ScopeSSHWrite,
 		"code_answer":          auth.ScopeCodeAnswer, // #3191: the daemon also needs ssh:write
 		"code_stop":            auth.ScopeCodeWrite,
@@ -3639,6 +3667,45 @@ func handleCodeLogs(client API, args map[string]interface{}) (string, error) {
 	fmt.Fprintf(&b, "end_offset: %d\nended: %v\ntruncated: %v\nstderr_dropped: %v\n---\n",
 		resp.GetEndOffset(), resp.GetEnded(), resp.GetTruncated(), resp.GetStderrDropped())
 	b.Write(resp.GetChunk())
+	return b.String(), nil
+}
+
+// handleBoxLogs is a thin wrapper over boxlogs.Fetch, the reader
+// `containarium logs` copies through: one window plus its cursor (#3643).
+func handleBoxLogs(client API, args map[string]interface{}) (string, error) {
+	req := &pb.TailBoxLogsRequest{
+		Username:   strings.TrimSpace(getStringArg(args, "box", "")),
+		Cursor:     getStringArg(args, "cursor", ""),
+		Units:      getStringSliceArg(args, "units"),
+		Containers: getStringSliceArg(args, "containers"),
+	}
+	if req.Username == "" {
+		return "", fmt.Errorf("`box` is required")
+	}
+	if s := strings.TrimSpace(getStringArg(args, "since", "")); s != "" {
+		t, err := time.Parse(time.RFC3339Nano, s)
+		if err != nil {
+			return "", fmt.Errorf("`since` must be an RFC 3339 time: %w", err)
+		}
+		req.Since = timestamppb.New(t)
+	}
+	if v, ok := getIntArg(args, "tail"); ok {
+		req.Tail = int32(min(max(v, 0), boxlogs.MaxLinesLimit)) // #nosec G115 -- clamped to 0..1000
+	}
+	if v, ok := getIntArg(args, "max_lines"); ok {
+		req.MaxLines = int32(min(max(v, 0), boxlogs.MaxLinesLimit)) // #nosec G115 -- clamped to 0..1000
+	}
+	if v, ok := getIntArg(args, "follow_seconds"); ok {
+		req.FollowSeconds = int32(min(max(v, 0), boxlogs.FollowSeconds)) // #nosec G115 -- clamped to 0..10
+	}
+	resp, err := boxlogs.Fetch(client, req)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	if err := boxlogs.WriteWindow(&b, resp); err != nil {
+		return "", err
+	}
 	return b.String(), nil
 }
 

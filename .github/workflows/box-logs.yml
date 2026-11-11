@@ -4,13 +4,17 @@ name: box-logs
 # internal/boxlogs. There is no repo-wide `go test ./...` lane, so nothing
 # else runs this package. The script tests run the real collector under sh
 # against a fake box (fake journalctl/docker, a fake /proc and docker socket),
-# so this must be Linux. The TailBoxLogs handler tests run in server-race.
+# so this must be Linux. The TailBoxLogs handler tests run in server-race and
+# the `containarium logs` tests in cli-split-gates; the MCP box_logs tool
+# tests (internal/mcp, also in no other lane) run here by name.
 
 on:
   push:
     branches: [main]
     paths:
       - 'internal/boxlogs/**'
+      - 'internal/mcp/**'
+      - 'internal/client/**'
       - 'proto/containarium/v1/box_logs.proto'
       - '.github/workflows/box-logs.yml'
   # No `branches:` filter on pull_request, deliberately (#1215): it would give
@@ -18,6 +22,8 @@ on:
   pull_request:
     paths:
       - 'internal/boxlogs/**'
+      - 'internal/mcp/**'
+      - 'internal/client/**'
       - 'proto/containarium/v1/box_logs.proto'
       - '.github/workflows/box-logs.yml'
 
@@ -50,3 +56,10 @@ jobs:
           # The script tests skip when a tool or a unix socket is missing;
           # on this runner they must run.
           if grep -q -- '--- SKIP' boxlogs.out; then echo "box-logs tests skipped"; exit 1; fi
+
+      - name: MCP box_logs tool makes the CLI's RPC (must exist and pass)
+        run: |
+          set -o pipefail
+          go test -race -count=1 -v -run 'TestBoxLogs_' ./internal/mcp/ | tee mcp.out
+          # -run matching nothing exits 0; require the four to have passed.
+          test "$(grep -c '^--- PASS: TestBoxLogs_' mcp.out)" = 4
