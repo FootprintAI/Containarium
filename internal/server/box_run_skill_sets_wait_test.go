@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/footprintai/containarium/internal/coderun"
 	"github.com/footprintai/containarium/pkg/core/sdlcskills"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -22,9 +23,13 @@ import (
 // the caller's cancellation, and an apply that only waits does not make runs
 // fail with the "installing" refusal.
 
-// heldRunCommand is what the held start runs: long enough to still be live when
-// a test applies right after, short enough that settleDetachedRuns is quick.
-const heldRunCommand = "sleep 2"
+// heldRunCommand is what the held start runs: it stays live until endFile
+// exists, so an apply that reads run records right after the start returns
+// still finds the run active however slow the machine is (#3557). The test
+// creates the file when it ends; the run's own timeout bounds a leak.
+func heldRunCommand(endFile string) string {
+	return "while [ ! -e " + coderun.ShellQuoteSingle(endFile) + " ]; do sleep 0.05; done"
+}
 
 // settleDetachedRuns waits, at the end of the test, until every run recorded in
 // logDir has written its exit sidecar. A started run is a setsid-detached
@@ -58,10 +63,19 @@ func settleDetachedRuns(t *testing.T, logDir string) {
 
 // holdFirstRunStart makes the first run start on s stop at its first user exec
 // until release is closed; later execs pass straight through. It returns once
-// the start is in flight.
+// the start is in flight. The run that start launches stays active until the
+// test ends (heldRunCommand).
 func holdFirstRunStart(t *testing.T, s *ContainerServer, runName string) (release chan struct{}, started chan error) {
 	t.Helper()
 	settleDetachedRuns(t, s.boxRunLogDir)
+	// Registered after settleDetachedRuns, so it runs first: the held run
+	// exits, then the settle wait sees its exit sidecar.
+	endRun := filepath.Join(t.TempDir(), "end-held-run")
+	t.Cleanup(func() {
+		if err := os.WriteFile(endRun, nil, 0o600); err != nil {
+			t.Errorf("end the held run: %v", err)
+		}
+	})
 	inStart, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	user := s.boxRunStartExec
@@ -75,7 +89,7 @@ func holdFirstRunStart(t *testing.T, s *ContainerServer, runName string) (releas
 	}
 	started = make(chan error, 1)
 	go func() {
-		_, err := s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{Username: "alice", Command: heldRunCommand, RunName: runName})
+		_, err := s.StartBoxRun(tenantCtx("alice"), &pb.StartBoxRunRequest{Username: "alice", Command: heldRunCommand(endRun), RunName: runName})
 		started <- err
 	}()
 	select {
@@ -237,7 +251,7 @@ func TestApplyBoxSkillSets_RefusesAsApplyInProgressWhileAnotherApplyHoldsTheGate
 	}
 	// Once the first apply returns, the gate is free and no apply is recorded:
 	// a stale flag would make every later cap refusal say APPLY_IN_PROGRESS.
-	if s.boxRunStarts.applyHeld("alice-container") {
+	if s.boxGateHolders.applyHeld("alice-container") {
 		t.Error("apply flag still set after the first apply returned")
 	}
 	unlock, err := s.lockBoxSkillSetGate(context.Background(), "alice-container")
@@ -287,6 +301,11 @@ func TestApplyBoxSkillSets_CapMessageWithNoRecordedHolderNamesNoStarts(t *testin
 	if !strings.Contains(msg, "No run start is recorded in flight") {
 		t.Errorf("message %q does not say no run start is recorded", msg)
 	}
+	// #3557: an apply can hold the gate unrecorded for an instant too, so the
+	// message must not promise that a retry finds the box free.
+	if strings.Contains(msg, "should find it free") {
+		t.Errorf("message %q promises a free box on retry", msg)
+	}
 	if *installs != 0 {
 		t.Errorf("installer ran %d times; the refused apply must change nothing", *installs)
 	}
@@ -322,16 +341,16 @@ func TestEnterBoxRunStart_ReleaseRemovesTheHolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s.boxRunStarts.names("alice-container"); len(got) != 1 || got[0] != "r1" {
+	if got := s.boxGateHolders.names("alice-container"); len(got) != 1 || got[0] != "r1" {
 		t.Fatalf("holders while held = %v, want [r1]", got)
 	}
 	release()
-	if got := s.boxRunStarts.names("alice-container"); len(got) != 0 {
+	if got := s.boxGateHolders.names("alice-container"); len(got) != 0 {
 		t.Errorf("holders after release = %v, want none", got)
 	}
-	s.boxRunStarts.mu.Lock()
-	defer s.boxRunStarts.mu.Unlock()
-	if _, ok := s.boxRunStarts.byBox["alice-container"]; ok {
+	s.boxGateHolders.mu.Lock()
+	defer s.boxGateHolders.mu.Unlock()
+	if _, ok := s.boxGateHolders.byBox["alice-container"]; ok {
 		t.Errorf("empty per-box holder map left behind")
 	}
 }

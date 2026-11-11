@@ -29,6 +29,9 @@ type tenantApplied struct {
 	// EgressIncomplete: an add or removal in the tenant's egress allow-list
 	// failed this pass, so the kernel list differs from the policy (#2983).
 	EgressIncomplete bool
+	// CompileFailed: the tenant's egress or deny rules failed to compile this
+	// pass, so its last good sets are held instead of its policy (#3518).
+	CompileFailed bool
 }
 
 // appliedSnapshot is the enforcer's answer for one tenant.
@@ -37,6 +40,9 @@ type appliedSnapshot struct {
 	Reconciled bool // at least one reconcile pass has applied the maps
 	Found      bool // the last pass saw a running box of this tenant
 	Tenant     tenantApplied
+	// SignaturesDegraded: the operator-signature store could not be read on the
+	// latest refresh, so the kernel holds the last good signature set (#3519).
+	SignaturesDegraded bool
 	// ReconciledAt is when the last completed pass ended; Interval is the
 	// enforcer's reconcile interval, which decides when that pass is stale.
 	ReconciledAt time.Time
@@ -88,6 +94,11 @@ func appliedFromPass(views []containerView, plan reconcilePlan, loaded map[int]b
 		a := out[name]
 		a.EgressIncomplete = true
 		out[name] = a
+	}
+	for _, f := range plan.compileFailed {
+		a := out[f.Tenant]
+		a.CompileFailed = true
+		out[f.Tenant] = a
 	}
 	return out
 }
@@ -161,6 +172,11 @@ func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool, now time
 	if kernelUnsupported {
 		st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_KERNEL_UNSUPPORTED)
 	}
+	// The signature set is host-wide, so this is said in every state once the
+	// enforcer runs (#3519).
+	if snap.Running && snap.SignaturesDegraded {
+		st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_OPERATOR_SIGNATURES_STALE)
+	}
 	switch {
 	case !snap.Running:
 		st.State = pb.NetworkPolicyAppliedState_NETWORK_POLICY_APPLIED_STATE_ENFORCER_NOT_RUNNING
@@ -194,6 +210,9 @@ func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool, now time
 		if snap.Found && a.EgressIncomplete {
 			st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE)
 		}
+		if snap.Found && a.CompileFailed {
+			st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_POLICY_COMPILE_FAILED)
+		}
 		return st
 	}
 	// LOADED only when every running box is covered; otherwise the modes are
@@ -216,6 +235,9 @@ func buildPolicyStatus(tenant string, snap appliedSnapshot, armed bool, now time
 	}
 	if a.EgressIncomplete {
 		st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_EGRESS_ALLOWLIST_INCOMPLETE)
+	}
+	if a.CompileFailed {
+		st.UncoveredPaths = append(st.UncoveredPaths, pb.NetworkPolicyUncoveredPath_NETWORK_POLICY_UNCOVERED_PATH_POLICY_COMPILE_FAILED)
 	}
 	return st
 }

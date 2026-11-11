@@ -1,10 +1,95 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/cloud"
+	"github.com/footprintai/containarium/pkg/core/incus"
+	"github.com/footprintai/containarium/pkg/core/incus/incustest"
 )
+
+// recordingRoutes is a routeLister that records Save calls.
+type recordingRoutes struct{ saved []*app.RouteRecord }
+
+func (r *recordingRoutes) ListByContainer(context.Context, string) ([]*app.RouteRecord, error) {
+	return nil, nil
+}
+func (r *recordingRoutes) Delete(context.Context, string) error { return nil }
+func (r *recordingRoutes) Save(_ context.Context, rec *app.RouteRecord) error {
+	r.saved = append(r.saved, rec)
+	return nil
+}
+
+// stampFailureFixture builds an actuator over a mock whose tenant-label stamp
+// always fails, holding one existing container in the given state with the
+// given (wrong or missing) tenant label.
+func stampFailureFixture(state, tenant string) (*cloudContainerActuator, *incustest.MockBackend, *recordingRoutes, *[]string) {
+	var calls []string
+	mock := incustest.NewMockBackend()
+	mock.Containers["cld-box"] = &incus.ContainerInfo{Name: "cld-box", State: state, Tenant: tenant, IPAddress: "10.0.0.5"}
+	mock.SetConfigFunc = func(string, string, string) error { return errors.New("incus unavailable") }
+	mock.StartContainerFunc = func(string) error { calls = append(calls, "start"); return nil }
+	mock.StopContainerFunc = func(string, bool) error { calls = append(calls, "stop"); return nil }
+	routes := &recordingRoutes{}
+	return &cloudContainerActuator{incus: mock, routes: routes}, mock, routes, &calls
+}
+
+var stampFailureSpec = cloud.ContainerSpec{
+	LocalName: "cld-box", OrgID: "org-1",
+	Routes: []cloud.RouteSpec{{Domain: "box.example.test", TargetPort: 8080, Protocol: "http"}},
+}
+
+func TestEnsureRunning_StampFailureStoppedContainerNotStartedNorRouted(t *testing.T) {
+	for _, tenant := range []string{"", "other-org"} { // missing and wrong label
+		a, mock, routes, calls := stampFailureFixture("Stopped", tenant)
+		err := a.EnsureRunning(context.Background(), stampFailureSpec)
+		if err == nil {
+			t.Errorf("tenant=%q: EnsureRunning returned nil, want an error", tenant)
+		}
+		if len(*calls) != 0 {
+			t.Errorf("tenant=%q: container was started/stopped: %v", tenant, *calls)
+		}
+		if len(routes.saved) != 0 {
+			t.Errorf("tenant=%q: routes applied despite failed stamp: %d", tenant, len(routes.saved))
+		}
+		if mock.Containers["cld-box"].State != "Stopped" {
+			t.Errorf("tenant=%q: state = %q, want Stopped", tenant, mock.Containers["cld-box"].State)
+		}
+	}
+}
+
+func TestEnsureRunning_StampFailureRunningContainerDegradedAndLeftRunning(t *testing.T) {
+	a, mock, routes, calls := stampFailureFixture("Running", "other-org")
+	err := a.EnsureRunning(context.Background(), stampFailureSpec)
+	if !errors.Is(err, cloud.ErrContainerDegraded) {
+		t.Errorf("EnsureRunning err = %v, want cloud.ErrContainerDegraded", err)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("running container was stopped/restarted: %v", *calls)
+	}
+	if mock.Containers["cld-box"].State != "Running" {
+		t.Errorf("state = %q, want Running", mock.Containers["cld-box"].State)
+	}
+	if len(routes.saved) != 0 {
+		t.Errorf("routes applied despite failed stamp: %d", len(routes.saved))
+	}
+}
+
+func TestEnsureRunning_CorrectLabelStillStartsAndRoutes(t *testing.T) {
+	a, _, routes, calls := stampFailureFixture("Stopped", "org-1") // label fine: stamp not attempted
+	if err := a.EnsureRunning(context.Background(), stampFailureSpec); err != nil {
+		t.Fatalf("EnsureRunning: %v", err)
+	}
+	if len(*calls) != 1 || (*calls)[0] != "start" {
+		t.Errorf("calls = %v, want [start]", *calls)
+	}
+	if len(routes.saved) != 1 {
+		t.Errorf("routes saved = %d, want 1", len(routes.saved))
+	}
+}
 
 func TestBuildContainerConfig(t *testing.T) {
 	cfg := buildContainerConfig(cloud.ContainerSpec{

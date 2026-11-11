@@ -257,6 +257,9 @@ type deployRecipeRequest struct {
 	// attestation carries enums and bytes, so it is encoded the way the
 	// grpc-gateway decodes it, not by encoding/json).
 	GuardrailInput json.RawMessage `json:"guardrail_input,omitempty"`
+	// SSHKeys are authorized at create time (#3514); omitted when empty so a
+	// key-less deploy's body is unchanged.
+	SSHKeys []string `json:"ssh_keys,omitempty"`
 }
 
 // provisionSkillBoxRequest is POST /v1/agent-skills/{skill_id}/provision-box

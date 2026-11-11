@@ -1,0 +1,162 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// Command allowlist and audit events for agent runs (#3582).
+//
+// A run started with StartBoxRunRequest.command_policy gets a pair of engine
+// hooks: one before each shell command (PreToolUse) and one after it
+// (PostToolUse, PostToolUseFailure). The pre hook classifies the command, may
+// widen the run's tool-access level for commands that match the allowlist,
+// refuses hard-denied and unmatched commands, and records a start event. The
+// post hook records the end event; for a start still open when the run ends
+// (the engine refused the command after the hook, or the run was killed), the
+// sink writes it. Events go to an append-only file inside the
+// box that only root can write; the hooks reach it through a root-run sink
+// process the daemon starts, never by writing the file themselves.
+
+// AgentCommandPolicy is the caller-supplied (org) policy for one run.
+message AgentCommandPolicy {
+  // Allowlist entries, each an argv glob: whitespace-separated elements, the
+  // first the executable name (matched exactly, no wildcard), every other a
+  // pattern where `*` matches any run of characters inside ONE argv element. An
+  // entry matches a command with exactly as many elements. A command that holds
+  // a shell operator, expansion or redirection never matches. A match lets the
+  // command run even when the run's tool-access level would not; hard denies
+  // still apply. At most 256 entries of at most 512 bytes each.
+  repeated string allow = 1;
+  // Regular expressions (RE2) added to the default redaction list. Any part of
+  // a logged argument that matches is replaced by "[REDACTED]". At most 64.
+  repeated string redact_patterns = 2;
+}
+
+// AgentRunApproval names the human approval a re-run carries: a command that
+// was refused ends its run, and an approval starts a NEW run with this set; it
+// never resumes the refused one.
+message AgentRunApproval {
+  // Opaque id of the approval, as the caller's approval record names it.
+  string approval_id = 1;
+  // Opaque id of the user who approved.
+  string approver_id = 2;
+}
+
+// AgentCommandClass is how the pre hook classified a command.
+enum AgentCommandClass {
+  AGENT_COMMAND_CLASS_UNSPECIFIED = 0;
+  // Within the run's tool-access level; the engine's own rules decide it.
+  AGENT_COMMAND_CLASS_LEVEL = 1;
+  // Outside the level, but matched an allowlist entry, so it was allowed.
+  AGENT_COMMAND_CLASS_ALLOWLISTED = 2;
+  // A hard deny matched (network client, git push, git remote, a git
+  // transport option); refused whatever the level or allowlist says.
+  AGENT_COMMAND_CLASS_HARD_DENIED = 3;
+  // Neither the level nor the allowlist matched; refused.
+  AGENT_COMMAND_CLASS_NOT_ALLOWED = 4;
+}
+
+// AgentCommandEventKind is the kind of one audit event.
+enum AgentCommandEventKind {
+  AGENT_COMMAND_EVENT_KIND_UNSPECIFIED = 0;
+  // Written before the command runs.
+  AGENT_COMMAND_EVENT_KIND_START = 1;
+  // Written when the command has finished, with its exit code, by the post
+  // hook (engine run) or the command hook (command mode). Also written by the
+  // sink when the run ends with a START that has no END, so every START has
+  // exactly one END: then outcome is NOT_RUN or UNKNOWN, close_reason says
+  // why, and there is no exit code.
+  AGENT_COMMAND_EVENT_KIND_END = 2;
+  // The command was refused and the run was told to stop.
+  AGENT_COMMAND_EVENT_KIND_BLOCKED = 3;
+}
+
+// AgentCommandCloseReason says why a command was refused and its run ended
+// (BLOCKED), or why the sink closed a START that got no END (END).
+enum AgentCommandCloseReason {
+  AGENT_COMMAND_CLOSE_REASON_UNSPECIFIED = 0;
+  // A hard deny matched.
+  AGENT_COMMAND_CLOSE_REASON_HARD_DENY = 1;
+  // Neither the level nor the allowlist matched (or the command could not be
+  // parsed).
+  AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED = 2;
+  // The start event could not be recorded, so the command was refused rather
+  // than run unaudited.
+  AGENT_COMMAND_CLOSE_REASON_AUDIT_UNAVAILABLE = 3;
+  // END written by the sink: the pre hook allowed or deferred the command, the
+  // engine then reported no result for it (no PostToolUse or
+  // PostToolUseFailure), and the run ended cleanly (its exit status is 0). The
+  // engine fires a post hook for every command it runs, success or failure, so
+  // this is a command the engine itself refused after the hook, for example by
+  // --restricted path confinement: it did not run. outcome is NOT_RUN. The
+  // run's exit status is recorded by a root process that is the run's parent
+  // (`agent-box run-supervise`), in a root-only directory, so the run user
+  // cannot write it; that the engine fires a post hook for every command it
+  // runs is the engine's behaviour, not a guarantee.
+  AGENT_COMMAND_CLOSE_REASON_ENGINE_REFUSED = 4;
+  // END written by the sink: the run ended with this command started and no
+  // end reported, and not cleanly (killed, timed out, crashed, a non-zero exit
+  // status, no exit status at all, or the sink itself was stopped). The command
+  // may have run in part. outcome is UNKNOWN.
+  AGENT_COMMAND_CLOSE_REASON_INTERRUPTED = 5;
+  // The command could not be resolved to the program it runs, so no rule can
+  // be applied to it: it is a compound line (operator, redirection, subshell),
+  // or holds an expansion the parser cannot evaluate (brace expansion, a glob
+  // in the executable word, ANSI-C quoting, arithmetic expansion), or nests a
+  // quoted shell command deeper than the supported depth. Refused as the
+  // hard denies cannot be proven to hold for it; no hard deny matched.
+  AGENT_COMMAND_CLOSE_REASON_UNRESOLVABLE = 6;
+}
+
+// AgentCommandOutcome says whether the command of an END ran.
+enum AgentCommandOutcome {
+  AGENT_COMMAND_OUTCOME_UNSPECIFIED = 0;
+  // The engine (post hook) or the command hook reported that it finished.
+  AGENT_COMMAND_OUTCOME_RAN = 1;
+  // It did not run (close_reason ENGINE_REFUSED).
+  AGENT_COMMAND_OUTCOME_NOT_RUN = 2;
+  // Unknown: the run was interrupted first (close_reason INTERRUPTED).
+  AGENT_COMMAND_OUTCOME_UNKNOWN = 3;
+}
+
+// AgentCommandEvent is one line of a run's audit file (protojson). Command
+// output and environment variables are never part of it.
+message AgentCommandEvent {
+  AgentCommandEventKind kind = 1;
+  // Stamped by the sink, not by the hook.
+  google.protobuf.Timestamp time = 2;
+  // The run's name and the daemon-chosen id of this start of it. Stamped by the
+  // sink from its own configuration.
+  string run_name = 3;
+  string run_id = 4;
+  // The engine's id for the tool call: pairs a START with its END.
+  string tool_use_id = 5;
+  // The command's arguments after redaction. Leading environment assignments
+  // (NAME=value) are dropped, never logged.
+  repeated string argv = 6;
+  AgentCommandClass class = 7;
+  // END only, and only when known; absent means unknown, never 0. For an engine
+  // run it comes from the engine's hook input: an exit-code field in
+  // tool_response when present; for PostToolUse without one, 0 (the engine
+  // fires PostToolUse only for exit status 0); for PostToolUseFailure, the
+  // number N when the error text begins with the line "Exit code N" (0-255),
+  // and absent otherwise. That text is the engine's display format, not a
+  // contract: if an engine release changes it, the code is recorded as absent,
+  // not guessed. Command mode records the shell's status.
+  optional int32 exit_code = 8;
+  // BLOCKED, and an END the sink wrote for a START without one.
+  AgentCommandCloseReason close_reason = 9;
+  // Set when the run is an approved re-run (attribution: who approved, which
+  // approval, and the event's time). Stamped by the sink.
+  AgentRunApproval approval = 10;
+  // END only: whether the command ran.
+  AgentCommandOutcome outcome = 11;
+  // The event's position in its run's feed: 1 for the first event the sink
+  // writes, then +1 for each. Assigned by the sink under its write lock,
+  // never by a client (a value a client sends is overwritten), and never
+  // reused: a sink restarted for the same run continues after the last event
+  // in the file. A reader that sees a jump knows it missed events.
+  uint64 seq = 12;
+}

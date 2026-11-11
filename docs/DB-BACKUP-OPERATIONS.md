@@ -84,8 +84,9 @@ Connection defaults target a per-container local Postgres: user
 `--db-user/--db-host/--db-port` as needed.
 
 The same operations are available as MCP tools (`create_backup`,
-`list_backups`, `restore_backup`, `verify_backup`, and `restore_box_backup`
-for a whole-box backup) and over REST
+`list_backups`, `restore_backup`, `verify_backup`, and, for a whole-box
+backup, `create_backup` with `scope: "box"` and `restore_box_backup`) and
+over REST
 (`/v1/backups`) — they
 all call the one `BackupService`, so an agent, a human shell, and CI have
 an identical surface. `delete` and `prune` are deliberately CLI/REST-only,

@@ -22,7 +22,7 @@ import (
 // injecting secret_env. Not the richer create options the user-facing
 // ContainerService offers — cloud-assigned boxes are minimal v1 workloads.
 type cloudContainerActuator struct {
-	incus *incus.Client
+	incus incus.Backend
 	// routes is the daemon's route store, read on every call so one installed
 	// after a degraded start is used (#3331); nil when the host has no route
 	// store (no Postgres/Caddy) → routes skipped.
@@ -60,10 +60,18 @@ func (a *cloudContainerActuator) EnsureRunning(ctx context.Context, spec cloud.C
 			return cerr
 		}
 	} else {
-		// Best-effort: a stamp failure here shouldn't block start/route
-		// convergence for an otherwise-healthy container — it retries next cycle.
+		// Fail closed: a container whose tenant label is missing or stale
+		// cannot be matched to its org by the network-policy enforcer, so do
+		// not start it or expose its routes until the stamp succeeds (the
+		// reconcile loop retries next cycle). An already-running container is
+		// left running — stopping it would turn a labelling fault into an
+		// outage — and reported degraded instead.
 		if terr := a.ensureTenantLabel(spec.LocalName, spec.OrgID, info.Tenant); terr != nil {
 			log.Printf("[cloud] stamp tenant label on %q: %v", spec.LocalName, terr)
+			if isRunning(info.State) {
+				return fmt.Errorf("stamp tenant label on %s: %w: %w", spec.LocalName, cloud.ErrContainerDegraded, terr)
+			}
+			return fmt.Errorf("stamp tenant label on %s: %w", spec.LocalName, terr)
 		}
 		if isRunning(info.State) {
 			a.applyRoutes(ctx, spec) // already running — still converge routes

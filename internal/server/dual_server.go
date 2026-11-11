@@ -108,6 +108,10 @@ type DualServerConfig struct {
 	// startup waits and answering /health "degraded" (#3130). The gateway
 	// takes it over; nil = the gateway binds HTTPPort itself.
 	StartupListener *gateway.StartupListener
+	// RESTTLSTerminator declares an external TLS terminator in front of the
+	// REST listener (--rest-tls-terminator); it silences the plain-HTTP
+	// startup warning for a non-loopback bind (#3522).
+	RESTTLSTerminator bool
 
 	// Authentication settings
 	JWTSecret string
@@ -217,6 +221,10 @@ type DualServerConfig struct {
 	// PlacementCPUAware ranks pool placement by peer CPU commitment (least
 	// committed wins) instead of first-healthy (#1029 direction 2).
 	PlacementCPUAware bool
+	// RequirePeerMTLS makes the plain-HTTP peer fallback an error: Start fails
+	// when peer calls exist but the peer-PKI bootstrap did not succeed (#3517).
+	// Off by default.
+	RequirePeerMTLS bool
 
 	// Sentinel primary registration (multi-pool routing). Empty PublicHostname
 	// disables registration; the daemon still works as a single-pool primary.
@@ -2411,6 +2419,7 @@ skipAppHosting:
 		if config.StartupListener != nil {
 			gatewayServer.SetStartupListener(config.StartupListener)
 		}
+		gatewayServer.SetRESTTLSTerminator(config.RESTTLSTerminator)
 
 		// Model-gateway (#674 productionization of #737): when the daemon holds a
 		// provider API key — or an operator registered an OpenAI-compatible
@@ -3325,12 +3334,18 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		// not fatal — the daemon stays on plain HTTP (pre-0.5
 		// behavior) and logs the reason.
 		if err := ds.peerPool.BootstrapPKI(ctx); err != nil {
+			if serr := ds.peerPool.EnforceStrictPeerTLS(ds.config.RequirePeerMTLS, err); serr != nil {
+				return serr
+			}
 			ds.peerPool.LogPlainHTTPOnce(err)
 		} else if ds.peerPool.PeerMTLSEnabled() {
 			ds.peerPool.StartCertRenewal(ctx)
 		} else {
 			// Bootstrap skipped (no sentinel URL or HMAC secret): same
 			// plain-HTTP state, made visible instead of silent.
+			if serr := ds.peerPool.EnforceStrictPeerTLS(ds.config.RequirePeerMTLS, nil); serr != nil {
+				return serr
+			}
 			ds.peerPool.LogPlainHTTPOnce(nil)
 		}
 		// Capacity-aware placement ranking (#1029 direction 2). Enable BEFORE

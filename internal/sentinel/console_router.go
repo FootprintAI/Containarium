@@ -3,11 +3,14 @@ package sentinel
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"os"
 	"time"
 )
 
@@ -73,6 +76,7 @@ type ConsoleRouter struct {
 	listenAddr string
 	policy     *ConsoleRouterPolicy
 	registry   *TunnelRegistry
+	tlsConfig  *tls.Config
 }
 
 // NewConsoleRouter returns a ConsoleRouter. registry is the same
@@ -80,6 +84,36 @@ type ConsoleRouter struct {
 // registry method this needs.
 func NewConsoleRouter(listenAddr string, policy *ConsoleRouterPolicy, registry *TunnelRegistry) *ConsoleRouter {
 	return &ConsoleRouter{listenAddr: listenAddr, policy: policy, registry: registry}
+}
+
+// SetTLSConfig makes Run serve TLS only; a plaintext client's handshake
+// fails before any router data is read or written. Unset (the default),
+// Run listens in plaintext and logs a startup warning.
+func (cr *ConsoleRouter) SetTLSConfig(cfg *tls.Config) { cr.tlsConfig = cfg }
+
+// ConsoleRouterServerTLSConfig loads the router's certificate and key
+// (--console-router-tls-cert / --console-router-tls-key).
+func ConsoleRouterServerTLSConfig(certFile, keyFile string) (*tls.Config, error) {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load console router TLS cert/key: %w", err)
+	}
+	return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}, nil
+}
+
+// ConsoleRouterClientTLSConfig returns the config a console client uses to
+// verify the router's certificate against the CA bundle in caFile. No client
+// flag is registered for it yet; a future console client supplies caFile.
+func ConsoleRouterClientTLSConfig(caFile string) (*tls.Config, error) {
+	pemBytes, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read console router CA: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return nil, fmt.Errorf("console router CA %s contains no PEM certificates", caFile)
+	}
+	return &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}, nil
 }
 
 // Run starts the console router on its own port. Blocks until ctx is
@@ -91,7 +125,12 @@ func (cr *ConsoleRouter) Run(ctx context.Context) error {
 	}
 	defer func() { _ = ln.Close() }()
 
-	log.Printf("[console-router] listening on %s", cr.listenAddr)
+	if cr.tlsConfig != nil {
+		ln = tls.NewListener(ln, cr.tlsConfig)
+		log.Printf("[console-router] listening on %s (TLS)", cr.listenAddr)
+	} else {
+		log.Printf("[console-router] WARNING: listening on %s in plaintext — the router token and console stream cross the network unencrypted; configure --console-router-tls-cert and --console-router-tls-key", cr.listenAddr)
+	}
 	return cr.Serve(ctx, ln)
 }
 

@@ -423,9 +423,9 @@ func (s *ContainerServer) enterBoxRunStart(box, runName string) (release func(),
 		return nil, boxSkillSetsRefusal(pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS, box,
 			fmt.Sprintf("%s is applying skill sets (ApplyBoxSkillSets) right now; a run does not start while its skills are being changed. Retry once the apply has returned.", box))
 	}
-	s.boxRunStarts.add(box, runName)
+	s.boxGateHolders.add(box, runName)
 	return func() {
-		s.boxRunStarts.remove(box, runName)
+		s.boxGateHolders.remove(box, runName)
 		gate.RUnlock()
 	}, nil
 }
@@ -533,7 +533,7 @@ func (s *ContainerServer) lockBoxSkillSetGate(ctx context.Context, box string) (
 			if acquired = gate.TryLock(); acquired {
 				continue
 			}
-			if s.boxRunStarts.applyHeld(box) {
+			if s.boxGateHolders.applyHeld(box) {
 				return nil, boxSkillSetsRefusal(pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS, box,
 					fmt.Sprintf("%s is already applying skill sets (another ApplyBoxSkillSets call holds the box) and it was still going after %s. Retry once that apply has returned.",
 						box, boxSkillSetsGateWait))
@@ -542,21 +542,21 @@ func (s *ContainerServer) lockBoxSkillSetGate(ctx context.Context, box string) (
 			// the instant between taking the gate and recording itself (or
 			// between clearing its record and releasing); only name starts
 			// that are really in flight, and say nothing else about them.
-			if names := s.boxRunStarts.names(box); len(names) > 0 {
+			if names := s.boxGateHolders.names(box); len(names) > 0 {
 				return nil, boxSkillSetsRefusal(pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_RUN_IN_PROGRESS, box,
 					fmt.Sprintf("%s was busy with run starts for %s, so the skill sets were not applied; its skills are not changed under a run. Run starts still in flight now: %s. Retry shortly.",
 						box, boxSkillSetsGateWait, quoteAll(names)))
 			}
 			return nil, boxSkillSetsRefusal(pb.BoxSkillSetsRefusal_BOX_SKILL_SETS_REFUSAL_RUN_IN_PROGRESS, box,
-				fmt.Sprintf("%s was busy for %s, so the skill sets were not applied; its skills are not changed under a run. No run start is recorded in flight at this moment, so a retry should find it free.",
+				fmt.Sprintf("%s was busy for %s, so the skill sets were not applied; its skills are not changed under a run. No run start is recorded in flight at this moment. Retry shortly.",
 					box, boxSkillSetsGateWait))
 		case <-tick.C:
 			acquired = gate.TryLock()
 		}
 	}
-	s.boxRunStarts.setApply(box, true)
+	s.boxGateHolders.setApply(box, true)
 	return func() {
-		s.boxRunStarts.setApply(box, false)
+		s.boxGateHolders.setApply(box, false)
 		gate.Unlock()
 	}, nil
 }

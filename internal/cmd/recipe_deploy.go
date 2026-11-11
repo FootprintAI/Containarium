@@ -3,11 +3,13 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/footprintai/containarium/internal/client"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -19,7 +21,37 @@ var (
 
 	recipeDeployGuardrailRef         string
 	recipeDeployGuardrailAttestation string
+
+	recipeDeploySSHKeys []string
 )
+
+// recipeSSHKeys reads each --ssh-key public-key file (a leading ~/ is the
+// home directory) and returns the contents in flag order, the way
+// `containarium create --ssh-key` reads its one key (#3514). No paths: nil.
+func recipeSSHKeys(paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	keys := make([]string, 0, len(paths))
+	for _, p := range paths {
+		expanded := p
+		if rest, ok := strings.CutPrefix(p, "~/"); ok {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, fmt.Errorf("--ssh-key %s: failed to get home directory: %w", p, err)
+			}
+			expanded = filepath.Join(home, rest)
+		}
+		// #nosec G304 -- operator-supplied --ssh-key path; reading it is the
+		// documented purpose of the flag (same as `create --ssh-key`).
+		b, err := os.ReadFile(expanded)
+		if err != nil {
+			return nil, fmt.Errorf("--ssh-key %s: %w", expanded, err)
+		}
+		keys = append(keys, string(b))
+	}
+	return keys, nil
+}
 
 // recipeGuardrailInput builds guardrail_input for a guardrail-gated recipe
 // (#2368) from --guardrail-staging-ref and --guardrail-attestation. Neither
@@ -53,6 +85,7 @@ a GPU node, point --server at that node's daemon and pass --gpu.
 
 Examples:
   containarium recipe deploy ollama ol1 --gpu 0 --param model=llama3 --server <host>
+  containarium recipe deploy ollama ol2 --gpu 0 --ssh-key ~/.ssh/id_ed25519.pub --server <host>
   containarium recipe deploy llamacpp lc1 --gpu 0 --param hf_repo=ggml-org/gemma-3-1b-it-GGUF --server <host>`,
 	Args: cobra.ExactArgs(2),
 	RunE: runRecipeDeploy,
@@ -72,6 +105,8 @@ func init() {
 		"Guardrail-gated recipes: the staged dataset's directory under <staging root>/<your authenticated subject>/ on the daemon host (not <name>)")
 	recipeDeployCmd.Flags().StringVar(&recipeDeployGuardrailAttestation, "guardrail-attestation", "",
 		"Guardrail-gated recipes: the attestation 'guardrail apply' wrote for that dataset")
+	recipeDeployCmd.Flags().StringArrayVar(&recipeDeploySSHKeys, "ssh-key", nil,
+		"Path to an SSH public key file to authorize on the new box at create time (repeatable; optional)")
 }
 
 func runRecipeDeploy(cmd *cobra.Command, args []string) error {
@@ -85,6 +120,10 @@ func runRecipeDeploy(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	sshKeys, err := recipeSSHKeys(recipeDeploySSHKeys)
+	if err != nil {
+		return err
+	}
 
 	c, err := newRecipeClient()
 	if err != nil {
@@ -93,7 +132,14 @@ func runRecipeDeploy(cmd *cobra.Command, args []string) error {
 	defer func() { _ = c.Close() }()
 
 	fmt.Printf("Deploying recipe %q as %q...\n", recipeID, name)
-	resp, err := c.DeployRecipe(recipeID, name, recipeDeployGPU, recipeDeployBackendID, recipeDeployPool, params, guardrailInput)
+	resp, err := c.DeployRecipe(recipeID, name, client.DeployRecipeOptions{
+		GPU:            recipeDeployGPU,
+		BackendID:      recipeDeployBackendID,
+		Pool:           recipeDeployPool,
+		Parameters:     params,
+		GuardrailInput: guardrailInput,
+		SSHKeys:        sshKeys,
+	})
 	if err != nil {
 		return err
 	}

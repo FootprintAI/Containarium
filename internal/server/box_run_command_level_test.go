@@ -44,7 +44,7 @@ func TestStartBoxRun_CommandMode_RestrictiveLevelSelectsUserAndSudoNotPolicy(t *
 			return "", nil
 		},
 	}
-	if _, err := s.StartBoxRun(adminCtx(), &pb.StartBoxRunRequest{Username: "alice", Command: command, RunName: "lvl-none"}); err != nil {
+	if _, err := s.StartBoxRun(adminCtx(), runTokenFor(s, &pb.StartBoxRunRequest{Username: "alice", Command: command, RunName: "lvl-none"})); err != nil {
 		t.Fatalf("StartBoxRun: %v", err)
 	}
 

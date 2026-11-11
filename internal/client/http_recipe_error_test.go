@@ -22,7 +22,7 @@ func TestHTTPDeployRecipe_GateRefusalMessage(t *testing.T) {
 			defer srv.Close()
 			c, err := NewHTTPClient(srv.URL, "tok")
 			require.NoError(t, err)
-			_, err = c.DeployRecipe("gated", "alice", "", "", "", nil, nil)
+			_, err = c.DeployRecipe("gated", "alice", DeployRecipeOptions{})
 			require.ErrorContains(t, err, message)
 		})
 	}

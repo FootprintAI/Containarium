@@ -50,8 +50,9 @@ transient and retry the start once the apply has returned.
 `ApplyBoxSkillSets` shares a per-box gate with run starts, and applies on one
 box are serialized by it. An apply that finds the gate busy waits for it, at
 most 30 seconds, and stops waiting at once if the caller cancels (the call
-returns `CANCELED`, or `DEADLINE_EXCEEDED` when the caller's own deadline passed). A waiting apply does not make run starts fail: only an
-apply that holds the gate does. When the 30 seconds pass, the apply changes
+returns `CANCELED`, or `DEADLINE_EXCEEDED` when the caller's own deadline
+passed). A waiting apply does not make run starts fail: only an apply that
+holds the gate does. When the 30 seconds pass, the apply changes
 nothing and is refused with `FAILED_PRECONDITION`, and the typed reason says
 what held the gate:
 
@@ -134,8 +135,10 @@ verification of a pushed commit.
   run user can, including on a box recorded at a restrictive level, which an
   engine run at that level could not be told to do by a prompt. The level
   bounds what the run user may do as a Unix account (its sudo grant), not what
-  a command may invoke.
-- The working directory is the run user's home. A command that needs a checkout
+  a command may invoke. With `command_policy` set, the command is decided like
+  an engine run's shell command instead; see the next section.
+- The working directory is the run user's home, or `workdir` under it (see
+  Working directory below). A command that needs a checkout
   makes it: for example `git clone <url> work && cd work && git checkout <sha>
   && make test`, through the box's own credential helper.
 - `timeout_seconds` bounds it (default 900, at most 3600; `INVALID_ARGUMENT`
@@ -154,6 +157,238 @@ verification of a pushed commit.
 
 The CLI counterpart is `containarium code run <box> --command '<text>'
 [--timeout 15m] [--name <run>]` (the SSH path, as the box's own user).
+
+## Command allowlist and audit events: `command_policy`
+
+`command_policy` (capability `box_run_command_policy`) puts every shell
+command of a run through one decision before it runs, and records an audit
+event for it. It needs a box with a recorded tool-access level
+(`FAILED_PRECONDITION` otherwise) and, for an engine run, the Claude Code
+engine. It applies to both kinds of run:
+
+- **Engine run.** The daemon installs a PreToolUse and a PostToolUse hook pair
+  (`agent-box permission-hook pre|post`) through `--settings`. Each shell
+  command the agent requests is decided by the pre hook.
+- **Command run** (`command`). The run executes `agent-box permission-hook
+  command` in place of `sh -c`. It applies the same decision to the command,
+  which the daemon wrote into the run's root-owned configuration, and runs it
+  only if it is allowed. The timeout and exit code work as for a plain command
+  run.
+
+The decision, in order:
+
+1. **Hard denies** refuse the command whatever the allowlist says: network
+   client executables, `git push`, `git remote`, git transport options, and any
+   `GIT_*` environment assignment. The check also reads command substitutions,
+   subshells and quoted redirection targets, and the values of `NAME=value`
+   assignments, which are otherwise left out of the audit event.
+2. **Unresolvable commands** are refused (`UNRESOLVABLE`) after the hard
+   denies, only when the parser cannot tell what will execute: brace expansion,
+   a glob character in the executable word, ANSI-C quoting (`$'...'`) and
+   arithmetic expansion (`$((...))`) in a command word, and a quoted shell
+   command (`sh -c '...'`) nested more than three deep. They are refused by
+   name, not left to the fact that no rule allows them. Compound lines
+   (`&&`, `||`, `;`), pipes, redirections, substitutions and globs in arguments
+   are not refused for their shape: the hard-deny scan reads every segment, and
+   every segment must also be covered by the level's own rules, otherwise the
+   line is refused (`NOT_ALLOWED`, or `HARD_DENY`). The allowlist cannot cover
+   a compound line or a segment of one: it matches only a simple command. A
+   leading `NAME=value` is judged as written, on a simple line and in a
+   segment alike, so `PATH=/tmp ls` is not covered by a rule for `ls`.
+3. **The org allowlist** (`command_policy.allow`) runs a command outside the
+   level when an entry matches: an argv glob with an exact executable, `*`
+   within one argument, and no shell operators.
+4. **The level's own rules** run the command as before.
+5. **Anything else** is refused.
+
+**The engine is root-staged.** For an engine run, the daemon installs the
+owner's engine as a root-owned `0755` copy in the root-owned audit directory
+(`/var/lib/containarium-run-audit/bin/claude`) and the run executes that copy,
+not the run user's own `~/.local/bin/claude` (which the run user can replace). The
+owner's file is trusted only if it is owned by the box owner and writable by
+neither group nor others, and is re-checked after copying. The copy is replaced
+whenever the owner's file changes. If the engine cannot be staged that way, the
+run is refused with `FAILED_PRECONDITION` and the violation type
+`ENGINE_NOT_ROOT_STAGED`; it never falls back to the run user's copy. The
+root-owned copy cannot update itself: a new engine version reaches a run when
+the owner's copy is updated (the next run re-stages it).
+
+A refused command ends the run. Nothing waits for an answer: an approved re-run
+is a new run that carries `approval`. A refusal records a `BLOCKED` event with
+an `AgentCommandCloseReason` (`HARD_DENY`, `NOT_ALLOWED`, `UNRESOLVABLE`, or
+`AUDIT_UNAVAILABLE` when the start event cannot be recorded). An engine run is
+stopped by the hook (`continue: false`). A command run never starts the
+command: it prints the reason to its log and exits `120`.
+
+Every command that runs gets a `START` event before it runs and an `END` event
+with its exit code. Every `START` gets exactly one `END`, and each `END` has an
+`outcome` (`AgentCommandOutcome`):
+
+- **`RAN`**: the post hook (engine run) or the command hook (command run)
+  reported that the command finished.
+- **`NOT_RUN`**, close reason `ENGINE_REFUSED`: the pre hook allowed or deferred
+  the command, but the engine then refused it itself (for example
+  `--restricted` working-directory confinement), so no post hook fired. The
+  sink writes this `END` when the run ends cleanly (exit status `0`) with the
+  `START` still open. The engine fires a post hook for every command it runs,
+  so such a command did not run. This rests on the engine's report and on the
+  run's exit status. That status is recorded by `agent-box run-supervise`, a
+  root process the daemon starts in place of spawning the run as the run user:
+  it runs the run as the run user, in its own session, and as its parent writes
+  the exit status to `/var/lib/containarium-run-audit/exit/<run>.exit` (root,
+  `0600`, in a root `0700` directory the setup creates with the events
+  directory). The sink reads only that file, never the run directory's
+  `<run>.exit`, which the run user can write.
+- **`UNKNOWN`**, close reason `INTERRUPTED`: the run ended any other way with
+  the `START` still open (killed, timed out, crashed, a non-zero or missing
+  exit status, or the sink stopped by a signal). The command may have run in
+  part. The sink writes this `END` too.
+
+A sink-written `END` has no exit code. The pre hook's own process cannot write
+it, because it exits before the engine decides; the sink is the one process
+that lives until the run ends.
+
+**Exit code.** `exit_code` is absent when it is not known, never `0` by
+default. For an engine run it comes from the engine's hook input:
+
+- an exit-code field in `tool_response`, when the engine sends one;
+- `PostToolUse` without such a field: `0`, since the engine fires
+  `PostToolUse` only for exit status `0`;
+- `PostToolUseFailure`: `N` when the error text begins with the line
+  `Exit code N` (`0`-`255`, then a newline or the end of the text). Any
+  other text (missing, non-numeric, out of range, the phrase on a later line)
+  records no exit code.
+
+That error text is the engine's display format (observed with Claude Code
+2.1.319), not a documented field. If an engine release changes it, failed
+commands are recorded with no exit code until the parser follows. A command
+run records the shell's own status.
+
+Output and environment are never recorded, and arguments
+are redacted from a default list plus `command_policy.redact_patterns`. Events
+are protojson `AgentCommandEvent` lines in
+`/var/lib/containarium-run-audit/events/<run_name>.jsonl` inside the box. A
+root-run sink (`agent-box run-audit-sink`) that the daemon starts before the run
+is the only writer, and the run user cannot write that file.
+
+Limits:
+
+- **At `FULL_SUDO` these controls are advisory.** The allowlist, the hard
+  denies and the hooks are installed and decide exactly as at the other levels.
+  But the run user has passwordless sudo, so it can become root. As root it can
+  change the configuration, stop the sink or run commands the hooks never see.
+  At `FULL_SUDO` they do not bind the run user and are not a security
+  boundary. Use `NONE` or `BUILD_TOOLS` where the allowlist must hold.
+- **An allowlist entry cannot name an interpreter on caller-chosen code.** An
+  entry whose executable is a shell, `python*`, `perl`, `ruby`, `node` and the
+  like is refused when it has a `-c`/`-e`/`-m`-style flag or a `*` argument, so
+  the allowlist cannot be widened into "run anything". A fixed interpreter
+  entry (`python3 scripts/check.py`) is accepted, and so is whatever that
+  script does. Wrappers (`env`, `xargs`, `timeout`) are not recognised, so an
+  entry that wraps an interpreter is the operator's to avoid.
+- **The `agent-box` that root runs must be trusted.** The daemon copies a
+  root-owned `agent-box` (from `/usr/local/bin`, else the owner's
+  `~/.local/bin`) and runs it as root. A copy that is not owned by root, or is
+  group- or world-writable, is skipped, and with none left the run is refused.
+  If the setup is refused after a finished run of the same name was rotated
+  aside, that run is restored under its name.
+- **Network denial is command-level only.** It refuses network client
+  executables. `git clone`/`git fetch` and package managers still reach their
+  remotes and registries, and nothing filters network traffic itself.
+- A command is decided as one line. Programs that the command or a script it
+  runs start in turn are not decided again.
+
+## Working directory: `workdir`
+
+A run starts in its home directory: the box user's home, or the unprivileged
+run user's home on a box with a recorded tool-access level. `workdir` starts it
+in a directory under that home instead, for prompt and command runs alike, so an
+instruction relative to a project (for example "put the slide under
+`slides/<id>/`") lands in the project.
+
+- `workdir` is relative to that home, in the canonical form `WriteBoxFile`'s
+  `path` uses (no leading `/`, no `..`, `.`, empty or trailing segment, no
+  control character, nothing under `.ssh` or `.containarium`). Anything else is
+  `INVALID_ARGUMENT`, before the box is touched.
+- The directory must already exist and be a directory the run user can enter.
+  It is checked as that user before anything on the box changes (a finished run
+  under the same name is not rotated aside); otherwise the call is
+  `FAILED_PRECONDITION` naming the directory and no run starts. It is never
+  created, and there is no fallback to the home.
+- Empty keeps the home, exactly as before.
+- An engine run's session folder follows the directory (Claude Code keys its
+  sessions by the directory it starts in), so session discovery and
+  `continue_session` work in it.
+- `BoxRun.workdir` reports it on `StartBoxRun` and `ListBoxRuns`; it is empty for
+  a run started in the home and for runs from before the field.
+
+The capability name is `box_run_workdir`.
+
+## Per-run token: `run_token`
+
+`run_token` is the platform credential for one run. The caller mints it; the
+daemon only delivers it.
+
+- The daemon writes the token to `/run/containarium/run-tokens/<run_name>.token`
+  inside the box, mode 0600 and owned by the user the run executes as, and
+  exports `CONTAINARIUM_JWT_TOKEN_FILE` with that path in the run's shell. The
+  token travels as file content only: it is in no command line and no script.
+- The file is removed when the run exits and when it is stopped
+  (`StopBoxRun`), and a start that fails after the install removes it too.
+- At most 8 KiB, with no NUL and no line break; anything else is
+  `INVALID_ARGUMENT` before the box is touched.
+- **A run as the unprivileged run user must carry it.** On a box with a
+  recorded tool-access level (prompt and command mode alike) a request without
+  `run_token` is `FAILED_PRECONDITION`, naming `run_token` and `box_run_token`,
+  before the run user is provisioned and before anything is staged, rotated or
+  spawned. A run on a box with no recorded level executes as the box owner, is
+  unchanged, and may omit the token.
+- The box principal is no longer copied into the run user's home
+  (`~/.config/containarium/box-token`), and a copy left by an earlier daemon is
+  removed the next time a run is prepared. Whatever the run starts (a
+  credential helper, an MCP server) must read the file named by
+  `CONTAINARIUM_JWT_TOKEN_FILE`. The platform MCP server (`mcp-server`) already
+  does, on every request. The daemon does not rewrite an MCP configuration
+  staged from the owner's home: one that names the old principal path must be
+  changed by whoever maintains it.
+- Capability `box_run_token`. A daemon without it accepts the field and
+  ignores it, so check the capability before sending a token. `GetSystemInfo`
+  needs an admin principal; the typed client and the CLI refuse to send a token
+  when they cannot read the capability list.
+
+## From the CLI: `code run --run-token-file`
+
+`containarium code run <box>` starts its run over an SSH session by default.
+With `--run-token-file <path>` it calls `StartBoxRun` instead and sends the
+token in that file as `run_token`:
+
+```
+containarium code run <box> --prompt '<task>' --name <run> \
+  --run-token-file <path> --server <host>
+```
+
+- The file holds the token on one line. It is read, never printed or logged,
+  and the token is never taken as an argument. An unreadable or empty file is
+  an error before any request is made. The CLI does not mint a token.
+- The token is sent only to a daemon that lists `box_run_token` in
+  `SystemInfo.capabilities`. For any other daemon the CLI refuses, naming the
+  capability, and no run is started.
+- Sending a per-run token needs an admin token. The CLI reads the capability
+  list through `GetSystemInfo`, which is admin-only, so a non-admin box owner
+  is refused with `PermissionDenied` from that capability check, even against
+  a daemon that advertises `box_run_token` and although `StartBoxRun` itself
+  accepts the owner. No run is started.
+- `--prompt`, `--session`, `--continue`, `--name`, `--command` and `--timeout`
+  map to the request's fields. `--approvals ask`,
+  `--output-format-stream-json` and `--token-ttl` belong to the SSH path and
+  are refused with this flag.
+- After the start the command follows the run's log and exits non-zero when
+  the run does, through the reads `code logs --follow` and `code runs` make.
+- The engine, its credential source and the run user come from the box, as for
+  any `StartBoxRun` call; the SSH path runs as the box's own user.
+
+The platform MCP tool `code_run` starts its run through the same function and
+takes no token parameter, so it always uses the SSH path.
 
 ## Putting a file on the box: `WriteBoxFile`
 
@@ -227,10 +462,16 @@ put-file` then says the daemon needs an upgrade for files above 2 MiB.
 ## Feature detection
 
 The REST gateway rejects request fields it does not know, so a caller must not
+send `run_name`, `structured_output`, `model`, `command` or `workdir` to a
+daemon that predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the
+optional features a daemon supports: `box_run_name`, `box_run_structured_output`,
+`box_run_model`, `box_run_command`, `box_run_command_policy`, `box_run_workdir`,
+
 send `run_name`, `structured_output`, `model` or `command` to a daemon that
 predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the optional
 features a daemon supports: `box_run_name`, `box_run_structured_output`,
-`box_run_model`, `box_run_command`, `box_files` and `box_files_stream`. An older daemon does
+`box_run_model`, `box_run_token`, `box_run_command`, `box_run_command_policy`,
+`box_files` and `box_files_stream`. An older daemon does
 not send the field at all; treat a missing name as unsupported. Names are only
 added. `GetSystemInfo` requires an admin principal. A caller that cannot read it
 can gate on the daemon version instead: the first release that contains these

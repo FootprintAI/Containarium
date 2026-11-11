@@ -7,6 +7,144 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.134.0] - 2026-11-11
+
+
+### Added
+
+- **Recipe deploys can authorize SSH keys at create time** (#3514).
+  `DeployRecipeRequest` gains `ssh_keys`, `containarium recipe deploy` gains a
+  repeatable `--ssh-key <path>`, and the MCP `deploy_recipe` tool gains an
+  optional `ssh_keys` array. The keys take the same path as
+  `containarium create --ssh-key`: seeded into the box's `authorized_keys` and
+  the key registry before the recipe's post_start runs, so the person a box
+  was deployed for can reach it without a second `ssh-keys set` call. An
+  invalid key, more than 32 keys, or a key over 8 KiB refuses the whole deploy
+  with `InvalidArgument` before any box is created. Omitting the keys keeps
+  the previous behaviour. A daemon older than this release ignores the field
+  and creates the box without the keys.
+- **`StartBoxRun` takes a `workdir`** (#3551). A prompt or command run can now
+  start in a directory under the run's home (for example a project
+  subdirectory) instead of the home itself. The value follows the same canonical
+  relative-path rule as `WriteBoxFile`'s `path`; a directory that does not exist
+  or is not a directory is refused with `FAILED_PRECONDITION` naming it before
+  the run starts, and is never created. `BoxRun.workdir` reports it when listing
+  runs. Advertised as the `box_run_workdir` capability.
+- **`containarium code run --run-token-file <path>`** (#3610). Starts the run
+  through the daemon API (`StartBoxRun`) instead of over SSH and sends the
+  per-run token in the file as `run_token`. The file holds the token on one
+  line; it is read, never printed or logged, and the token is never an
+  argument. An unreadable or empty file is an error before any request. The
+  token is sent only to a daemon that advertises the `box_run_token`
+  capability; any other daemon is refused with a message naming it, and no run
+  starts. The capability is read with the admin-only `GetSystemInfo`, so the
+  flag needs an admin token; a non-admin box owner is refused
+  (`PermissionDenied` from the capability check). No released daemon
+  advertises it yet, so until one does the flag always ends in that refusal.
+  `--approvals ask`, `--output-format-stream-json` and `--token-ttl` are
+  refused with the flag. Without the flag `code run` is
+  unchanged. The MCP tool `code_run` starts its run through the same function
+  and takes no token parameter.
+
+### Changed
+
+- **Tenant guard reports degraded isolation on hosts without bridge NIC ACL support** (#3521). `GetNetworkGuardStatus` now sets `isolation_degraded` on the tenant guard whenever a create or a reconcile pass finds the host unable to carry NIC ACLs, and clears it once the host is supported. Creates still proceed (fail-open is unchanged); the signal is the status field plus the existing log line.
+
+### Fixed
+
+- **A failing operator-signature store no longer removes loaded signatures** (#3519).
+  The enforcer keeps the last good signature set in the kernel when the store
+  cannot be read, reports `OPERATOR_SIGNATURES_STALE` in the network-policy
+  status, logs an alert, and recovers on its own when the store answers.
+
+### Security
+
+- **Box and skill names are quoted in in-box agent errors** (#3472). A box or
+  skill name containing a newline or escape byte no longer reaches the logs
+  raw through the error text of the in-box agent run and serve-mode paths; the
+  names are quoted where the error is built. Other error paths are tracked as
+  a follow-up.
+- **Peer terminals use TLS when pool mTLS is on** (#3516). A terminal opened
+  to a box on a peer backend was always proxied over `ws://`, so the user's
+  bearer token and terminal I/O crossed the pool in plaintext even with peer
+  mTLS enabled. An https peer is now dialled over `wss://`, verified against
+  the pinned pool CA and presenting the daemon's leaf certificate. Pools
+  without peer mTLS keep `ws://` as before.
+- **Plaintext fallbacks now warn, and the peer fallback can be refused** (#3517). A new `--require-peer-mtls` daemon flag (env `CONTAINARIUM_REQUIRE_PEER_MTLS`) makes the plain-HTTP peer fallback a startup error. A scheme-less, non-loopback server endpoint in the CLI (stderr) and web UI (console) still falls back to `http://` but now warns; acknowledge with `CONTAINARIUM_ALLOW_PLAINTEXT_FALLBACK=1` (CLI) or the `containarium.allowPlaintextFallback` localStorage key (web UI). A non-loopback `http://` cloud control plane logs a warning. Defaults are unchanged; loopback never warns.
+- **A network policy rule that fails to compile no longer empties the tenant's deny or egress list** (#3518). One non-IPv4 deny or egress CIDR used to drop the tenant's whole set silently, leaving denied destinations reachable. The daemon now keeps the tenant's last good egress and deny sets, logs the failure once per change, and `containarium network-policy status` reports the new `POLICY_COMPILE_FAILED` uncovered path for that tenant until the policy is fixed.
+- **A failed tenant-label stamp no longer lets a cloud container start or be routed** (#3520). When the label on an existing cloud-assigned container is missing or stale and re-stamping fails, the container is not started and its routes are not applied; one that is already running is left running and reported `degraded`. The next reconcile cycle retries.
+- **The daemon warns when its REST listener serves plain HTTP off the host** (#3522). The HTTP/REST listener binds all interfaces without TLS; at startup the daemon now logs a warning for a non-loopback bind unless an external TLS terminator is declared with the new `--rest-tls-terminator` daemon flag. Loopback binds never warn. Nothing else changes: the listener still serves plain HTTP, so put a reverse proxy or load balancer with TLS in front of it and set the flag. See `docs/REST-API-QUICKSTART.md`.
+- **Opt-in TLS for the sentinel console router** (#3523). `--console-router-tls-cert` and `--console-router-tls-key` make the router accept TLS only and refuse plaintext clients; without them it stays plaintext and logs a startup warning. Plaintext is still the default in this release.
+- **Go toolchain 1.26.11** (GO-2026-6859, `net/http`). `go.mod`, every CI workflow and the image builds moved from 1.26.10; the `govulncheck` gate was failing on the standard library advisory. No code change.
+
+### Upgrading
+
+- **Runs as the unprivileged run user now need a per-run token; the box
+  principal is no longer staged for them** (#3581). This re-lands the change
+  reverted in v0.132.0, now together with its senders and readers.
+  - **What changes on the daemon.** `StartBoxRunRequest.run_token` is honoured:
+    the daemon writes it to a 0600 file owned by the run's user
+    (`/run/containarium/run-tokens/<run_name>.token`), exports
+    `CONTAINARIUM_JWT_TOKEN_FILE` with that path for the run, and removes the
+    file when the run exits or is stopped. The token is never in a command line
+    or a script. The daemon advertises the `box_run_token` capability. It no
+    longer copies the box principal into the run user's home
+    (`~/.config/containarium/box-token`) and removes a copy an earlier daemon
+    left there.
+  - **Senders: upgrade every client that starts runs before, or together
+    with, the daemon.** On a box with a recorded tool-access level, a
+    `StartBoxRun` without `run_token` is now refused with
+    `FAILED_PRECONDITION` naming `run_token` and `box_run_token`, before
+    anything on the box is changed (prompt and command mode alike). An older
+    client against a new daemon therefore cannot start runs on such a box; it
+    is not silently left without a credential. A client must check
+    `box_run_token` in `SystemInfo.capabilities` and then send the token. In
+    this repo that is `containarium code run --run-token-file <path>` and the
+    typed client's `StartBoxRun`. Runs on a box with no recorded level execute
+    as the box owner and are unchanged, as are `containarium code run` without
+    the flag and the MCP `code_run` tool (both use an SSH session).
+  - **Readers: read `CONTAINARIUM_JWT_TOKEN_FILE`.** Anything a run starts that
+    presented the staged principal (a credential helper, an MCP server, an MCP
+    configuration that names `~/.config/containarium/box-token`) must take its
+    credential from the file that variable names. `mcp-server` and the agent
+    runtime in this repo already do. The daemon does not rewrite a staged MCP
+    configuration.
+  - **Order.** Upgrading clients first is safe: they send a token only to a
+    daemon that advertises `box_run_token`. A daemon rolled back to a version
+    without the capability ignores the field again, and stages the principal
+    again on its next run.
+
+## [0.133.1] - 2026-11-10
+
+
+### Added
+
+- **Per-run command event feed with sequence numbers** (#3582). Every event the run's audit sink writes now carries `seq` (`AgentCommandEvent.seq`): 1 for the first, +1 for each, assigned by the sink under its write lock (a client-sent value is overwritten) and continued, never reused, if the sink restarts for the same run. `GET /v1/containers/{username}/code-runs/{run_name}/command-events?afterSeq=N&limit=M` (`ListRunCommandEvents`, `ssh:write`, box owner or collaborator, read-only) returns `{"events":[{"seq":"1","event":{...}}],"ended":false}` in seq order after `afterSeq`; `limit` defaults to and is capped at 500. `ended` is true once the sink has finished (it creates a root-only `.done` marker after its last event) and the page reaches the last event, or for a run with no feed once it has stopped. `state` (`RUN_COMMAND_FEED_STATE_OPEN`, `_ENDED`, `_INCOMPLETE`) carries the same and one case more: `INCOMPLETE` when the run has stopped and its sink is gone without the marker (killed, or unable to start), so a reader stops polling a feed that can no longer end; `ended` stays false there. A sync error after an event line was written no longer lets the next event reuse its `seq`. A feed that holds another run's event or a gap is refused (`INTERNAL`), not returned.
+
+- **Command allowlist and audit events for agent runs** (#3582). `StartBoxRunRequest.command_policy` (capability `box_run_command_policy`) installs a PreToolUse and PostToolUse hook pair (`agent-box permission-hook`) on a Claude Code run at a recorded tool-access level. Each shell command is classified before it runs: within the level it runs as before; outside it, it runs only when an org allowlist entry matches (an argv glob: exact executable, `*` within one argument, no shell operators); hard denies (network clients, `git push`, `git remote`, git transport options) and unmatched commands are refused with a typed close reason and a blocked event, and the run ends. Every command gets a start event before it runs and an end event with its exit code (never its output or environment), with arguments redacted from a default list plus `command_policy.redact_patterns`. Events go to a root-owned append-only file inside the box, written only by a root-run sink (`agent-box run-audit-sink`) the daemon starts before the run; the run user cannot write it. `StartBoxRunRequest.approval` carries the approval and approver ids of an approved re-run, which every event records; it is refused with `session_id` or `continue_session`, since an approval starts a new run. A command-mode run (`command`) with `command_policy` goes through the same decision and events: the root-owned agent-box decides the command before running it, and a refused command never runs (exit 120, a blocked event with its close reason). At `FULL_SUDO` all of this applies but is advisory, since the run user can become root; it is not a security boundary at that level. Network denial is command-level only (network client executables); `git clone`/`fetch` and package managers still reach the network. Every start event gets exactly one end event: when the run ends with a start still open, the sink writes the end itself, with outcome `NOT_RUN` and close reason `ENGINE_REFUSED` after a clean exit (the engine refused the command after the hook, so no post hook fired), or outcome `UNKNOWN` and close reason `INTERRUPTED` after any other exit (killed, timed out, crashed). The sink reads that exit status only from a root-only file written by `agent-box run-supervise`, the root parent the daemon launches the run through, so the run user cannot turn an interrupted run into a clean one by writing the run directory's exit file. A failed engine command's exit code is read only from an error text that begins with the line `Exit code N` (0-255); any other text records no exit code rather than a guess. Needs an agent-box with the new modes on the box.
+- **MCP `create_backup` takes a whole box** (#3504). New argument `scope`:
+  `"box"` backs up the tenant's whole box, like `containarium backup create
+  --box`, and the backup restores with `restore_box_backup`. The tool and the
+  CLI now call one shared client function. A box backup needs `key_mode`; the
+  database-only arguments (`database`, `hook`, `hook_format`, `label`,
+  `db_user`, `db_password`) and a `gcs` destination without `gcs_bucket` are
+  refused before any request is sent. The call waits up to 30 minutes, as the
+  CLI does over HTTP. Without `scope`, or with `"database"`, nothing changes.
+- **Agent runs enforce an org command allowlist, with an audit event for every command (#3583).** A PreToolUse hook checks each shell command before it runs: hard denies first, then the org allowlist, then the level's own rules. A refused command is blocked and recorded with an audit event. A PostToolUse hook records the outcome of each command.
+- **A run's command events are readable in order (#3597).** Each agent command event carries a sequence number, starting at 1. A new read-only `ListRunCommandEvents` RPC, with `GET /v1/containers/{username}/code-runs/{run_name}/command-events`, returns events after a sequence number. The run's feed is marked done when the run ends.
+
+### Fixed
+
+- **Command policy hard denies cannot be bypassed through a redirection or an assignment** (#3582). A command or process substitution after `>` or `<` (`ls > $(curl ...)`, `cat <(curl ...)`) is its own command and is checked; a `NAME=value` assignment's value is checked, and any `GIT_*` assignment is refused, in compound lines too. An allowlist entry that runs an interpreter on caller-chosen code (`sh -c *`, `python3 -c`, ...) is refused. Root copies `agent-box` only from a root-owned file that is not group- or world-writable. A refused policy setup restores a rotated-aside previous run.
+- **`ApplyBoxSkillSets` refusal and help wording** (#3557). When the 30-second
+  wait for a box ends with no run start recorded in flight, the
+  `RUN_IN_PROGRESS` message now says "Retry shortly" instead of promising that
+  a retry finds the box free: an apply can hold the box unrecorded for an
+  instant. The `code skill-sets` help and the `apply_box_skill_sets` MCP tool
+  description no longer say run starts held the box for 30 seconds; like
+  `docs/BOX-RUN-API.md`, they say the message names the starts in flight at the
+  moment the wait ended.
+
 ## [0.132.1] - 2026-11-09
 
 

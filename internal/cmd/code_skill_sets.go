@@ -47,8 +47,9 @@ naming the known ones. The call is idempotent: repeating it reports "unchanged".
 A box with a run in progress (a running code run, or a skill run in it) is
 refused (RUN_IN_PROGRESS); retry once it has ended, or stop it first. An apply
 that waited 30s for the box and found it still held is refused too: APPLY_IN_PROGRESS
-when another apply on the box was still installing, RUN_IN_PROGRESS when run starts
-held it (the message names those still in flight); retry shortly.
+when another apply on the box was still installing, RUN_IN_PROGRESS when the box was
+still busy with run starts (the message names the starts in flight at that moment,
+not ones proven to have held it for 30s); retry shortly.
 
 --release picks the Containarium release whose installer, lock and skills bundle
 the box fetches (default: the daemon's own). The box needs to reach GitHub, as

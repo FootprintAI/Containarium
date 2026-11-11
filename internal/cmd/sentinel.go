@@ -56,6 +56,8 @@ var (
 	sentinelMetricsExportInterval  int32
 	sentinelConsoleRouterAddr      string
 	sentinelConsoleRouterToken     string
+	sentinelConsoleRouterTLSCert   string
+	sentinelConsoleRouterTLSKey    string
 	sentinelWatchSpotVMs           []string
 	sentinelUpstreamPolicy         string
 	sentinelUpstreamState          string
@@ -112,6 +114,8 @@ func init() {
 	sentinelCmd.Flags().StringVar(&sentinelTunnelAPIBindAddr, "tunnel-api-bind-addr", sentinel.DefaultTunnelAPIBindAddr, "IP the per-backend API port of each tunnel backend binds to on the sentinel. Loopback by default; set an internal address only if a daemon on another host lists that port in --peers.")
 	_ = sentinelCmd.Flags().MarkDeprecated("tunnel-allow-cleartext", "tunnel sessions always require TLS; remove the flag")
 	sentinelCmd.Flags().StringVar(&sentinelConsoleRouterAddr, "console-router-addr", "", "If set (host:port), run the console router — makes any connected tunnel spot's advertised port publicly reachable, gated by --console-router-token. Opt-in: unset means no console router runs. See FootprintAI/Containarium#1756.")
+	sentinelCmd.Flags().StringVar(&sentinelConsoleRouterTLSCert, "console-router-tls-cert", "", "PEM certificate for the console router listener. With --console-router-tls-key the router accepts TLS only; without them it listens in plaintext and logs a startup warning (#3523).")
+	sentinelCmd.Flags().StringVar(&sentinelConsoleRouterTLSKey, "console-router-tls-key", "", "PEM private key for --console-router-tls-cert.")
 	sentinelCmd.Flags().StringVar(&sentinelConsoleRouterToken, "console-router-token", "", "Pre-shared token authorizing console-router requests (or CONTAINARIUM_CONSOLE_ROUTER_TOKEN env). A separate, coarser credential from --tunnel-token — the real per-guest check happens downstream at the hypervisor-agent.")
 	sentinelCmd.Flags().StringVar(&sentinelSpotVM, "spot-vm", "", "Name of the backend VM instance (required for gcp provider)")
 	sentinelCmd.Flags().StringVar(&sentinelZone, "zone", "", "Cloud zone (required for gcp provider)")
@@ -639,6 +643,16 @@ func maybeStartConsoleRouter(ctx context.Context, registry *sentinel.TunnelRegis
 	}
 
 	router := sentinel.NewConsoleRouter(sentinelConsoleRouterAddr, sentinel.NewConsoleRouterPolicy(token), registry)
+	if (sentinelConsoleRouterTLSCert == "") != (sentinelConsoleRouterTLSKey == "") {
+		return fmt.Errorf("--console-router-tls-cert and --console-router-tls-key must be set together")
+	}
+	if sentinelConsoleRouterTLSCert != "" {
+		tlsCfg, err := sentinel.ConsoleRouterServerTLSConfig(sentinelConsoleRouterTLSCert, sentinelConsoleRouterTLSKey)
+		if err != nil {
+			return err
+		}
+		router.SetTLSConfig(tlsCfg)
+	}
 	go func() {
 		if err := router.Run(ctx); err != nil {
 			log.Printf("[sentinel] console router error: %v", err)

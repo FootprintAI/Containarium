@@ -1,9 +1,9 @@
 module github.com/footprintai/containarium
 
-go 1.26.10
+go 1.26.11
 
 require (
-	cloud.google.com/go/compute v1.74.1
+	cloud.google.com/go/compute v1.75.0
 	filippo.io/age v1.3.2
 	github.com/BurntSushi/toml v1.6.0
 	github.com/blang/semver/v4 v4.0.0
@@ -22,7 +22,7 @@ require (
 	github.com/pires/go-proxyproto v0.16.0
 	github.com/rs/cors v1.11.1
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.10
+	github.com/spf13/pflag v1.1.0
 	github.com/stretchr/testify v1.12.1
 	github.com/tg123/sshpiper v1.6.1
 	github.com/ti-mo/conntrack v0.6.0

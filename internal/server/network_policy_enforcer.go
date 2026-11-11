@@ -171,10 +171,20 @@ type NetworkPolicyEnforcer struct {
 	// reconcile.
 	egressNames map[uint32]string
 
+	// compileFailLogged holds the compile failure last logged per tenant id
+	// (#3518), so it is logged once per change. Only touched from reconcile.
+	compileFailLogged map[uint32]compileFailure
+
 	sigEnabled bool                        // #661: populate + scan Tier 2 signatures (operator opt-in)
 	sigStore   NetworkPolicySignatureStore // #661 PR-B: operator signatures (nil = built-ins only)
 	sigNames   map[uint16]string           // signature id -> name, for audit labelling (built at populate)
 	sigLoaded  string                      // last applied signature set fingerprint (skip redundant map writes)
+	// sigGood/sigGoodFP are the last merged set built from a successful store
+	// read; a store error serves them instead of a built-ins-only set (#3519).
+	// sigDegraded is true while the latest read failed. Guarded by mu.
+	sigGood     []netpolicy.Signature
+	sigGoodFP   string
+	sigDegraded bool
 
 	mu                sync.Mutex
 	attached          map[int]string                      // ifindex -> container name currently attached
@@ -213,6 +223,7 @@ func NewNetworkPolicyEnforcer(objPath string, store NetworkPolicyStore, registry
 		extraUplinks:      splitCSV(os.Getenv("CONTAINARIUM_NETWORK_POLICY_UPLINKS")),
 		trustedInstalled:  make(map[int]bool),
 		egressNames:       make(map[uint32]string),
+		compileFailLogged: make(map[uint32]compileFailure),
 		attached:          make(map[int]string),
 		idName:            make(map[uint32]string),
 		enforced:          make(map[uint32]bool),
@@ -370,13 +381,36 @@ func (e *NetworkPolicyEnforcer) armSignatures() {
 // PR-B), built-ins first, capped to the BPF slot budget. A disabled operator
 // signature is skipped. Returns the slice + a fingerprint so refresh can skip a
 // redundant map rewrite when nothing changed.
+//
+// When the store errors, the last good merged set is returned unchanged (same
+// fingerprint) so the refresh does not clear operator signatures already loaded
+// in BPF (#3519); the degraded state is set until a read succeeds again.
 func (e *NetworkPolicyEnforcer) effectiveSignatures() ([]netpolicy.Signature, string) {
 	sigs := netpolicy.BuiltinSignatures()
+	storeOK := false
 	if e.sigStore != nil {
 		ops, err := e.sigStore.List(e.ctx)
 		if err != nil {
-			log.Printf("[netpolicy] list operator signatures: %v", err)
+			e.mu.Lock()
+			wasDegraded := e.sigDegraded
+			e.sigDegraded = true
+			good, goodFP := e.sigGood, e.sigGoodFP
+			e.mu.Unlock()
+			if !wasDegraded {
+				log.Printf("[netpolicy] ALERT: operator signature store unreachable, keeping the last loaded signature set until it answers: %v", err)
+			}
+			if good != nil {
+				return good, goodFP
+			}
 		} else {
+			storeOK = true
+			e.mu.Lock()
+			recovered := e.sigDegraded
+			e.sigDegraded = false
+			e.mu.Unlock()
+			if recovered {
+				log.Printf("[netpolicy] operator signature store answered again; signature set refreshed")
+			}
 			for _, op := range ops {
 				if !op.GetEnabled() {
 					continue
@@ -398,7 +432,20 @@ func (e *NetworkPolicyEnforcer) effectiveSignatures() ([]netpolicy.Signature, st
 	for _, s := range sigs {
 		fmt.Fprintf(&fp, "%d:%s:%x;", s.ID, s.Name, s.Pattern)
 	}
+	if storeOK {
+		e.mu.Lock()
+		e.sigGood, e.sigGoodFP = sigs, fp.String()
+		e.mu.Unlock()
+	}
 	return sigs, fp.String()
+}
+
+// SignatureStoreDegraded reports whether the latest operator-signature read
+// failed, so the enforcer is serving its last good signature set (#3519).
+func (e *NetworkPolicyEnforcer) SignatureStoreDegraded() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.sigDegraded
 }
 
 // refreshSignatureSlots writes the effective signature set into the BPF map
@@ -851,6 +898,12 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 		return err
 	}
 	plan := planReconcile(views, policies, e.enforceEnabled)
+	// Fail closed on a policy that does not compile (#3518): keep the tenant's
+	// last good egress and deny sets, and log the failure once per change.
+	holdLastGood(&plan, e.egressInstalled, e.denyInstalled)
+	for _, line := range noteCompileFailures(e.compileFailLogged, plan.compileFailed) {
+		log.Print(line)
+	}
 	// An older object ignores the egress_mode byte (#2987): fold it into mode
 	// before writing, so what is written and reported is what the kernel does.
 	e.warnEgressModeIgnored(foldEgressModeForObject(&plan, e.loader.SupportsEgressMode()), idName)
@@ -977,7 +1030,7 @@ func (e *NetworkPolicyEnforcer) recordApplied(a map[string]tenantApplied, at tim
 func (e *NetworkPolicyEnforcer) AppliedState(tenant string) appliedSnapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	snap := appliedSnapshot{Running: e.running, Reconciled: e.applied != nil, ReconciledAt: e.appliedAt, Interval: e.interval}
+	snap := appliedSnapshot{Running: e.running, Reconciled: e.applied != nil, ReconciledAt: e.appliedAt, Interval: e.interval, SignaturesDegraded: e.sigDegraded}
 	if !snap.Running {
 		return appliedSnapshot{}
 	}

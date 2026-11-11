@@ -36,13 +36,22 @@ func backupTools() []Tool {
 				"with a backup KMS key configured ('managed': a per-backup key " +
 				"wrapped by the KMS; 'both': managed plus the age recipient). 'require_encryption' refuses " +
 				"a backup that would be stored unencrypted. " +
-				"Mirrors `containarium backup create`.",
+				"scope 'box' backs up the tenant's whole box instead of a database " +
+				"(its filesystem and attached volumes, exported through Incus, always " +
+				"encrypted): it needs key_mode and takes only dest, gcs_bucket and " +
+				"age_recipient besides; restore it with restore_box_backup. " +
+				"Mirrors `containarium backup create` (scope 'box': `backup create --box`).",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"username": map[string]interface{}{
 						"type":        "string",
-						"description": "Tenant whose container holds the database.",
+						"description": "Tenant whose container holds the database (scope 'box': whose box is backed up).",
+					},
+					"scope": map[string]interface{}{
+						"type":        "string",
+						"description": "What to back up: 'database' (default) dumps a database; 'box' backs up the whole box, like `backup create --box`. A box backup needs key_mode and refuses database, hook, hook_format, label, db_user and db_password before any request is sent.",
+						"enum":        []string{"database", "box"},
 					},
 					"database": map[string]interface{}{
 						"type":        "string",
@@ -202,14 +211,21 @@ func backupTools() []Tool {
 
 func handleCreateBackup(client API, args map[string]interface{}) (string, error) {
 	dest := getStringArg(args, "dest", "local")
-	var destEnum string
+	var destination pb.BackupDestination
 	switch dest {
 	case "local":
-		destEnum = "BACKUP_DESTINATION_LOCAL"
+		destination = pb.BackupDestination_BACKUP_DESTINATION_LOCAL
 	case "gcs":
-		destEnum = "BACKUP_DESTINATION_GCS"
+		destination = pb.BackupDestination_BACKUP_DESTINATION_GCS
 	default:
 		return "", fmt.Errorf("invalid dest %q (expected 'local' or 'gcs')", dest)
+	}
+	switch scope := getStringArg(args, "scope", "database"); scope {
+	case "database":
+	case "box":
+		return handleCreateBoxBackup(client, args, destination)
+	default:
+		return "", fmt.Errorf("invalid scope %q (expected 'database' or 'box')", scope)
 	}
 
 	database := getStringArg(args, "database", "")
@@ -227,7 +243,7 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 	}
 	resp, err := client.CreateBackup(CreateBackupRequest{
 		Username:     getStringArg(args, "username", ""),
-		Destination:  destEnum,
+		Destination:  destination.String(),
 		GCSBucket:    getStringArg(args, "gcs_bucket", ""),
 		Hook:         hook,
 		Label:        getStringArg(args, "label", ""),
@@ -274,17 +290,27 @@ func handleCreateBackup(client API, args map[string]interface{}) (string, error)
 // daemon default — and an unknown value is refused here rather than
 // bounced by the gateway as an opaque 400.
 func keyModeEnumName(arg string) (string, error) {
+	m, err := keyModeArg(arg)
+	if err != nil || m == pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED {
+		return "", err
+	}
+	return m.String(), nil
+}
+
+// keyModeArg maps the tool's key_mode argument to the proto enum. Empty is
+// UNSPECIFIED; an unknown value is refused.
+func keyModeArg(arg string) (pb.BackupKeyMode, error) {
 	switch arg {
 	case "":
-		return "", nil
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED, nil
 	case "age_recipient":
-		return "BACKUP_KEY_MODE_AGE_RECIPIENT", nil
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_AGE_RECIPIENT, nil
 	case "managed":
-		return "BACKUP_KEY_MODE_MANAGED", nil
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_MANAGED, nil
 	case "both":
-		return "BACKUP_KEY_MODE_BOTH", nil
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_BOTH, nil
 	default:
-		return "", fmt.Errorf("invalid key_mode %q (expected 'age_recipient', 'managed' or 'both')", arg)
+		return pb.BackupKeyMode_BACKUP_KEY_MODE_UNSPECIFIED, fmt.Errorf("invalid key_mode %q (expected 'age_recipient', 'managed' or 'both')", arg)
 	}
 }
 
