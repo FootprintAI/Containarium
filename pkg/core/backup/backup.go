@@ -389,7 +389,10 @@ func (m *Manager) Create(opts CreateOptions) (*Record, error) {
 	if err := validateBackupID(id); err != nil {
 		return nil, fmt.Errorf("cannot derive a safe backup id: %w", err)
 	}
-	inContainerPath := "/tmp/containarium-backup-" + id + ".dump"
+	inContainerPath, err := stagingDumpPath("backup", id)
+	if err != nil {
+		return nil, err
+	}
 
 	// 1. Produce the dump inside the container, writing to the same staging
 	//    path either way so step 2 (pull + clean up) is shared.
@@ -871,7 +874,10 @@ func (m *Manager) Restore(opts RestoreOptions) error {
 		conn.Database = r.Database
 	}
 
-	inContainerPath := "/tmp/containarium-restore-" + r.ID + ".dump"
+	inContainerPath, err := stagingDumpPath("restore", r.ID)
+	if err != nil {
+		return err
+	}
 	if _, err := m.writeDump(target, inContainerPath, data, r.Encrypted, opts.AgeIdentity); err != nil {
 		return fmt.Errorf("failed to push dump into container: %w", err)
 	}
