@@ -1527,10 +1527,15 @@ acting on it:
 Anchoring resumes on its own once the chain passes the last anchored
 checkpoint. A recorded recovery that starts a new anchor epoch, so that
 `verify-anchor` treats the break as a documented break and not as
-tampering, is tracked in #3549. A conflict (a checkpoint already anchored
-with a different root) is never the "database recreated" case: run
-`containarium audit verify-anchor` and treat a mismatch as a possible
-rewrite.
+tampering, is tracked in #3549. The state is held in memory, so after a
+daemon restart the signals above reappear at the first refused tick, within
+one anchor interval (`CONTAINARIUM_AUDIT_ANCHOR_INTERVAL`, 15 minutes by
+default), not at startup. A conflict (a checkpoint already anchored with a
+different root) that persists across ticks is not the "database recreated"
+case: run `containarium audit verify-anchor` and treat a mismatch as a
+possible rewrite. A single conflict that clears on the next tick can happen
+when a recreated chain lands exactly on the last anchored checkpoint while
+it climbs past it.
 
 ### Anchoring to a bucket
 
