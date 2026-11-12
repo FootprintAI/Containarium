@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.135.1] - 2026-11-12
+
+
+### Security
+
+- **Peer jump-user setup refuses symlinks in the account's home** (#3653). `scripts/setup-peer-user.sh` runs as root and wrote `~/.ssh/authorized_keys` and re-owned `~/.ssh` by path, so a symlink in the home directory could redirect the write or chown. The script now refuses a symlink at the home directory, `.ssh` or `authorized_keys`, and re-owns the tree with `chown -h`.
+- **The tunnel systemd unit that carries the tunnel token is written 0600** (#3654). `setup-peer.sh` and `install-lab-tunnel.sh` wrote `containarium-tunnel.service` with the token in `ExecStart` at the default umask (0644), readable by every local user. The unit is now written under `umask 077` and chmod 0600, which also tightens an existing file.
+- **The ZFS encryption keyfile is never readable by other users, even briefly** (#3655). `setup-gpu-host.sh` created the keyfile with `dd` at the default umask and only tightened it to 0400 afterwards, leaving key material at 0644 for a window. A `create_keyfile` helper now creates it under `umask 077` and then sets 0400.
+- **The workspace proxy's Caddyfile is created private** (#3656). The `agent-workspace` recipe wrote `/opt/wsauth/Caddyfile`, which holds the cookie token and the basic-auth hash, at the default umask. Every in-box user could read it. The step now sets `umask 077` before the write and `chmod 600` after it.
+
 ## [0.135.0] - 2026-11-12
 
 
