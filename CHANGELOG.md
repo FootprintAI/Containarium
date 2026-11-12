@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.135.1] - 2026-11-12
+
+
+### Security
+
+- **Peer jump-user setup refuses symlinks in the account's home** (#3653). `scripts/setup-peer-user.sh` runs as root and wrote `~/.ssh/authorized_keys` and re-owned `~/.ssh` by path, so a symlink in the home directory could redirect the write or chown. The script now refuses a symlink at the home directory, `.ssh` or `authorized_keys`, and re-owns the tree with `chown -h`.
+- **The tunnel systemd unit that carries the tunnel token is written 0600** (#3654). `setup-peer.sh` and `install-lab-tunnel.sh` wrote `containarium-tunnel.service` with the token in `ExecStart` at the default umask (0644), readable by every local user. The unit is now written under `umask 077` and chmod 0600, which also tightens an existing file.
+- **The ZFS encryption keyfile is never readable by other users, even briefly** (#3655). `setup-gpu-host.sh` created the keyfile with `dd` at the default umask and only tightened it to 0400 afterwards, leaving key material at 0644 for a window. A `create_keyfile` helper now creates it under `umask 077` and then sets 0400.
+- **The workspace proxy's Caddyfile is created private** (#3656). The `agent-workspace` recipe wrote `/opt/wsauth/Caddyfile`, which holds the cookie token and the basic-auth hash, at the default umask. Every in-box user could read it. The step now sets `umask 077` before the write and `chmod 600` after it.
+
+## [0.135.0] - 2026-11-12
+
+
+### Added
+
+- **A BYOC backend can be marked so it never serves a base domain it does not own** (#2262). New daemon flag `--byoc-backend`, set by `containarium pool join --byoc` (which refuses `--base-domain`; re-running without `--byoc` removes the mark). A marked daemon serves no base domain, passed or stored in `daemon_config`: no management apex route (the one saved before marking is deleted, and the route sync removes it from Caddy with its certificate subject), no `*.<base-domain>` wildcard certificate, nothing in `--public-base-domain` advertised. A stored or passed value is logged as a `WARNING: --byoc-backend` line, and is still used to name ingress routes so existing route IDs do not change. Current daemons write no bridge-DNS wildcard (#2732). Unmarked hosts behave as before. `docs/BYOC-BACKEND-BRINGUP.md` updated.
+- **`--token-file` and `--stdin` for token-taking commands** (#3629). `containarium tunnel`, `hypervisor-agent`, and the admin `token` subcommands (`delegate`, `revoke`, `list-revoked`, `unscoped-report`) can now read the token from a file or standard input, keeping it out of process listings. The three sources are mutually exclusive, an unreadable or empty file/stdin is an error before any request, and passing `--token` alone still works but prints a deprecation warning to stderr.
+- **Read a box's journal and container logs in one stream** (#3643). `containarium logs <box>` (and the MCP `box_logs` tool, over the new `TailBoxLogs` RPC at `GET /v1/containers/{username}/logs`) prints the box's systemd journal and the logs of the docker containers inside it, merged in time order and labelled `journal/<unit>` or `container/<name>`. `--since`, `--tail`, `--unit` and `--container` narrow the read, `--follow` keeps reading, and every read resumes from a cursor with no line repeated or skipped. Same access as `containarium code logs` (box owner or collaborator, `ssh:write`). A stopped box is reported, not started; boxes whose containers run on podman or rootless docker are reported as unsupported for now. See `docs/BOX-LOGS.md`.
+
+### Fixed
+
+- **A database backup with nothing to back up says why** (#3600, #3602). A
+  backup that names no database and no hook used to fail with a generic
+  `Internal` error when the container had no reachable Postgres or no
+  database. It now fails with `FAILED_PRECONDITION` and a message that says
+  what to do: fix the connection, name a database or a hook, or the container
+  has no Postgres to back up. psql's output stays in the daemon log. A failure
+  to run the listing at all, and any other failure, stays `Internal`.
+- **A run start that gives up on its token install leaves no token behind**
+  (#3622). When `StartBoxRun`'s per-run token install failed, timed out or was
+  cancelled, the start failed but the token could stay in the box (an install
+  that finished late still placed it), and a later run of the same name as the
+  box owner then failed to start. The daemon now removes the token as root on
+  every such path; after a timeout or cancel it does so once the install has
+  finished, and it retries a removal that fails. Until the token is gone,
+  another start of that run name is refused with `UNAVAILABLE`.
+
+### Security
+
+- **Helm chart: host-key checking is secure by default** (#3628). The chart no
+  longer hardcodes `CONTAINARIUM_K8S_INSECURE_IGNORE_HOST_KEY=1`; the new value
+  `daemon.insecureIgnoreHostKey` (default `false`) is the only way to set it.
+  The gateway no longer silently falls back to ignoring host keys when a box
+  has none to pin: it returns an error and the box start fails. To upgrade, run
+  `helm upgrade` as usual; set `daemon.insecureIgnoreHostKey=true` only if you
+  deliberately relied on ignoring host keys.
+- **New owner, collaborator and Box tenant names must not contain `-container-` or end in `-container`** (#3630). One shared rule now guards collaborator creation, new box creation and Box CR `spec.tenant` (new CRs only), so a jump account built as `<owner>-container-<collaborator>` can no longer collide with another owner's box. Existing names are not renamed; `containarium audit names` lists them read-only.
+- **Caddy no longer logs its environment or builds in a predictable temp path** (#3631). The generated Caddy systemd units (and `scripts/setup-caddy.sh`) drop `--environ`, which printed the DNS-provider credential to the journal at startup. The xcaddy source build now uses a private `0700` directory from `os.MkdirTemp` and removes it afterwards, instead of the shared `/tmp/caddy-build`. Existing hosts pick up the new unit text on the next Caddy reconcile.
+- **Secret files are always written mode 0600, atomically** (#3632). The mTLS private keys, the pool-join auth and tunnel token files and the generated JWT secret were written with `os.WriteFile(..., 0600)`, which keeps the mode of a file that already exists, so a looser pre-existing file stayed readable. They now go through a shared `secretfile.Write` that writes a 0600 temp file in the same directory, fsyncs it and renames it into place.
+
 ## [0.134.0] - 2026-11-11
 
 

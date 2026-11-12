@@ -150,10 +150,14 @@ func TestInstallRunToken_CalledOnlyWithAToken(t *testing.T) {
 		calls = append(calls, box+"/"+runAs+"/"+name+"/"+token)
 		return nil
 	}}
-	if err := s.installRunToken(context.Background(), "box1", "ctn-run", "r1", ""); err != nil || len(calls) != 0 {
+	root := func(box, script string) (string, error) {
+		t.Errorf("a successful install removed something as root:\n%s", script)
+		return "", nil
+	}
+	if err := s.installRunToken(context.Background(), root, "box1", "ctn-run", "r1", ""); err != nil || len(calls) != 0 {
 		t.Fatalf("a run with no token installed something: calls=%v err=%v", calls, err)
 	}
-	if err := s.installRunToken(context.Background(), "box1", "ctn-run", "r1", "tok"); err != nil {
+	if err := s.installRunToken(context.Background(), root, "box1", "ctn-run", "r1", "tok"); err != nil {
 		t.Fatalf("installRunToken: %v", err)
 	}
 	if len(calls) != 1 || calls[0] != "box1/ctn-run/r1/tok" {
@@ -191,7 +195,7 @@ func TestInstallRunToken_TimesOut(t *testing.T) {
 		<-block
 		return nil
 	}}
-	err := s.installRunToken(context.Background(), "box1", "ctn-run", "r1", "tok")
+	err := s.installRunToken(context.Background(), noRootExec, "box1", "ctn-run", "r1", "tok")
 	if err == nil || !strings.Contains(err.Error(), "did not finish") {
 		t.Fatalf("a hung install returned %v; want a timeout", err)
 	}
@@ -207,8 +211,12 @@ func TestInstallRunToken_CancelledRequestStopsWaiting(t *testing.T) {
 	}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := s.installRunToken(ctx, "box1", "ctn-run", "r1", "tok")
+	err := s.installRunToken(ctx, noRootExec, "box1", "ctn-run", "r1", "tok")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled install returned %v, want context.Canceled", err)
 	}
 }
+
+// noRootExec is a root exec seam that does nothing, for tests that do not look
+// at what runs as root.
+func noRootExec(string, string) (string, error) { return "", nil }

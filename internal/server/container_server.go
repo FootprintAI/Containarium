@@ -150,6 +150,12 @@ type ContainerServer struct {
 	// event feed is read from (#3582); empty means runhook.AuditDir.
 	boxRunAuditDir string
 	boxRunPoll     time.Duration
+	// TailBoxLogs (#3643, box_logs.go) shares boxRunExec, boxRunCollaborator
+	// and boxRunPoll above. boxLogsState reports whether the box is running
+	// (nil: the container manager's state) and boxLogsRoot is the collection
+	// script's filesystem root (empty in production); both are test seams.
+	boxLogsState func(username string) (running bool, err error)
+	boxLogsRoot  string
 	// boxRunStartExec is StartBoxRun's own exec seam (#2193), separate from
 	// boxRunExec: production needs to run AS the box's own Linux user (so the
 	// spawned engine reads that user's credentials and the files it creates
@@ -162,6 +168,11 @@ type ContainerServer struct {
 	boxRunStartExec boxRunStartFunc
 	// boxRunTokenInstall is the run-token install seam (box_run_token_install.go).
 	boxRunTokenInstall boxRunTokenInstallFunc
+	// boxRunTokenPending holds the (box, name) keys whose start gave up waiting
+	// for its token install while that install is still running (#3622). A new
+	// start of such a name is refused until the install has finished and its
+	// token is removed (box_run_token_install.go).
+	boxRunTokenPending sync.Map // key: box+":"+name -> struct{}
 
 	// WriteBoxFile (#3548, box_file_write.go). boxFileWrite is the file API
 	// seam (nil: the container manager's WriteFile) and boxFileStageDir where

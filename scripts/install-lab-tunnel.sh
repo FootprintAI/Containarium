@@ -17,6 +17,16 @@
 
 set -euo pipefail
 
+# write_secret_unit PATH: stdin -> PATH with mode 0600. The unit carries the
+# tunnel token in ExecStart, so it must never be readable by other users.
+# umask 077 keeps a new file private from the first byte; the explicit chmod
+# also tightens a file that already existed (> keeps the old mode).
+write_secret_unit() {
+    local path="$1"
+    (umask 077; cat > "$path")
+    chmod 0600 "$path"
+}
+
 if [[ $EUID -ne 0 ]]; then
     echo "Error: this script must be run as root (use sudo)"
     exit 1
@@ -64,7 +74,7 @@ echo "    md5: $(md5sum "$BINARY_DST" | cut -d' ' -f1)"
 ln -sf "$BINARY_DST" /usr/local/bin/containarium
 
 echo "==> Writing systemd unit"
-cat > /etc/systemd/system/containarium-tunnel.service <<TUNNEL
+write_secret_unit /etc/systemd/system/containarium-tunnel.service <<TUNNEL
 [Unit]
 Description=Containarium Tunnel Client (${POOL} pool primary)
 Documentation=https://github.com/footprintai/Containarium

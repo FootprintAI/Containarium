@@ -1,11 +1,12 @@
 package container
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"math/rand"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -236,13 +237,15 @@ func ensureJumpAccountState(username string) error {
 	// Set home dir permissions (sshd requires 755 or stricter).
 	_ = os.Chmod(fmt.Sprintf("/home/%s", username), 0755) // #nosec G302 -- sshd requires home dir to be world-readable
 
-	// Create .ssh dir
-	sshDir := fmt.Sprintf("/home/%s/.ssh", username)
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
+	// Create .ssh dir, refusing a symlink the account planted in its home.
+	sshFd, uid, gid, err := openUserSSHDir(authorizedKeysHomeRoot, username)
+	if err != nil {
 		return fmt.Errorf("failed to create .ssh dir: %w", err)
 	}
-	// #nosec G204 -- username validated by isValidUsername (callers)
-	_ = exec.Command("chown", "-R", username+":"+username, sshDir).Run()
+	defer closeFD(sshFd)
+	if err := chownTreeNoFollow(sshFd, uid, gid); err != nil {
+		return fmt.Errorf("failed to set .ssh ownership: %w", err)
+	}
 
 	// Sudoers entry for incus access (containarium-shell needs it)
 	sudoersEntry := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/incus\n", username)
@@ -474,27 +477,24 @@ func setupUserSSHKey(username, sshPublicKey string, verbose bool) error {
 	// Same lock as Add/Remove/Replace: this overwrites the file.
 	defer LockAuthorizedKeys(username)()
 
-	homeDir := filepath.Join("/home", username)
-	sshDir := filepath.Join(homeDir, ".ssh")
-	authKeysFile := filepath.Join(sshDir, "authorized_keys")
-
-	// Create .ssh directory
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
+	// Create .ssh directory, refusing a symlink the account planted in its home.
+	sshFd, uid, gid, err := openUserSSHDir(authorizedKeysHomeRoot, username)
+	if err != nil {
 		return fmt.Errorf("failed to create .ssh directory: %w", err)
 	}
+	defer closeFD(sshFd)
 
 	// Clean up SSH key (remove extra whitespace, ensure newline)
 	cleanKey := strings.TrimSpace(sshPublicKey)
 
-	// Write SSH key
-	if err := os.WriteFile(authKeysFile, []byte(cleanKey+"\n"), 0600); err != nil {
+	// Write SSH key, refusing a symlink at authorized_keys.
+	if err := writeFileNoFollow(sshFd, "authorized_keys", []byte(cleanKey+"\n"), 0600); err != nil {
 		return fmt.Errorf("failed to write authorized_keys: %w", err)
 	}
 
 	// Set ownership (must run as root/sudo)
-	cmd := exec.Command("chown", "-R", fmt.Sprintf("%s:%s", username, username), sshDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to set ownership: %w\nOutput: %s", err, output)
+	if err := chownTreeNoFollow(sshFd, uid, gid); err != nil {
+		return fmt.Errorf("failed to set ownership: %w", err)
 	}
 
 	if verbose {
@@ -509,24 +509,21 @@ func updateUserSSHKey(username, sshPublicKey string, verbose bool) error {
 	// Same lock as Add/Remove/Replace: this is a read-then-append.
 	defer LockAuthorizedKeys(username)()
 
-	homeDir := filepath.Join("/home", username)
-	sshDir := filepath.Join(homeDir, ".ssh")
-	authKeysFile := filepath.Join(sshDir, "authorized_keys")
-
-	// Ensure .ssh directory exists
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
+	// Ensure .ssh directory exists, refusing a symlink the account planted.
+	sshFd, uid, gid, err := openUserSSHDir(authorizedKeysHomeRoot, username)
+	if err != nil {
 		return fmt.Errorf("failed to create .ssh directory: %w", err)
 	}
+	defer closeFD(sshFd)
 
-	// Set ownership on .ssh directory
-	cmd := exec.Command("chown", fmt.Sprintf("%s:%s", username, username), sshDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to set .ssh ownership: %w\nOutput: %s", err, output)
+	// Set ownership on .ssh directory (this directory only, not its contents).
+	if err := fchownFD(sshFd, uid, gid); err != nil {
+		return fmt.Errorf("failed to set .ssh ownership: %w", err)
 	}
 
-	// Read existing keys
+	// Read existing keys, refusing a symlink at authorized_keys.
 	existingKeys := ""
-	if data, err := os.ReadFile(authKeysFile); err == nil {
+	if data, err := readFileNoFollow(sshFd, "authorized_keys"); err == nil {
 		existingKeys = string(data)
 	}
 
@@ -541,8 +538,8 @@ func updateUserSSHKey(username, sshPublicKey string, verbose bool) error {
 		return nil // Key already present
 	}
 
-	// Append new key
-	f, err := os.OpenFile(authKeysFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+	// Append new key, refusing a symlink at authorized_keys.
+	f, err := openFileNoFollow(sshFd, "authorized_keys", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open authorized_keys: %w", err)
 	}
@@ -552,10 +549,9 @@ func updateUserSSHKey(username, sshPublicKey string, verbose bool) error {
 		return fmt.Errorf("failed to write SSH key: %w", err)
 	}
 
-	// Set ownership on authorized_keys
-	cmd = exec.Command("chown", fmt.Sprintf("%s:%s", username, username), authKeysFile)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to set authorized_keys ownership: %w\nOutput: %s", err, output)
+	// Set ownership on the open file, so the change applies to what was written.
+	if err := f.Chown(uid, gid); err != nil {
+		return fmt.Errorf("failed to set authorized_keys ownership: %w", err)
 	}
 
 	if verbose {
@@ -930,20 +926,19 @@ func AddAuthorizedKey(username, pubKey string) error {
 
 	defer LockAuthorizedKeys(username)()
 
-	sshDir := filepath.Join(authorizedKeysHomeRoot, username, ".ssh")
-	akPath := filepath.Join(sshDir, "authorized_keys")
-
-	// Ensure .ssh exists with 0700.
-	if err := os.MkdirAll(sshDir, 0o700); err != nil {
-		return fmt.Errorf("mkdir %s: %w", sshDir, err)
+	// Ensure .ssh exists with 0700, refusing a symlink the account planted.
+	sshFd, uid, gid, err := openUserSSHDir(authorizedKeysHomeRoot, username)
+	if err != nil {
+		return fmt.Errorf("open .ssh: %w", err)
 	}
+	defer closeFD(sshFd)
 
-	// Read existing content (file may not exist yet).
+	// Read existing content (file may not exist yet), refusing a symlink.
 	var existing []byte
-	if b, err := os.ReadFile(akPath); err == nil {
+	if b, err := readFileNoFollow(sshFd, "authorized_keys"); err == nil {
 		existing = b
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("read %s: %w", akPath, err)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read authorized_keys: %w", err)
 	}
 
 	// Idempotency: skip if exact key is already a line.
@@ -962,27 +957,9 @@ func AddAuthorizedKey(username, pubKey string) error {
 	buf.WriteString(pubKey)
 	buf.WriteString("\n")
 
-	// Atomic write: temp file in same dir + rename.
-	tmp, err := os.CreateTemp(sshDir, ".authorized_keys.tmp.*")
-	if err != nil {
-		return fmt.Errorf("create temp: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod tmp: %w", err)
-	}
-	if _, err := tmp.WriteString(buf.String()); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write tmp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close tmp: %w", err)
-	}
-	if err := os.Rename(tmpPath, akPath); err != nil {
-		return fmt.Errorf("rename tmp -> %s: %w", akPath, err)
+	// Atomic write under the dir fd: temp file + rename, no path followed.
+	if err := writeAuthorizedKeysAt(sshFd, []byte(buf.String()), uid, gid); err != nil {
+		return err
 	}
 
 	// Best-effort chown so sshd reads the file as the user (it normally
@@ -990,7 +967,7 @@ func AddAuthorizedKey(username, pubKey string) error {
 	// for some configurations). Errors are non-fatal — sshd reads as
 	// root and the mode is 0600, so the worst case is a slightly
 	// surprising owner the operator may want to fix manually.
-	_ = exec.Command("chown", "-R", username+":"+username, sshDir).Run()
+	_ = chownTreeNoFollow(sshFd, uid, gid)
 
 	return nil
 }
@@ -1013,13 +990,20 @@ func RemoveAuthorizedKey(username, pubKey string) error {
 
 	defer LockAuthorizedKeys(username)()
 
-	akPath := filepath.Join(authorizedKeysHomeRoot, username, ".ssh", "authorized_keys")
-	existing, err := os.ReadFile(akPath)
+	sshFd, uid, gid, err := openUserSSHDirMode(authorizedKeysHomeRoot, username, false)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("read %s: %w", akPath, err)
+		return fmt.Errorf("open .ssh: %w", err)
+	}
+	defer closeFD(sshFd)
+	existing, err := readFileNoFollow(sshFd, "authorized_keys")
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read authorized_keys: %w", err)
 	}
 
 	var out strings.Builder
@@ -1043,26 +1027,8 @@ func RemoveAuthorizedKey(username, pubKey string) error {
 		result = ""
 	}
 
-	sshDir := filepath.Dir(akPath)
-	tmp, err := os.CreateTemp(sshDir, ".authorized_keys.tmp.*")
-	if err != nil {
-		return fmt.Errorf("create temp: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod tmp: %w", err)
-	}
-	if _, err := tmp.WriteString(result); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write tmp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close tmp: %w", err)
-	}
-	if err := os.Rename(tmpPath, akPath); err != nil {
-		return fmt.Errorf("rename tmp -> %s: %w", akPath, err)
+	if err := writeAuthorizedKeysAt(sshFd, []byte(result), uid, gid); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1074,13 +1040,20 @@ func CountAuthorizedKeys(username string) (int32, error) {
 	if !isValidUsername(username) {
 		return 0, fmt.Errorf("invalid username: %s", username)
 	}
-	akPath := filepath.Join(authorizedKeysHomeRoot, username, ".ssh", "authorized_keys")
-	b, err := os.ReadFile(akPath)
+	sshFd, _, _, err := openUserSSHDirMode(authorizedKeysHomeRoot, username, false)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return 0, nil
 		}
-		return 0, fmt.Errorf("read %s: %w", akPath, err)
+		return 0, fmt.Errorf("open .ssh: %w", err)
+	}
+	defer closeFD(sshFd)
+	b, err := readFileNoFollow(sshFd, "authorized_keys")
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read authorized_keys: %w", err)
 	}
 	n := int32(0)
 	for _, line := range strings.Split(string(b), "\n") {

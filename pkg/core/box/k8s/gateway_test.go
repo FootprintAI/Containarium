@@ -96,6 +96,37 @@ func TestCreateProgramsPipe(t *testing.T) {
 	}
 }
 
+// With no host keys to pin, the gateway must fail the route (and so the box
+// start) instead of silently falling back to ignore_hostkey (#3628).
+func TestPipeObjectNoHostKeysIsError(t *testing.T) {
+	b, _ := gatewayBackend()
+	r := &sshpiperRouter{b: b}
+	for _, keys := range [][]string{nil, {}, {"", ""}} {
+		obj, err := r.pipeObject("alice", []string{"ssh-ed25519 AAAA"}, keys)
+		if err == nil {
+			t.Errorf("pipeObject(hostKeys=%q) = no error, want error", keys)
+		}
+		if obj != nil {
+			t.Errorf("pipeObject(hostKeys=%q) returned a Pipe alongside the error", keys)
+		}
+	}
+}
+
+// The explicit opt-in (daemon.insecureIgnoreHostKey) still selects
+// ignore_hostkey, even with no keys to pin.
+func TestPipeObjectInsecureOptInIgnoresHostKey(t *testing.T) {
+	b, _ := gatewayBackend()
+	b.cfg.InsecureIgnoreHostKey = true
+	r := &sshpiperRouter{b: b}
+	obj, err := r.pipeObject("alice", []string{"ssh-ed25519 AAAA"}, nil)
+	if err != nil {
+		t.Fatalf("pipeObject: %v", err)
+	}
+	if ig, _, _ := unstructured.NestedBool(obj.Object, "spec", "to", "ignore_hostkey"); !ig {
+		t.Error("opt-in should set ignore_hostkey")
+	}
+}
+
 func TestSetAuthorizedKeysUpdatesPipe(t *testing.T) {
 	b, dyn := gatewayBackend()
 	ctx := context.Background()

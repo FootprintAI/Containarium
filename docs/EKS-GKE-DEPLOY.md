@@ -350,10 +350,17 @@ so the CLI and GitOps drive one reconcile loop. The operator is opt-in
 
 ## Production notes
 
-- **Pin the gateway host key.** The chart defaults to
-  `CONTAINARIUM_K8S_INSECURE_IGNORE_HOST_KEY=1` for out-of-the-box dev. In
-  production, unset it and distribute the gateway host key so clients use
+- **Host-key checking is on by default.** The gateway pins each box's host
+  key, and the chart no longer sets
+  `CONTAINARIUM_K8S_INSECURE_IGNORE_HOST_KEY`. If a box has no host key to
+  pin, the gateway returns an error and the box start fails instead of
+  silently ignoring host keys. The only way to set the variable is
+  `--set daemon.insecureIgnoreHostKey=true`; dev uses the same secure setup.
+  Also distribute the gateway host key so clients use
   `StrictHostKeyChecking=yes` against a known `known_hosts` entry.
+  **Upgrading:** releases before this change rendered the variable as `1`
+  unconditionally. After `helm upgrade` the daemon no longer carries it; if
+  you relied on ignoring host keys, set the value above explicitly.
 - **Default-deny NetworkPolicy — a box with no egress policy has _no_
   outbound network.** You don't add this: the daemon already creates a
   `default-deny` NetworkPolicy in each box namespace. On its own it permits

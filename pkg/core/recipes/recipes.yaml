@@ -565,6 +565,9 @@ recipes:
         # console a zero-click bootstrap URL (RecipeService.GetWorkspaceAccess).
         printf '%s' "$WS_TOKEN" > /opt/wsauth/token
         chmod 600 /opt/wsauth/token
+        # The Caddyfile holds the cookie token and the basic-auth hash. Create
+        # it under umask 077 so no in-box user can read it, even briefly.
+        umask 077
         cat > /opt/wsauth/Caddyfile <<EOF
         {
           auto_https off
@@ -601,6 +604,7 @@ recipes:
           }
         }
         EOF
+        chmod 600 /opt/wsauth/Caddyfile
       - |
         podman run -d --name wsauth --restart=always --network host \
           -v /opt/wsauth/Caddyfile:/etc/caddy/Caddyfile:ro \

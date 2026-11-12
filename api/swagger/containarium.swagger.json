@@ -4191,6 +4191,100 @@
         ]
       }
     },
+    "/v1/containers/{username}/logs": {
+      "get": {
+        "summary": "Tail a box's journal and container logs",
+        "description": "Returns one time-ordered window of a box's systemd journal and the logs of the containers running inside it, each line labelled with its unit or container, plus a cursor to resume from with no line repeated or skipped. since, tail, units and containers narrow the read; an unknown unit or container is INVALID_ARGUMENT listing the valid names. A stopped box is reported as BOX_STOPPED and not started. Docker-backed boxes only: a box whose containers run on podman or rootless docker answers RUNTIME_UNSUPPORTED. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_TailBoxLogs",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/TailBoxLogsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "description": "The box owner's username (the box is \u003cusername\u003e-container).",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "cursor",
+            "description": "Opaque resume point from a previous response. Empty starts a new read\nfrom since and/or tail. Cannot be combined with since or tail.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "since",
+            "description": "Start from lines received at or after this time.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "name": "tail",
+            "description": "0..1000: start with only the last this many lines (after since, when\nset). With neither since nor cursor, 0 means 100.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "units",
+            "description": "Only these systemd units (\"nginx\" means \"nginx.service\"). Each must\nmatch [A-Za-z0-9][A-Za-z0-9@_.:-]* and be a unit loaded in the box.\nWith units set and containers empty, no container is read.",
+            "in": "query",
+            "required": false,
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "collectionFormat": "multi"
+          },
+          {
+            "name": "containers",
+            "description": "Only these containers, by name. With containers set and units empty,\nthe journal is not read.",
+            "in": "query",
+            "required": false,
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "collectionFormat": "multi"
+          },
+          {
+            "name": "maxLines",
+            "description": "Upper bound on lines per window: \u003c= 1000; 0 means 200.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "followSeconds",
+            "description": "0..10: when no new line is available, wait up to this many seconds for\none before answering with an empty window.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Containers"
+        ]
+      }
+    },
     "/v1/containers/{username}/monitoring": {
       "post": {
         "summary": "Enable or disable OTel monitoring on a container",
@@ -12322,6 +12416,65 @@
         }
       },
       "description": "BadDestinationEntry is one entry in the known-bad-destination list (#1641)\nmatched against flow destination IPs — a mining pool or other known-bad\nendpoint."
+    },
+    "BoxContainerRuntime": {
+      "type": "string",
+      "enum": [
+        "BOX_CONTAINER_RUNTIME_UNSPECIFIED",
+        "BOX_CONTAINER_RUNTIME_NONE",
+        "BOX_CONTAINER_RUNTIME_DOCKER",
+        "BOX_CONTAINER_RUNTIME_PODMAN",
+        "BOX_CONTAINER_RUNTIME_DOCKER_ROOTLESS"
+      ],
+      "default": "BOX_CONTAINER_RUNTIME_UNSPECIFIED",
+      "description": "BoxContainerRuntime is the container runtime the collection script found\nin the box.\n\n - BOX_CONTAINER_RUNTIME_NONE: No container runtime with running containers: the journal only.\n - BOX_CONTAINER_RUNTIME_DOCKER: Rootful docker.\n - BOX_CONTAINER_RUNTIME_PODMAN: Podman (rootful or rootless) has running containers. Unsupported.\n - BOX_CONTAINER_RUNTIME_DOCKER_ROOTLESS: A rootless docker daemon. Unsupported."
+    },
+    "BoxLogLine": {
+      "type": "object",
+      "properties": {
+        "time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the source received the line: the journal's realtime timestamp, or\nthe container runtime's receipt timestamp."
+        },
+        "sourceKind": {
+          "$ref": "#/definitions/BoxLogSourceKind"
+        },
+        "source": {
+          "type": "string",
+          "description": "The unit, syslog identifier, or container name."
+        },
+        "text": {
+          "type": "string",
+          "description": "The line as valid UTF-8: invalid bytes and control characters (other\nthan tab) are replaced with U+FFFD, and the text is capped at 8 KiB."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "The line was longer than the cap (or than the journal's 4 KiB field\nlimit) and text holds only its start."
+        }
+      },
+      "description": "BoxLogLine is one log line."
+    },
+    "BoxLogSourceKind": {
+      "type": "string",
+      "enum": [
+        "BOX_LOG_SOURCE_KIND_UNSPECIFIED",
+        "BOX_LOG_SOURCE_KIND_JOURNAL",
+        "BOX_LOG_SOURCE_KIND_CONTAINER"
+      ],
+      "default": "BOX_LOG_SOURCE_KIND_UNSPECIFIED",
+      "description": "BoxLogSourceKind says where a line came from.\n\n - BOX_LOG_SOURCE_KIND_JOURNAL: The box's systemd journal; source is the unit, or the syslog\nidentifier when the entry has no unit.\n - BOX_LOG_SOURCE_KIND_CONTAINER: A container running inside the box; source is the container's name."
+    },
+    "BoxLogsStatus": {
+      "type": "string",
+      "enum": [
+        "BOX_LOGS_STATUS_UNSPECIFIED",
+        "BOX_LOGS_STATUS_OK",
+        "BOX_LOGS_STATUS_BOX_STOPPED",
+        "BOX_LOGS_STATUS_RUNTIME_UNSUPPORTED"
+      ],
+      "default": "BOX_LOGS_STATUS_UNSPECIFIED",
+      "description": "BoxLogsStatus says whether the window could be read at all.\n\n - BOX_LOGS_STATUS_OK: The window was read; lines may still be empty when nothing new arrived.\n - BOX_LOGS_STATUS_BOX_STOPPED: The box is not running. It is not started and its disk is not read;\nthe cursor is returned unchanged so the caller can resume later.\n - BOX_LOGS_STATUS_RUNTIME_UNSUPPORTED: The box runs its containers on a runtime this version cannot read\n(podman, rootless docker). No lines are returned rather than a window\nthat silently leaves those containers out."
     },
     "BoxRun": {
       "type": "object",
@@ -23246,6 +23399,44 @@
         }
       },
       "title": "SystemInfo contains information about the host system"
+    },
+    "TailBoxLogsResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/BoxLogsStatus"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable detail for a status other than OK."
+        },
+        "runtime": {
+          "$ref": "#/definitions/BoxContainerRuntime",
+          "description": "The container runtime the box was found to use."
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/BoxLogLine"
+          },
+          "description": "Lines in receipt-time order, oldest first."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "Pass back as cursor to read the lines after this window, with no line\nrepeated or skipped. Valid for the same units and containers filter."
+        },
+        "more": {
+          "type": "boolean",
+          "description": "More lines were ready than this window could hold; read again at once."
+        },
+        "droppedFrames": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Output frames from the box that did not parse and were skipped."
+        }
+      },
+      "description": "TailBoxLogsResponse is one time-ordered window of a box's logs."
     },
     "TailBoxRunLogResponse": {
       "type": "object",

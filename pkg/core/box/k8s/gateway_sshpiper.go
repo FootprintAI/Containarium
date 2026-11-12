@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -50,12 +51,12 @@ func (r *sshpiperRouter) upstreamHost(tenant string) string {
 // pipeObject builds the sshpiper Pipe that routes username=<tenant> to the
 // tenant's box pod: the incoming connection authenticates against the box's
 // authorized keys (inline, base64), and the upstream host key is trusted
-// (ignore_hostkey — TOFU/known_hosts pinning is a follow-up).
+// (pinned via known_hosts_data; an error when there is nothing to pin).
 //
 // fromKeys is the union of the agent's client keys (direct node-gateway
 // access) and any authorized sentinel keys (hop 2 of the sentinel chain) —
 // both authenticate the incoming connection at the node gateway.
-func (r *sshpiperRouter) pipeObject(tenant string, fromKeys []string, hostPubKeys []string) *unstructured.Unstructured {
+func (r *sshpiperRouter) pipeObject(tenant string, fromKeys []string, hostPubKeys []string) (*unstructured.Unstructured, error) {
 	var buf []byte
 	for _, k := range fromKeys {
 		buf = append(buf, []byte(k)...)
@@ -65,14 +66,24 @@ func (r *sshpiperRouter) pipeObject(tenant string, fromKeys []string, hostPubKey
 		"host":     r.upstreamHost(tenant),
 		"username": boxSSHUser, // fixed box login user; tenant identity is enforced by from.username
 	}
-	// Host-key handling: pin the box's host keys (known_hosts_data) when we have
-	// them, else fall back to ignore_hostkey (the escape hatch / pre-pinning
-	// behavior). Both keys are pinned because sshpiper may negotiate either —
-	// stops a man-in-the-middle between sshpiper and the box.
-	if len(hostPubKeys) > 0 && !r.b.cfg.InsecureIgnoreHostKey {
-		to["known_hosts_data"] = knownHostsData(r.upstreamHost(tenant), hostPubKeys...)
-	} else {
+	// Host-key handling: pin the box's host keys (known_hosts_data). Both keys
+	// are pinned because sshpiper may negotiate either — stops a
+	// man-in-the-middle between sshpiper and the box. ignore_hostkey is set
+	// only by the explicit InsecureIgnoreHostKey opt-in; with no keys to pin
+	// and no opt-in this is an error, never a silent fallback (#3628).
+	var pins []string
+	for _, k := range hostPubKeys {
+		if strings.TrimSpace(k) != "" {
+			pins = append(pins, k)
+		}
+	}
+	switch {
+	case r.b.cfg.InsecureIgnoreHostKey:
 		to["ignore_hostkey"] = true
+	case len(pins) > 0:
+		to["known_hosts_data"] = knownHostsData(r.upstreamHost(tenant), pins...)
+	default:
+		return nil, fmt.Errorf("no host key to pin for tenant %q and insecureIgnoreHostKey is not set; refusing to ignore host keys", tenant)
 	}
 	// The upstream credential: sshpiper authenticates to the box with this key
 	// (its public half is authorized on the box). Set only when configured.
@@ -94,7 +105,7 @@ func (r *sshpiperRouter) pipeObject(tenant string, fromKeys []string, hostPubKey
 			}},
 			"to": to,
 		},
-	}}
+	}}, nil
 }
 
 // ProgramRoute creates or updates the tenant's Pipe in the gateway namespace.
@@ -111,7 +122,10 @@ func (r *sshpiperRouter) ProgramRoute(ctx context.Context, tenant string, keys [
 		return fmt.Errorf("ensure host key: %w", err)
 	}
 	fromKeys := append(append([]string{}, keys...), r.b.sentinelKeys(ctx)...)
-	obj := r.pipeObject(tenant, fromKeys, hostPubs)
+	obj, err := r.pipeObject(tenant, fromKeys, hostPubs)
+	if err != nil {
+		return err
+	}
 	_, err = r.b.dyn.Resource(pipeGVR).Namespace(ns).Create(ctx, obj, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
 		existing, gerr := r.b.dyn.Resource(pipeGVR).Namespace(ns).Get(ctx, pipeName(tenant), metav1.GetOptions{})

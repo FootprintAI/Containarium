@@ -13,6 +13,11 @@ daemon:
   # the chart refuses to render while it is empty (#3442). Generate one per
   # install, e.g. --set daemon.jwtSecret="$(openssl rand -hex 24)".
   jwtSecret: ""
+  # -- Skip the gateway's upstream host-key verification
+  # (CONTAINARIUM_K8S_INSECURE_IGNORE_HOST_KEY=1). Default false: the gateway
+  # pins each box's host key and fails the box start if it has none (#3628).
+  # This is the only way to set the env var.
+  insecureIgnoreHostKey: false
   service:
     type: ClusterIP
     port: 8080
