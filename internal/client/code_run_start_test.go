@@ -99,6 +99,20 @@ func TestStartCodeRun_NoTokenStaysOnTheSSHSession(t *testing.T) {
 	}
 }
 
+// #3613: the SSH path starts the run in the directory the caller resolved
+// with coderun.Session.ResolveWorkdir.
+func TestStartCodeRun_SSHPathStartsInCwd(t *testing.T) {
+	sess := &fakeCodeRunSession{result: &coderun.ProcessStartResult{Name: "code"}}
+	if _, err := StartCodeRun(context.Background(), CodeRunStart{
+		Session: sess, Name: "code", Command: "pwd", CaptureMode: "combined", Cwd: "/home/alice/project",
+	}); err != nil {
+		t.Fatalf("StartCodeRun: %v", err)
+	}
+	if len(sess.calls) != 1 || strings.Join(sess.calls[0], "|") != "code|pwd|/home/alice/project|combined" {
+		t.Fatalf("ProcessStart calls = %v", sess.calls)
+	}
+}
+
 func TestStartCodeRun_Refusals(t *testing.T) {
 	sess := &fakeCodeRunSession{result: &coderun.ProcessStartResult{Name: "code"}}
 	req := &pb.StartBoxRunRequest{Username: "alice", Prompt: "fix the bug"}

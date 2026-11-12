@@ -156,7 +156,8 @@ verification of a pushed commit.
   agent's output.
 
 The CLI counterpart is `containarium code run <box> --command '<text>'
-[--timeout 15m] [--name <run>]` (the SSH path, as the box's own user).
+[--timeout 15m] [--name <run>] [--workdir <dir>]` (the SSH path, as the box's
+own user).
 
 ## Command allowlist and audit events: `command_policy`
 
@@ -324,6 +325,17 @@ instruction relative to a project (for example "put the slide under
 
 The capability name is `box_run_workdir`.
 
+The CLI counterpart is `containarium code run <box> --workdir <dir>` (prompt
+and `--command` runs), and the platform MCP tool `code_run` takes a `workdir`
+argument. Over the SSH path both apply the same rule as the box's own user:
+the path is checked locally before anything connects, and the directory is
+checked under the box user's home before anything on the box changes (before
+the gateway token is written or a finished run under the same name is rotated
+aside). A refused value starts no run. With `--run-token-file` the value goes to
+the daemon as `workdir`, and the CLI sends it only to a daemon that lists
+`box_run_workdir` (an older daemon would drop the field over gRPC and start the
+run in the home).
+
 ## Per-run token: `run_token`
 
 `run_token` is the platform credential for one run. The caller mints it; the
@@ -385,8 +397,9 @@ containarium code run <box> --prompt '<task>' --name <run> \
   is refused with `PermissionDenied` from that capability check, even against
   a daemon that advertises `box_run_token` and although `StartBoxRun` itself
   accepts the owner. No run is started.
-- `--prompt`, `--session`, `--continue`, `--name`, `--command` and `--timeout`
-  map to the request's fields. `--approvals ask`,
+- `--prompt`, `--session`, `--continue`, `--name`, `--command`, `--timeout`
+  and `--workdir` map to the request's fields. A `--workdir` is sent only to a
+  daemon that lists `box_run_workdir`. `--approvals ask`,
   `--output-format-stream-json` and `--token-ttl` belong to the SSH path and
   are refused with this flag.
 - After the start the command follows the run's log and exits non-zero when

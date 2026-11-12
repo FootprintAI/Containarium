@@ -29,8 +29,11 @@ type boxRunStartCase struct {
 	name         string
 	capabilities []string
 	token        string
-	// wantRefused: the client refuses before the daemon's StartBoxRun is called.
+	workdir      string
+	// wantRefused: the client refuses before the daemon's StartBoxRun is
+	// called, with wantRefusal (BoxRunTokenUnsupportedMessage when empty).
 	wantRefused bool
+	wantRefusal string
 	// wantInfoCalls is how often the daemon's capabilities are read.
 	wantInfoCalls int
 }
@@ -60,6 +63,38 @@ func boxRunStartCases() []boxRunStartCase {
 			name:         "a run without a token needs no capability and no capability read",
 			capabilities: []string{"box_run_name"},
 		},
+		// #3613: an older daemon would drop workdir over gRPC and start the run
+		// in the home, so a workdir goes only to one that advertises it.
+		{
+			name:          "a workdir reaches a daemon that advertises box_run_workdir",
+			capabilities:  []string{"box_run_name", BoxRunWorkdirCapability},
+			workdir:       "project",
+			wantInfoCalls: 1,
+		},
+		{
+			name:          "a workdir is refused for a daemon without box_run_workdir",
+			capabilities:  []string{"box_run_name", BoxRunTokenCapability},
+			workdir:       "project",
+			wantRefused:   true,
+			wantRefusal:   BoxRunWorkdirUnsupportedMessage,
+			wantInfoCalls: 1,
+		},
+		{
+			name:          "a token and a workdir read the capabilities once",
+			capabilities:  []string{BoxRunTokenCapability, BoxRunWorkdirCapability},
+			token:         testRunToken,
+			workdir:       "project",
+			wantInfoCalls: 1,
+		},
+		{
+			name:          "a token with a workdir is refused for a daemon with box_run_token only",
+			capabilities:  []string{BoxRunTokenCapability},
+			token:         testRunToken,
+			workdir:       "project",
+			wantRefused:   true,
+			wantRefusal:   BoxRunWorkdirUnsupportedMessage,
+			wantInfoCalls: 1,
+		},
 	}
 }
 
@@ -81,10 +116,14 @@ func (r *boxRunStartRecord) check(t *testing.T, tc boxRunStartCase, resp *pb.Sta
 		if err == nil {
 			t.Fatal("StartBoxRun succeeded, want the unsupported refusal")
 		}
-		if err.Error() != BoxRunTokenUnsupportedMessage {
-			t.Errorf("err = %q, want %q", err, BoxRunTokenUnsupportedMessage)
+		want := tc.wantRefusal
+		if want == "" {
+			want = BoxRunTokenUnsupportedMessage
 		}
-		if strings.Contains(err.Error(), tc.token) {
+		if err.Error() != want {
+			t.Errorf("err = %q, want %q", err, want)
+		}
+		if tc.token != "" && strings.Contains(err.Error(), tc.token) {
 			t.Errorf("the refusal carries the token: %q", err)
 		}
 		if len(r.starts) != 0 {
@@ -102,6 +141,9 @@ func (r *boxRunStartRecord) check(t *testing.T, tc boxRunStartCase, resp *pb.Sta
 	if got.GetRunToken() != tc.token {
 		t.Errorf("run_token at the daemon = %q, want %q", got.GetRunToken(), tc.token)
 	}
+	if got.GetWorkdir() != tc.workdir {
+		t.Errorf("workdir at the daemon = %q, want %q", got.GetWorkdir(), tc.workdir)
+	}
 	if got.GetUsername() != "alice" || got.GetPrompt() != "fix the bug" || got.GetRunName() != "issue-1" || got.GetModel() != "some-model" {
 		t.Errorf("request at the daemon = %v", got)
 	}
@@ -112,6 +154,13 @@ func (r *boxRunStartRecord) check(t *testing.T, tc boxRunStartCase, resp *pb.Sta
 
 func boxRunStartRequest(token string) *pb.StartBoxRunRequest {
 	return &pb.StartBoxRunRequest{Username: "alice", Prompt: "fix the bug", RunName: "issue-1", Model: "some-model", RunToken: token}
+}
+
+// request is the case's request: its token and workdir.
+func (tc boxRunStartCase) request() *pb.StartBoxRunRequest {
+	req := boxRunStartRequest(tc.token)
+	req.Workdir = tc.workdir
+	return req
 }
 
 type boxRunStartGRPCFixture struct {
@@ -163,7 +212,7 @@ func TestGRPCStartBoxRun(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &boxRunStartRecord{}
 			c := newBoxRunStartGRPCClient(t, &boxRunStartGRPCFixture{capabilities: tc.capabilities, rec: rec})
-			resp, err := c.StartBoxRun(boxRunStartRequest(tc.token))
+			resp, err := c.StartBoxRun(tc.request())
 			rec.check(t, tc, resp, err)
 		})
 	}
@@ -194,6 +243,22 @@ func TestGRPCStartBoxRun_CapabilityReadFailureRefusesAToken(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), testRunToken) {
 		t.Errorf("the error carries the token: %q", err)
+	}
+	if len(rec.starts) != 0 {
+		t.Fatalf("the daemon's StartBoxRun was called %d time(s)", len(rec.starts))
+	}
+}
+
+// A daemon whose capabilities cannot be read is not sent a workdir either: it
+// might be one that drops the field (#3613).
+func TestGRPCStartBoxRun_CapabilityReadFailureRefusesAWorkdir(t *testing.T) {
+	rec := &boxRunStartRecord{}
+	c := newBoxRunStartGRPCClient(t, &boxRunStartNoInfoFixture{rec: rec})
+	req := boxRunStartRequest("")
+	req.Workdir = "project"
+	_, err := c.StartBoxRun(req)
+	if err == nil || !strings.Contains(err.Error(), BoxRunWorkdirCapability) {
+		t.Fatalf("err = %v, want a capability-check failure naming %s", err, BoxRunWorkdirCapability)
 	}
 	if len(rec.starts) != 0 {
 		t.Fatalf("the daemon's StartBoxRun was called %d time(s)", len(rec.starts))
@@ -254,7 +319,7 @@ func TestHTTPStartBoxRun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			resp, err := c.StartBoxRun(boxRunStartRequest(tc.token))
+			resp, err := c.StartBoxRun(tc.request())
 			rec.check(t, tc, resp, err)
 		})
 	}
@@ -321,6 +386,14 @@ func TestBoxRunTokenUnsupportedMessage(t *testing.T) {
 	for _, want := range []string{"run_token", BoxRunTokenCapability, "upgrade"} {
 		if !strings.Contains(BoxRunTokenUnsupportedMessage, want) {
 			t.Errorf("BoxRunTokenUnsupportedMessage = %q, want it to name %q", BoxRunTokenUnsupportedMessage, want)
+		}
+	}
+}
+
+func TestBoxRunWorkdirUnsupportedMessage(t *testing.T) {
+	for _, want := range []string{"workdir", BoxRunWorkdirCapability, "upgrade"} {
+		if !strings.Contains(BoxRunWorkdirUnsupportedMessage, want) {
+			t.Errorf("BoxRunWorkdirUnsupportedMessage = %q, want it to name %q", BoxRunWorkdirUnsupportedMessage, want)
 		}
 	}
 }

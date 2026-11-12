@@ -1157,6 +1157,8 @@ func (s *Server) registerTools() {
 						"description": "Capture stdout and stderr separately (framed) so a JSON stream on stdout is not corrupted by diagnostics. Default false."},
 					"session_id": map[string]interface{}{"type": "string",
 						"description": "Resume this specific session id (claude --resume) instead of starting a fresh conversation. From a previous code_runs/BoxRun.session_id, when the engine exposed one."},
+					"workdir": map[string]interface{}{"type": "string",
+						"description": "Start the run in this directory, relative to the box user's home (e.g. \"project\"). A clean relative path: absolute paths, \"..\" and anything under .ssh or .containarium are refused. It must already exist and is never created. Default: the home."},
 				},
 			},
 			Handler: handleCodeRun,

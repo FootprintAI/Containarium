@@ -43,7 +43,7 @@ func TestCodeRunTool_StartsWithoutAToken(t *testing.T) {
 		return orig(ctx, s)
 	}
 
-	started, err := mcpStartCodeRun(context.Background(), sess, "r", "claude -p", "framed")
+	started, err := mcpStartCodeRun(context.Background(), sess, "r", "claude -p", "", "framed")
 	if err != nil {
 		t.Fatalf("mcpStartCodeRun: %v", err)
 	}

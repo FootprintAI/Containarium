@@ -35,9 +35,6 @@ const (
 	// DaemonCapBoxFiles: the WriteBoxFile RPC (#3548).
 	DaemonCapBoxFiles = "box_files"
 
-	maxBoxFilePathBytes = 1024
-	// Leaves room for the ".cbf.<pid>" suffix of the temp file (NAME_MAX is 255).
-	maxBoxFileSegmentBytes = 200
 	boxFileDefaultMode     = "0600"
 	boxFileStageDefaultDir = "/tmp"
 	// Printed on the script's stderr so the daemon can tell a refusal from a failure.
@@ -63,38 +60,7 @@ func (s *ContainerServer) boxFileWriteFn() boxFileWriteFunc {
 // cleanBoxFilePath validates a path relative to the box user's home. It
 // demands the canonical spelling rather than cleaning it, so what the caller
 // asked for is what is written.
-func cleanBoxFilePath(p string) (string, error) { return cleanHomeRelPath("path", p) }
-
-// cleanHomeRelPath is the canonical home-relative path rule, shared by
-// WriteBoxFile's path and StartBoxRun's workdir (#3551). field names the
-// request field in the error.
-func cleanHomeRelPath(field, p string) (string, error) {
-	switch {
-	case p == "":
-		return "", fmt.Errorf("%s is required", field)
-	case len(p) > maxBoxFilePathBytes:
-		return "", fmt.Errorf("%s must be at most %d bytes", field, maxBoxFilePathBytes)
-	case strings.HasPrefix(p, "/"):
-		return "", fmt.Errorf("%s must be relative to the box user's home directory", field)
-	}
-	for _, r := range p {
-		if r < 0x20 || r == 0x7f {
-			return "", fmt.Errorf("%s must not contain control characters", field)
-		}
-	}
-	if path.Clean(p) != p || p == "." {
-		return "", fmt.Errorf("%s must be a clean relative path inside the home directory (no \"..\", \".\", empty or trailing segments)", field)
-	}
-	for _, seg := range strings.Split(p, "/") {
-		if seg == ".." || len(seg) > maxBoxFileSegmentBytes {
-			return "", fmt.Errorf("%s must stay inside the home directory and keep each segment under %d bytes", field, maxBoxFileSegmentBytes)
-		}
-	}
-	if first := strings.SplitN(p, "/", 2)[0]; first == ".ssh" || first == ".containarium" {
-		return "", fmt.Errorf("%s must not be under %s: the platform manages it", field, first)
-	}
-	return p, nil
-}
+func cleanBoxFilePath(p string) (string, error) { return coderun.CleanHomeRelPath("path", p) }
 
 // WriteBoxFile implements pb.ContainerServiceServer.
 func (s *ContainerServer) WriteBoxFile(ctx context.Context, req *pb.WriteBoxFileRequest) (*pb.WriteBoxFileResponse, error) {

@@ -276,6 +276,8 @@ func init() {
 		"run this shell command on the box instead of the agent (no engine starts, no agent credential is loaded); mutually exclusive with --prompt, --session, --continue, --output-format-stream-json and --approvals ask; the box needs GNU coreutils `timeout`")
 	codeRunCmd.Flags().DurationVar(&codeRunTimeout, "timeout", 0,
 		"with --command, end the command after this long (exit code 124); default 15m, at most 1h; a fractional value rounds up to whole seconds")
+	codeRunCmd.Flags().StringVar(&codeRunWorkdir, "workdir", "",
+		"start the run in this directory, relative to the box user's home (e.g. project); it must already exist and is never created. Default: the home")
 	codeRunCmd.Flags().BoolVar(&codeRunContinue, "continue", false,
 		"resume the engine's most recent session in the run's working directory instead of starting a fresh one (`pi -c`, `claude --continue`)")
 	codeRunCmd.Flags().StringVar(&codeRunSession, "session", "",

@@ -39,11 +39,14 @@ var (
 // CodeRunStart is one run to start.
 type CodeRunStart struct {
 	// The SSH path, used when RunToken is empty: the run called Name starts
-	// Command through Session with CaptureMode.
+	// Command through Session with CaptureMode, in Cwd. Cwd is the absolute
+	// directory coderun.Session.ResolveWorkdir returned for the run's workdir
+	// (#3613); empty is process_start's default.
 	Session     CodeRunSessionStarter
 	Name        string
 	Command     string
 	CaptureMode string
+	Cwd         string
 
 	// RunToken is the caller's per-run token. Non-empty selects the daemon-API
 	// path: Request is sent through Daemon with run_token set to it.
@@ -70,7 +73,7 @@ func StartCodeRun(ctx context.Context, s CodeRunStart) (*CodeRunStarted, error) 
 		if s.Session == nil {
 			return nil, errors.New("no agent-box session to start the run through")
 		}
-		started, err := s.Session.ProcessStart(ctx, s.Name, s.Command, "", s.CaptureMode)
+		started, err := s.Session.ProcessStart(ctx, s.Name, s.Command, s.Cwd, s.CaptureMode)
 		if err != nil {
 			return nil, err
 		}
