@@ -17,8 +17,8 @@
 
 set -euo pipefail
 
-# write_secret_unit PATH: stdin -> PATH with mode 0600. The unit carries the
-# tunnel token in ExecStart, so it must never be readable by other users.
+# write_secret_unit PATH: stdin -> PATH with mode 0600. Used for the tunnel
+# token file and for the unit, so neither is readable by other users.
 # umask 077 keeps a new file private from the first byte; the explicit chmod
 # also tightens a file that already existed (> keeps the old mode).
 write_secret_unit() {
@@ -74,6 +74,12 @@ echo "    md5: $(md5sum "$BINARY_DST" | cut -d' ' -f1)"
 ln -sf "$BINARY_DST" /usr/local/bin/containarium
 
 echo "==> Writing systemd unit"
+# The token lives in a root-only file the unit reads with --token-file, so it
+# never appears in ExecStart, the unit file, or the process argv (#3672).
+TOKEN_FILE=/etc/containarium/tunnel.token
+mkdir -p /etc/containarium
+printf '%s\n' "${LAB_TOKEN}" | write_secret_unit "${TOKEN_FILE}"
+
 write_secret_unit /etc/systemd/system/containarium-tunnel.service <<TUNNEL
 [Unit]
 Description=Containarium Tunnel Client (${POOL} pool primary)
@@ -85,7 +91,7 @@ Wants=network-online.target
 Type=simple
 ExecStart=${BINARY_DST} tunnel \\
   --sentinel-addr ${SENTINEL_ADDR} \\
-  --token ${LAB_TOKEN} \\
+  --token-file ${TOKEN_FILE} \\
   --spot-id ${SPOT_ID} \\
   --ports 22,8080,443 \\
   --pool ${POOL} \\
