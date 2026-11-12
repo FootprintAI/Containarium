@@ -277,7 +277,7 @@ stacks:
       - echo 'export ANDROID_SDK_ROOT=/opt/android-sdk' >> ~/.bashrc
       - echo 'export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:/opt/android-studio/bin:$PATH' >> ~/.bashrc
       - /opt/android-sdk/cmdline-tools/latest/bin/avdmanager create avd -n default -k "system-images;android-35;google_apis;x86_64" -d pixel_6 --force
-      - mkdir -p ~/.vnc && echo "containarium" | vncpasswd -f > ~/.vnc/passwd && chmod 600 ~/.vnc/passwd
+      - umask 077; mkdir -p ~/.vnc && echo "containarium" | vncpasswd -f > ~/.vnc/passwd && chmod 600 ~/.vnc/passwd
       - printf '#!/bin/bash\nstartxfce4 &\n' > ~/.vnc/xstartup && chmod +x ~/.vnc/xstartup
 
   - id: kind-kubeflow
@@ -323,6 +323,7 @@ stacks:
       # the user runs setup-kubeflow interactively later (or non-interactively
       # from a CI job) when those vars are no longer present.
       - |
+        umask 077
         sudo mkdir -p /etc/containarium
         {
           echo "# Stack parameters captured at container creation time"
@@ -410,6 +411,7 @@ stacks:
 
         # 5. Save kubeconfig to standard location
         mkdir -p "$HOME/.kube"
+        umask 077
         kind get kubeconfig --name kubeflow > "$HOME/.kube/config"
         chmod 600 "$HOME/.kube/config"
 
