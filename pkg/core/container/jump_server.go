@@ -236,13 +236,15 @@ func ensureJumpAccountState(username string) error {
 	// Set home dir permissions (sshd requires 755 or stricter).
 	_ = os.Chmod(fmt.Sprintf("/home/%s", username), 0755) // #nosec G302 -- sshd requires home dir to be world-readable
 
-	// Create .ssh dir
-	sshDir := fmt.Sprintf("/home/%s/.ssh", username)
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
+	// Create .ssh dir, refusing a symlink the account planted in its home.
+	sshFd, uid, gid, err := openUserSSHDir(authorizedKeysHomeRoot, username)
+	if err != nil {
 		return fmt.Errorf("failed to create .ssh dir: %w", err)
 	}
-	// #nosec G204 -- username validated by isValidUsername (callers)
-	_ = exec.Command("chown", "-R", username+":"+username, sshDir).Run()
+	defer closeFD(sshFd)
+	if err := chownTreeNoFollow(sshFd, uid, gid); err != nil {
+		return fmt.Errorf("failed to set .ssh ownership: %w", err)
+	}
 
 	// Sudoers entry for incus access (containarium-shell needs it)
 	sudoersEntry := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/incus\n", username)
@@ -474,14 +476,16 @@ func setupUserSSHKey(username, sshPublicKey string, verbose bool) error {
 	// Same lock as Add/Remove/Replace: this overwrites the file.
 	defer LockAuthorizedKeys(username)()
 
-	homeDir := filepath.Join("/home", username)
+	homeDir := filepath.Join(authorizedKeysHomeRoot, username)
 	sshDir := filepath.Join(homeDir, ".ssh")
 	authKeysFile := filepath.Join(sshDir, "authorized_keys")
 
-	// Create .ssh directory
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
+	// Create .ssh directory, refusing a symlink the account planted in its home.
+	sshFd, uid, gid, err := openUserSSHDir(authorizedKeysHomeRoot, username)
+	if err != nil {
 		return fmt.Errorf("failed to create .ssh directory: %w", err)
 	}
+	defer closeFD(sshFd)
 
 	// Clean up SSH key (remove extra whitespace, ensure newline)
 	cleanKey := strings.TrimSpace(sshPublicKey)
@@ -492,9 +496,8 @@ func setupUserSSHKey(username, sshPublicKey string, verbose bool) error {
 	}
 
 	// Set ownership (must run as root/sudo)
-	cmd := exec.Command("chown", "-R", fmt.Sprintf("%s:%s", username, username), sshDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to set ownership: %w\nOutput: %s", err, output)
+	if err := chownTreeNoFollow(sshFd, uid, gid); err != nil {
+		return fmt.Errorf("failed to set ownership: %w", err)
 	}
 
 	if verbose {
@@ -509,19 +512,20 @@ func updateUserSSHKey(username, sshPublicKey string, verbose bool) error {
 	// Same lock as Add/Remove/Replace: this is a read-then-append.
 	defer LockAuthorizedKeys(username)()
 
-	homeDir := filepath.Join("/home", username)
+	homeDir := filepath.Join(authorizedKeysHomeRoot, username)
 	sshDir := filepath.Join(homeDir, ".ssh")
 	authKeysFile := filepath.Join(sshDir, "authorized_keys")
 
-	// Ensure .ssh directory exists
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
+	// Ensure .ssh directory exists, refusing a symlink the account planted.
+	sshFd, uid, gid, err := openUserSSHDir(authorizedKeysHomeRoot, username)
+	if err != nil {
 		return fmt.Errorf("failed to create .ssh directory: %w", err)
 	}
+	defer closeFD(sshFd)
 
-	// Set ownership on .ssh directory
-	cmd := exec.Command("chown", fmt.Sprintf("%s:%s", username, username), sshDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to set .ssh ownership: %w\nOutput: %s", err, output)
+	// Set ownership on .ssh directory (this directory only, not its contents).
+	if err := fchownFD(sshFd, uid, gid); err != nil {
+		return fmt.Errorf("failed to set .ssh ownership: %w", err)
 	}
 
 	// Read existing keys
@@ -553,7 +557,7 @@ func updateUserSSHKey(username, sshPublicKey string, verbose bool) error {
 	}
 
 	// Set ownership on authorized_keys
-	cmd = exec.Command("chown", fmt.Sprintf("%s:%s", username, username), authKeysFile)
+	cmd := exec.Command("chown", fmt.Sprintf("%s:%s", username, username), authKeysFile)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to set authorized_keys ownership: %w\nOutput: %s", err, output)
 	}
@@ -933,10 +937,12 @@ func AddAuthorizedKey(username, pubKey string) error {
 	sshDir := filepath.Join(authorizedKeysHomeRoot, username, ".ssh")
 	akPath := filepath.Join(sshDir, "authorized_keys")
 
-	// Ensure .ssh exists with 0700.
-	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+	// Ensure .ssh exists with 0700, refusing a symlink the account planted.
+	sshFd, uid, gid, err := openUserSSHDir(authorizedKeysHomeRoot, username)
+	if err != nil {
 		return fmt.Errorf("mkdir %s: %w", sshDir, err)
 	}
+	defer closeFD(sshFd)
 
 	// Read existing content (file may not exist yet).
 	var existing []byte
@@ -990,7 +996,7 @@ func AddAuthorizedKey(username, pubKey string) error {
 	// for some configurations). Errors are non-fatal — sshd reads as
 	// root and the mode is 0600, so the worst case is a slightly
 	// surprising owner the operator may want to fix manually.
-	_ = exec.Command("chown", "-R", username+":"+username, sshDir).Run()
+	_ = chownTreeNoFollow(sshFd, uid, gid)
 
 	return nil
 }
