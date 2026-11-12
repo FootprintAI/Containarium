@@ -30,3 +30,17 @@ func readFileNoFollow(dirFd int, name string) ([]byte, error) { return nil, errN
 func writeFileNoFollow(dirFd int, name string, data []byte, perm os.FileMode) error {
 	return errNoFollowUnsupported
 }
+
+func openUserSSHDirMode(homeRoot, username string, create bool) (fd, uid, gid int, err error) {
+	return -1, 0, 0, errNoFollowUnsupported
+}
+
+func createTempFileAt(dirFd int, prefix string) (*os.File, string, error) {
+	return nil, "", errNoFollowUnsupported
+}
+
+func renameFileAt(dirFd int, oldName, newName string) error { return errNoFollowUnsupported }
+
+func removeFileAt(dirFd int, name string) error { return errNoFollowUnsupported }
+
+func syncDirFD(dirFd int) error { return errNoFollowUnsupported }
