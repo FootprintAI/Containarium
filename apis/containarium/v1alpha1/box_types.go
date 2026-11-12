@@ -99,6 +99,14 @@ type BoxSpec struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	TTLSeconds *int64 `json:"ttlSeconds,omitempty"`
+
+	// Isolation is the box's isolation class: "container" (shared kernel, the
+	// default) or "vm". Kubernetes has no VM to offer, so the controller
+	// rejects "vm" rather than run the box as a shared-kernel pod (#3688).
+	// +optional
+	// +kubebuilder:validation:Enum=container;vm
+	// +kubebuilder:default=container
+	Isolation string `json:"isolation,omitempty"`
 }
 
 // BoxStatus is the observed state of a Box.

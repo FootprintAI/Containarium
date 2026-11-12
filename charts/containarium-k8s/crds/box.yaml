@@ -126,6 +126,15 @@ spec:
                     Expire the box this many seconds after creation, when set.
                   type: integer
                   minimum: 0
+                isolation:
+                  description: >-
+                    Isolation class: container (shared kernel, the default) or
+                    vm. Kubernetes has no VM, so the controller rejects vm.
+                  type: string
+                  enum:
+                    - container
+                    - vm
+                  default: container
             status:
               description: BoxStatus is the observed state of a Box.
               type: object

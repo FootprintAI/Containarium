@@ -35,6 +35,31 @@ const requeueInterval = 30 * time.Second
 type BoxReconciler struct {
 	client.Client
 	Backend box.BoxBackend
+
+	// Now is the clock for TTL expiry. Nil means time.Now (tests inject one).
+	Now func() time.Time
+}
+
+func (r *BoxReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+// markBoxFailed records a terminal reason on the Box's Ready condition and
+// stops, without calling the backend.
+func (r *BoxReconciler) markBoxFailed(ctx context.Context, b *containariumv1alpha1.Box, reason, message string) (ctrl.Result, error) {
+	b.Status.Phase = containariumv1alpha1.BoxFailed
+	meta.SetStatusCondition(&b.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: b.Generation,
+	})
+	_ = r.Status().Update(ctx, b)
+	return ctrl.Result{}, nil
 }
 
 // +kubebuilder:rbac:groups=containarium.dev,resources=boxes,verbs=get;list;watch;create;update;patch;delete
@@ -89,6 +114,27 @@ func (r *BoxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	// Kubernetes has no VM to offer: refuse vm rather than run the box as a
+	// shared-kernel pod (#3688).
+	if b.Spec.Isolation == isolationVM {
+		return r.markBoxFailed(ctx, &b, "IsolationUnsupported",
+			`isolation "vm" is not supported on Kubernetes: a pod has no VM to offer`)
+	}
+
+	// TTL (#3688): an expired box is deleted; a live one is requeued for its expiry.
+	var ttlRequeue time.Duration
+	if b.Spec.TTLSeconds != nil && *b.Spec.TTLSeconds > 0 {
+		expiry := b.CreationTimestamp.Add(time.Duration(*b.Spec.TTLSeconds) * time.Second)
+		now := r.now()
+		if !now.Before(expiry) {
+			if err := r.Delete(ctx, &b); err != nil {
+				return ctrl.Result{}, fmt.Errorf("expire box %q: %w", ref.Tenant, err)
+			}
+			return ctrl.Result{}, nil
+		}
+		ttlRequeue = expiry.Sub(now)
+	}
+
 	// Create/ensure the box (idempotent) — the single convergent builder.
 	st, err := r.Backend.Create(ctx, specFromBox(&b))
 	if err != nil {
@@ -112,7 +158,8 @@ func (r *BoxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	if b.Status.Phase != containariumv1alpha1.BoxRunning {
 		return ctrl.Result{RequeueAfter: requeueInterval}, nil
 	}
-	return ctrl.Result{}, nil
+	// Wake at the TTL expiry so an idle box still expires (#3688).
+	return ctrl.Result{RequeueAfter: ttlRequeue}, nil
 }
 
 // applyStatus maps the backend's BoxStatus onto the Box CR's status subresource.
@@ -176,6 +223,8 @@ func specFromBox(b *containariumv1alpha1.Box) box.BoxSpec {
 		GitRef:        b.Spec.GitRef,
 		WorkspacePath: b.Spec.WorkspacePath,
 		AutoStart:     autoStart,
+		Isolation:     isolationFromString(b.Spec.Isolation),
+		TTL:           ttlFromSeconds(b.Spec.TTLSeconds),
 	}
 }
 
