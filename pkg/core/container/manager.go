@@ -979,6 +979,23 @@ func (m *Manager) installPackages(containerName string, enablePodman bool, stack
 // restarts containers that carry a restart policy — callers/tenants must still
 // create workloads with --restart=always (or a compose `restart: always`). See
 // issue #387.
+// enableUserUnitScript runs inside the box as root, with the account name as $1.
+// The account owns its home, so it can plant a symlink at any path below it.
+// The script refuses a symlink on the path and changes ownership without
+// following links (#3670).
+const enableUserUnitScript = `set -e
+home=$(getent passwd "$1" | cut -d: -f6)
+unit=$(ls /usr/lib/systemd/user/podman-restart.service /lib/systemd/user/podman-restart.service 2>/dev/null | head -1)
+[ -n "$home" ] && [ -n "$unit" ] || { echo "podman-restart user unit or home not found; skipping" >&2; exit 0; }
+# The account owns its home, so it can plant a symlink on any of these paths.
+# Refuse rather than let root mkdir, ln or chown through one (#3670).
+for p in "$home/.config" "$home/.config/systemd" "$home/.config/systemd/user" "$home/.config/systemd/user/default.target.wants"; do
+  if [ -L "$p" ]; then echo "refusing: $p is a symlink" >&2; exit 1; fi
+done
+mkdir -p "$home/.config/systemd/user/default.target.wants"
+ln -sfn "$unit" "$home/.config/systemd/user/default.target.wants/podman-restart.service"
+chown -R -h "$1:$1" "$home/.config"`
+
 func (m *Manager) enablePodmanRestartDurability(containerName, username string) {
 	// Rootful: system-wide podman-restart.service.
 	if err := m.incus.Exec(containerName, []string{"systemctl", "enable", "podman-restart.service"}); err != nil {
@@ -997,14 +1014,7 @@ func (m *Manager) enablePodmanRestartDurability(containerName, username string) 
 	// whereas the symlink is what enable produces and is picked up when the
 	// lingering user manager starts at boot. Idempotent (ln -sf). Resolves the
 	// home dir and the shipped unit path at run time so it works across distros.
-	const enableUserUnit = `set -e
-home=$(getent passwd "$1" | cut -d: -f6)
-unit=$(ls /usr/lib/systemd/user/podman-restart.service /lib/systemd/user/podman-restart.service 2>/dev/null | head -1)
-[ -n "$home" ] && [ -n "$unit" ] || { echo "podman-restart user unit or home not found; skipping" >&2; exit 0; }
-mkdir -p "$home/.config/systemd/user/default.target.wants"
-ln -sf "$unit" "$home/.config/systemd/user/default.target.wants/podman-restart.service"
-chown -R "$1:$1" "$home/.config"`
-	if err := m.incus.Exec(containerName, []string{"bash", "-c", enableUserUnit, "bash", username}); err != nil {
+	if err := m.incus.Exec(containerName, []string{"bash", "-c", enableUserUnitScript, "bash", username}); err != nil {
 		log.Printf("Warning: failed to enable user podman-restart.service for %q in %q: %v", username, containerName, err)
 	}
 }
