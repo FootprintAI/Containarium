@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.136.0] - 2026-11-12
+
+
+### Added
+
+- **A refused audit anchor is visible outside the log** (#3549). When the
+  daemon refuses to anchor the audit hash chain on every tick (the chain is
+  behind the anchor file, for example after the audit database was recreated
+  or restored, or a checkpoint is anchored with a different root),
+  `/health` reports `degraded` with the reason `audit anchor refused`,
+  `containarium doctor` lists `audit hash-chain anchoring` as degraded
+  (readiness entry `containarium.audit_anchor`), and the metrics
+  `containarium.audit.anchor.degraded` and `containarium.audit.anchor.refusals`
+  report it. The daemon logs once what the state means, and every signal clears
+  at the next successful publish. The operator security runbook has a new
+  section, "The daemon refuses to anchor the audit chain".
+- **`code run --workdir` and MCP `code_run` `workdir`** (#3613). `containarium
+  code run <box> --workdir <dir>` starts a prompt or `--command` run in a
+  directory under the box user's home instead of the home itself, and the
+  platform MCP tool `code_run` takes the same `workdir` argument. The value
+  follows `StartBoxRun`'s `workdir` rule (a clean relative path, nothing under
+  `.ssh` or `.containarium`); the directory must already exist and is checked
+  before anything on the box changes, never created and never replaced by the
+  home. Session discovery and `--continue` follow the directory. With
+  `--run-token-file` the value is sent as `StartBoxRunRequest.workdir`, only to a
+  daemon that advertises `box_run_workdir`.
+
+### Security
+
+- **Jump-account `.ssh` handling no longer follows a symlink planted in the account's home** (#3650). The daemon, running as root, created and chowned `~/.ssh` by path, so a symlink the account put there could redirect the chown to an arbitrary target. Directory creation and ownership now walk the path with `openat(O_NOFOLLOW)` and `fchownat(AT_SYMLINK_NOFOLLOW)`: a symlink at `.ssh` or in its home is refused with an error, and the recursive chown never descends into a symlink.
+- **Adding a jump account's SSH key no longer follows a symlink at `authorized_keys`** (#3651). The setup and update paths opened and chowned `authorized_keys` by path as root, so a symlink the account planted there could redirect the write and the ownership change. They now open the file relative to the `.ssh` directory with `O_NOFOLLOW` and change ownership on the open file; a symlink is refused with an error.
+- **Host authorized_keys updates never follow a symlink at the file or its temp file** (#3652). `ReplaceAuthorizedKeys`, `AddAuthorizedKey` and `RemoveAuthorizedKey` read the file by path, wrote a temp file in the directory by path, and renamed it into place as root, and the count read did the same. A symlink planted at `authorized_keys` could make those reads and the ownership change touch an arbitrary file. They now read and write under the `.ssh` directory fd, with `O_NOFOLLOW` and `O_EXCL`, and set ownership on the open temp file. A symlink at `authorized_keys` is refused by the reads, and the replace path replaces the link itself rather than following it.
+- **The agent-runtime installer no longer downloads to a fixed name in `/tmp`** (#3657). `install-agent-runtime.sh` runs as root and downloaded the bundle to `/tmp/agent-runtime-bundle.tar.gz`, so a symlink planted there could redirect the root download and extraction. The bundle now goes to a `mktemp` file, the same way the mcp-server download already does.
+- **The Caddy home is handed to the caddy user with `chown -h`** (#3669). The host and the Caddy container re-own `/var/lib/caddy` with a recursive chown. It now runs with `-h`, so a symlink in that tree is never followed, and both sites share one argv so they cannot drift. GNU `chown -R` already does not traverse nested symlinks, so this is defence in depth rather than a fix for a reachable escape.
+- **Secrets written inside a box are created private from their first byte** (#3671). The `lc-creds`, workspace token, MCP token, stack parameters, kubeconfig and VNC password files were written at the default umask and only chmod'ed afterwards, so another in-box user could read them briefly. Each write now runs under `umask 077`; the existing `chmod` stays.
+- **The tunnel token is no longer in the systemd unit's command line** (#3672). `setup-peer.sh` and `install-lab-tunnel.sh` now write the token to `/etc/containarium/tunnel.token` (0600) and start the tunnel with `--token-file`, so the token does not appear in `ExecStart`, `systemctl cat`, or the process argv. Hosts set up before this change keep the old unit until the setup script is re-run.
+
 ## [0.135.1] - 2026-11-12
 
 
