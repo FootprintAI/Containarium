@@ -563,6 +563,7 @@ recipes:
         [ -n "$WS_HASH" ] && [ -n "$WS_TOKEN" ] || { echo "agent-workspace: empty auth hash/token; aborting" >&2; exit 1; }
         # Persist the token (mode 0600) so the daemon can read it and hand the
         # console a zero-click bootstrap URL (RecipeService.GetWorkspaceAccess).
+        umask 077
         printf '%s' "$WS_TOKEN" > /opt/wsauth/token
         chmod 600 /opt/wsauth/token
         # The Caddyfile holds the cookie token and the basic-auth hash. Create
@@ -781,6 +782,7 @@ recipes:
           fi
           if [ "$MCP_DL_OK" = "1" ]; then
             chmod +x /opt/lc/mcp-server
+            umask 077
             printf '%s' "$CONTAINARIUM_PARAM_MCP_TOKEN" > /opt/lc/ctn-token
             # Owned by the in-image 'node' user (uid 1000) with 0600. The
             # mcp-server runs as node and REFUSES a token file with any non-owner
@@ -1009,6 +1011,8 @@ recipes:
       # the user owns the box anyway (they set this password), and it never leaves
       # the box. Written via python3 so any special chars in the password survive.
       - |
+        # umask first: the file must never exist at the default mode (#3671).
+        umask 077
         python3 - <<'PYEOF'
         import json, os
         json.dump({"email": os.environ["CONTAINARIUM_PARAM_AUTH_EMAIL"],
