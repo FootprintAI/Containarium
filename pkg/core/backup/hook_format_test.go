@@ -115,7 +115,7 @@ func TestCreate_HookPGCustomRecordsRelationCount(t *testing.T) {
 	cmds := ops.execByContainer["alice-container"]
 	listAt, rmAt := -1, -1
 	for i, c := range cmds {
-		if strings.Contains(c, "pg_restore --list") && strings.Contains(c, "/tmp/containarium-backup-"+rec.ID+".dump") {
+		if strings.Contains(c, "pg_restore --list") && strings.Contains(c, "/tmp/containarium-backup-"+rec.ID+"-") && strings.Contains(c, ".dump") {
 			listAt = i
 		}
 		if strings.HasPrefix(c, "rm -f /tmp/containarium-backup-"+rec.ID) {
@@ -293,7 +293,14 @@ func TestRestore_HookPGCustomIntoScratchTarget(t *testing.T) {
 	if cmds, touched := ops.execByContainer["alice-container"]; touched {
 		t.Errorf("source container touched by a scratch restore: %v", cmds)
 	}
-	if _, ok := ops.written["/tmp/containarium-restore-"+rec.ID+".dump"]; !ok {
+	// The staging name has a random suffix (#3680); find the restore's push by prefix.
+	pushed := false
+	for path := range ops.written {
+		if strings.HasPrefix(path, "/tmp/containarium-restore-"+rec.ID+"-") && strings.HasSuffix(path, ".dump") {
+			pushed = true
+		}
+	}
+	if !pushed {
 		t.Error("dump was never pushed to the target")
 	}
 }

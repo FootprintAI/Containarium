@@ -158,7 +158,11 @@ func (m *Manager) Verify(opts VerifyOptions) (*Verification, error) {
 
 	// Stage the stream in the target before creating any database. Age
 	// authentication must succeed through EOF before pg_restore can run.
-	inContainerPath := "/tmp/containarium-verify-" + r.ID + ".dump"
+	inContainerPath, err := stagingDumpPath("verify", r.ID)
+	if err != nil {
+		fail("restore", fmt.Sprintf("could not stage the dump: %v", err))
+		return m.commitVerification(r, v, started)
+	}
 	n, err := m.writeDump(opts.TargetContainer, inContainerPath, data, r.Encrypted, opts.AgeIdentity)
 	if err != nil {
 		var decryptErr *decryptionError
