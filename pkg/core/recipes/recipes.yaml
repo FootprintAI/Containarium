@@ -382,8 +382,11 @@ recipes:
         BOX_UID="$(id -u "$CONTAINARIUM_PARAM_BOX_USER")"
         BOX_GID="$(id -g "$CONTAINARIUM_PARAM_BOX_USER")"
         SLIDES_HOME="$BOX_HOME/slides"
+        # The box user owns $BOX_HOME, so refuse a symlink planted at slides
+        # rather than let root chown through it (#3670).
+        [ ! -L "$SLIDES_HOME" ] || { echo "slides: $SLIDES_HOME is a symlink; refusing" >&2; exit 1; }
         mkdir -p "$SLIDES_HOME"
-        chown "$BOX_UID:$BOX_GID" "$SLIDES_HOME"
+        chown -h "$BOX_UID:$BOX_GID" "$SLIDES_HOME"
         # Idempotent: a re-run of post_start (retry, re-deploy) must not abort
         # under `set -e` on "name already in use".
         podman rm -f slides-agent >/dev/null 2>&1 || true

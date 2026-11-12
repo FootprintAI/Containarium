@@ -317,7 +317,7 @@ stacks:
       # Container user needs docker group to run kind/docker without sudo
       - 'usermod -aG docker "$(logname 2>/dev/null || id -un 1000)"'
       # Give the user ownership of manifests (install script writes to $HOME/.local/bin)
-      - 'chown -R "$(logname 2>/dev/null || id -un 1000):$(logname 2>/dev/null || id -un 1000)" /opt/kubeflow-manifests'
+      - 'chown -R -h "$(logname 2>/dev/null || id -un 1000):$(logname 2>/dev/null || id -un 1000)" /opt/kubeflow-manifests'
       # Persist stack parameters so setup-kubeflow can find them later. The
       # CONTAINARIUM_STACK_* env vars are only set while post_install runs;
       # the user runs setup-kubeflow interactively later (or non-interactively
