@@ -135,6 +135,9 @@ type fakeInspector struct {
 	rawCalls   map[string]int
 	// host-side NIC facts for every container (#2618)
 	network, hwaddr, staticIP string
+	// staticIPByName overrides staticIP per container: a real static device
+	// address belongs to one container, not to every container on the bridge.
+	staticIPByName map[string]string
 }
 
 func (f *fakeInspector) ListContainers() ([]incus.ContainerInfo, error) { return f.containers, nil }
@@ -150,9 +153,11 @@ func (f *fakeInspector) GetRawInstance(name string) (map[string]string, string, 
 
 // GetRawInstanceDevices returns one nic device on f.network with f.staticIP as
 // its ipv4.address (when set), the host-side facts #2618 reads.
-func (f *fakeInspector) GetRawInstanceDevices(string) (map[string]map[string]string, error) {
+func (f *fakeInspector) GetRawInstanceDevices(name string) (map[string]map[string]string, error) {
 	dev := map[string]string{"type": "nic", "network": f.network}
-	if f.staticIP != "" {
+	if ip, ok := f.staticIPByName[name]; ok {
+		dev["ipv4.address"] = ip
+	} else if f.staticIP != "" {
 		dev["ipv4.address"] = f.staticIP
 	}
 	return map[string]map[string]string{"eth0": dev}, nil
