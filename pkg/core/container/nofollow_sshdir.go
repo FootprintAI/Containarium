@@ -5,6 +5,7 @@ package container
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -115,3 +116,40 @@ func closeFD(fd int) { _ = unix.Close(fd) }
 
 // fchownFD sets uid:gid on an open directory fd (not its contents).
 func fchownFD(fd, uid, gid int) error { return unix.Fchown(fd, uid, gid) }
+
+// openFileNoFollow opens name directly under dirFd with the given os.O_* flags,
+// refusing a symlink at name. perm applies when O_CREATE makes the file.
+func openFileNoFollow(dirFd int, name string, flags int, perm os.FileMode) (*os.File, error) {
+	fd, err := unix.Openat(dirFd, name, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(perm.Perm()))
+	if err != nil {
+		if errors.Is(err, unix.ELOOP) {
+			return nil, fmt.Errorf("%s is a symlink; refusing to follow", name)
+		}
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), name), nil
+}
+
+// readFileNoFollow reads name under dirFd, refusing a symlink at name.
+func readFileNoFollow(dirFd int, name string) ([]byte, error) {
+	f, err := openFileNoFollow(dirFd, name, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(f)
+}
+
+// writeFileNoFollow writes data to name under dirFd, creating it with perm or
+// truncating it, and refuses a symlink at name.
+func writeFileNoFollow(dirFd int, name string, data []byte, perm os.FileMode) error {
+	f, err := openFileNoFollow(dirFd, name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}

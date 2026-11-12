@@ -476,10 +476,6 @@ func setupUserSSHKey(username, sshPublicKey string, verbose bool) error {
 	// Same lock as Add/Remove/Replace: this overwrites the file.
 	defer LockAuthorizedKeys(username)()
 
-	homeDir := filepath.Join(authorizedKeysHomeRoot, username)
-	sshDir := filepath.Join(homeDir, ".ssh")
-	authKeysFile := filepath.Join(sshDir, "authorized_keys")
-
 	// Create .ssh directory, refusing a symlink the account planted in its home.
 	sshFd, uid, gid, err := openUserSSHDir(authorizedKeysHomeRoot, username)
 	if err != nil {
@@ -490,8 +486,8 @@ func setupUserSSHKey(username, sshPublicKey string, verbose bool) error {
 	// Clean up SSH key (remove extra whitespace, ensure newline)
 	cleanKey := strings.TrimSpace(sshPublicKey)
 
-	// Write SSH key
-	if err := os.WriteFile(authKeysFile, []byte(cleanKey+"\n"), 0600); err != nil {
+	// Write SSH key, refusing a symlink at authorized_keys.
+	if err := writeFileNoFollow(sshFd, "authorized_keys", []byte(cleanKey+"\n"), 0600); err != nil {
 		return fmt.Errorf("failed to write authorized_keys: %w", err)
 	}
 
@@ -512,10 +508,6 @@ func updateUserSSHKey(username, sshPublicKey string, verbose bool) error {
 	// Same lock as Add/Remove/Replace: this is a read-then-append.
 	defer LockAuthorizedKeys(username)()
 
-	homeDir := filepath.Join(authorizedKeysHomeRoot, username)
-	sshDir := filepath.Join(homeDir, ".ssh")
-	authKeysFile := filepath.Join(sshDir, "authorized_keys")
-
 	// Ensure .ssh directory exists, refusing a symlink the account planted.
 	sshFd, uid, gid, err := openUserSSHDir(authorizedKeysHomeRoot, username)
 	if err != nil {
@@ -528,9 +520,9 @@ func updateUserSSHKey(username, sshPublicKey string, verbose bool) error {
 		return fmt.Errorf("failed to set .ssh ownership: %w", err)
 	}
 
-	// Read existing keys
+	// Read existing keys, refusing a symlink at authorized_keys.
 	existingKeys := ""
-	if data, err := os.ReadFile(authKeysFile); err == nil {
+	if data, err := readFileNoFollow(sshFd, "authorized_keys"); err == nil {
 		existingKeys = string(data)
 	}
 
@@ -545,8 +537,8 @@ func updateUserSSHKey(username, sshPublicKey string, verbose bool) error {
 		return nil // Key already present
 	}
 
-	// Append new key
-	f, err := os.OpenFile(authKeysFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+	// Append new key, refusing a symlink at authorized_keys.
+	f, err := openFileNoFollow(sshFd, "authorized_keys", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open authorized_keys: %w", err)
 	}
@@ -556,10 +548,9 @@ func updateUserSSHKey(username, sshPublicKey string, verbose bool) error {
 		return fmt.Errorf("failed to write SSH key: %w", err)
 	}
 
-	// Set ownership on authorized_keys
-	cmd := exec.Command("chown", fmt.Sprintf("%s:%s", username, username), authKeysFile)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to set authorized_keys ownership: %w\nOutput: %s", err, output)
+	// Set ownership on the open file, so the change applies to what was written.
+	if err := f.Chown(uid, gid); err != nil {
+		return fmt.Errorf("failed to set authorized_keys ownership: %w", err)
 	}
 
 	if verbose {
