@@ -84,12 +84,13 @@ func TestPlanReconcile(t *testing.T) {
 
 	plan := planReconcile(views, policies, true)
 
-	// ip_tenant: all four containers with IPs.
-	if len(plan.ipTenant) != 4 {
-		t.Errorf("ipTenant size = %d, want 4: %v", len(plan.ipTenant), plan.ipTenant)
+	// ip_tenant: keyed on the host-known address (#3690). alice, alice-web and
+	// bob (host .21) have one; stopped carol has no host-known address, so none.
+	if len(plan.ipTenant) != 3 {
+		t.Errorf("ipTenant size = %d, want 3: %v", len(plan.ipTenant), plan.ipTenant)
 	}
-	if plan.ipTenant[[4]byte{10, 100, 0, 30}] != 3 {
-		t.Errorf("stopped carol IP should still map to tenant 3")
+	if _, ok := plan.ipTenant[[4]byte{10, 100, 0, 30}]; ok {
+		t.Error("stopped carol has no host-known address, so it must get no ip_tenant row")
 	}
 
 	// veth_policy: the 3 running+veth tenant containers plus the validate-only one.
@@ -121,8 +122,11 @@ func TestPlanReconcile(t *testing.T) {
 	if cfg := plan.vethPolicy[20]; cfg.BoxIP != [4]byte{10, 100, 0, 21} {
 		t.Errorf("bob default cfg.BoxIP = %v, want the host-leased 10.100.0.21, not the guest-reported .20", cfg.BoxIP)
 	}
-	if plan.ipTenant[[4]byte{10, 100, 0, 20}] != 2 {
-		t.Error("ip_tenant keeps the guest-reported address (destination tagging), unchanged by #2618")
+	if _, claimed := plan.ipTenant[[4]byte{10, 100, 0, 20}]; claimed {
+		t.Error("bob's guest-reported 10.100.0.20 must not map to a tenant (#3690)")
+	}
+	if plan.ipTenant[[4]byte{10, 100, 0, 21}] != 2 {
+		t.Error("bob's host-known 10.100.0.21 must map to tenant 2 (#3690)")
 	}
 	if plan.ifName[11] != "alice-container" {
 		t.Errorf("ifName[11] = %q, want alice-container", plan.ifName[11])
@@ -345,5 +349,23 @@ func TestRefreshDomains_ResolvesDefaultAndNormalizedExtraDomains(t *testing.T) {
 		if !slices.Contains(c.EgressCIDRs, netip.MustParsePrefix(want)) {
 			t.Errorf("%s not folded into the default allow-list: %v", want, c.EgressCIDRs)
 		}
+	}
+}
+
+// A box that reports another tenant's address must not take that address in
+// the ip_tenant map; only its host-known address is attributed to it (#3690).
+func TestPlanIPTenantIgnoresGuestClaimedAddress(t *testing.T) {
+	views := []containerView{
+		// mallory's guest claims alice's 10.100.0.10; the host knows it as .99.
+		{Name: "mallory-container", Tenant: "mallory", TenantID: 9, IP: [4]byte{10, 100, 0, 10}, HasIP: true, HostIP: [4]byte{10, 100, 0, 99}, HasHostIP: true, Ifindex: 40, HasVeth: true, Running: true},
+		// alice's real address is host-known, so it keeps its attribution.
+		{Name: "alice-container", Tenant: "alice", TenantID: 1, IP: [4]byte{10, 100, 0, 10}, HasIP: true, HostIP: [4]byte{10, 100, 0, 10}, HasHostIP: true, Ifindex: 41, HasVeth: true, Running: true},
+	}
+	plan := planReconcile(views, map[string]netpolicy.CompiledPolicy{}, true)
+	if got := plan.ipTenant[[4]byte{10, 100, 0, 10}]; got != 1 {
+		t.Errorf("10.100.0.10 maps to tenant %d, want alice (1): mallory's guest claim must not win", got)
+	}
+	if got := plan.ipTenant[[4]byte{10, 100, 0, 99}]; got != 9 {
+		t.Errorf("mallory's host-known 10.100.0.99 maps to %d, want 9", got)
 	}
 }

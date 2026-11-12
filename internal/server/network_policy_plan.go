@@ -99,8 +99,13 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 			}
 			continue
 		}
-		if v.HasIP {
-			plan.ipTenant[v.IP] = v.TenantID
+		// ip_tenant keys on the HOST-known address only. The guest reports its
+		// own address and root in the box can change it, so a guest-reported IP
+		// would let a box claim another tenant's address (#3690). A box with no
+		// host-known address (stopped, or no static config or agreeing lease)
+		// gets no ip_tenant row: a hard failure for that box, by default.
+		if v.HasHostIP {
+			plan.ipTenant[v.HostIP] = v.TenantID
 		}
 		policy, hasPolicy := policies[v.Tenant]
 
