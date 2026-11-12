@@ -84,13 +84,13 @@ func TestPlanReconcile(t *testing.T) {
 
 	plan := planReconcile(views, policies, true)
 
-	// ip_tenant: keyed on the host-known address (#3690). alice, alice-web and
-	// bob (host .21) have one; stopped carol has no host-known address, so none.
-	if len(plan.ipTenant) != 3 {
-		t.Errorf("ipTenant size = %d, want 3: %v", len(plan.ipTenant), plan.ipTenant)
+	// ip_tenant: all four containers with IPs. Host-known addresses come first;
+	// stopped carol has none, so her guest-reported IP is the fallback (#3690).
+	if len(plan.ipTenant) != 4 {
+		t.Errorf("ipTenant size = %d, want 4: %v", len(plan.ipTenant), plan.ipTenant)
 	}
-	if _, ok := plan.ipTenant[[4]byte{10, 100, 0, 30}]; ok {
-		t.Error("stopped carol has no host-known address, so it must get no ip_tenant row")
+	if plan.ipTenant[[4]byte{10, 100, 0, 30}] != 3 {
+		t.Errorf("stopped carol IP should still map to tenant 3 (guest fallback)")
 	}
 
 	// veth_policy: the 3 running+veth tenant containers plus the validate-only one.

@@ -84,6 +84,26 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 	// once, keyed by the tenant IDs we actually saw.
 	egressDone := make(map[uint32]bool)
 
+	// ip_tenant (#3690). A box's HOST-known address is attributed first. The
+	// guest reports its own address, and root in the box can change it, so a
+	// guest-reported address is only a fallback for a box the host has no
+	// address for, and never overrides a host-known row. That stops a box
+	// claiming another tenant's address while core services and stopped boxes
+	// keep the tagging they had.
+	for _, v := range views {
+		if !v.ValidateOnly && v.HasHostIP {
+			plan.ipTenant[v.HostIP] = v.TenantID
+		}
+	}
+	for _, v := range views {
+		if v.ValidateOnly || v.HasHostIP || !v.HasIP {
+			continue
+		}
+		if _, taken := plan.ipTenant[v.IP]; !taken {
+			plan.ipTenant[v.IP] = v.TenantID
+		}
+	}
+
 	for _, v := range views {
 		if v.ValidateOnly {
 			// Not a tenant: no ip_tenant row, no policy. Its veth gets the
@@ -98,14 +118,6 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 				plan.ifName[v.Ifindex] = v.Name
 			}
 			continue
-		}
-		// ip_tenant keys on the HOST-known address only. The guest reports its
-		// own address and root in the box can change it, so a guest-reported IP
-		// would let a box claim another tenant's address (#3690). A box with no
-		// host-known address (stopped, or no static config or agreeing lease)
-		// gets no ip_tenant row: a hard failure for that box, by default.
-		if v.HasHostIP {
-			plan.ipTenant[v.HostIP] = v.TenantID
 		}
 		policy, hasPolicy := policies[v.Tenant]
 
