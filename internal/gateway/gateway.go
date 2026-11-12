@@ -1267,7 +1267,8 @@ func getAllowedOrigins() []string {
 type healthResponse struct {
 	Status healthStatus `json:"status"`
 	// Reason says why Status is degraded (#3130). It is one of a few fixed
-	// phrases set by the daemon's startup sequence, never an error string,
+	// phrases set by the daemon's startup sequence or its readiness entries
+	// (health_readiness.go), never an error string,
 	// so this unauthenticated endpoint cannot leak a DSN, an address, or a
 	// container name. Empty when healthy.
 	Reason string `json:"reason,omitempty"`

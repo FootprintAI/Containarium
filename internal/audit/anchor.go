@@ -58,6 +58,22 @@ type RootSink interface {
 // published with a different root than the one now being published.
 var ErrAnchorConflict = errors.New("audit: checkpoint already anchored with a different root")
 
+// AnchorBehindError is returned by FileSink.PublishRoot for a checkpoint
+// below the last one in the anchor file. That refusal is the rollback
+// protection: it stops a privileged writer presenting an older chain. It
+// fires the same way when the audit database was legitimately recreated or
+// restored from an older copy (#3549), and the daemon cannot tell the two
+// apart, so it reports the state instead of guessing.
+type AnchorBehindError struct {
+	Checkpoint   int64 // the chain's checkpoint the daemon tried to anchor
+	LastAnchored int64 // the anchor file's last checkpoint
+}
+
+func (e *AnchorBehindError) Error() string {
+	return fmt.Sprintf("audit: refusing to anchor checkpoint %d, older than the last anchored checkpoint %d",
+		e.Checkpoint, e.LastAnchored)
+}
+
 // anchorRecord is FileSink's on-disk line shape: one JSON object per line,
 // append-only. AnchoredAt is informational only (not part of what's
 // verified) — it lets an operator eyeball how stale the last anchor is
@@ -105,8 +121,7 @@ func (f *FileSink) PublishRoot(_ context.Context, checkpoint int64, root string)
 	if ok {
 		switch {
 		case checkpoint < lastCheckpoint:
-			return fmt.Errorf("audit: refusing to anchor checkpoint %d, older than the last anchored checkpoint %d",
-				checkpoint, lastCheckpoint)
+			return &AnchorBehindError{Checkpoint: checkpoint, LastAnchored: lastCheckpoint}
 		case checkpoint == lastCheckpoint:
 			if root == lastRoot {
 				return nil // idempotent — nothing to do
@@ -187,6 +202,28 @@ const DefaultAnchorInterval = 15 * time.Minute
 type AnchorOptions struct {
 	Interval time.Duration
 	Clock    func() time.Time
+	// OnStateChange, if set, is called from the tick goroutine each time
+	// the manager's Refused state flips (#3549): the daemon points its
+	// readiness entry at it. Not called for a tick that leaves it unchanged.
+	OnStateChange func(AnchorState)
+}
+
+// AnchorState is what the manager reports about its sink (#3549).
+type AnchorState struct {
+	// Refused is set while the sink refuses the chain's current checkpoint:
+	// the chain is behind the anchor (AnchorBehindError) or a checkpoint is
+	// already anchored with a different root (ErrAnchorConflict). Each tick
+	// retries, so it stays set until a publish succeeds. A failure that may
+	// pass on its own (a database read, a full disk, a bucket timeout) does
+	// not set it; it is logged per tick as before.
+	Refused bool
+	// Checkpoint is the refused checkpoint and LastAnchored the anchor's last
+	// checkpoint (0 when the refusal is a conflict); both are 0 when not
+	// refused.
+	Checkpoint   int64
+	LastAnchored int64
+	// Refusals counts refused publishes since the daemon started, monotonic.
+	Refusals int64
 }
 
 // AnchorManager owns the tick loop that keeps a RootSink current. One
@@ -208,6 +245,12 @@ type AnchorManager struct {
 	// single run goroutine's tick, so it needs no lock (mirrors
 	// ttlsweeper.Manager.failures).
 	lastCheckpoint int64
+
+	onStateChange func(AnchorState)
+	// state is written by the tick and read by State (the metrics
+	// collector's goroutine), so it is under stateMu.
+	stateMu sync.Mutex
+	state   AnchorState
 }
 
 // NewAnchorManager constructs a manager. Neither store nor sink may be
@@ -228,13 +271,21 @@ func NewAnchorManager(store ChainStore, sink RootSink, opts AnchorOptions) *Anch
 		opts.Clock = time.Now
 	}
 	return &AnchorManager{
-		store:    store,
-		sink:     sink,
-		interval: opts.Interval,
-		clock:    opts.Clock,
-		stopCh:   make(chan struct{}),
-		done:     make(chan struct{}),
+		store:         store,
+		sink:          sink,
+		interval:      opts.Interval,
+		clock:         opts.Clock,
+		onStateChange: opts.OnStateChange,
+		stopCh:        make(chan struct{}),
+		done:          make(chan struct{}),
 	}
+}
+
+// State returns the manager's current AnchorState. Safe from any goroutine.
+func (m *AnchorManager) State() AnchorState {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	return m.state
 }
 
 // Start spawns the tick loop. Returns immediately.
@@ -294,7 +345,65 @@ func (m *AnchorManager) tick(ctx context.Context) {
 	}
 	if err := m.sink.PublishRoot(ctx, id, root); err != nil {
 		log.Printf("[audit-anchor] ERROR: publish anchor at checkpoint %d: %v — tamper-evidence against a privileged rewrite is degraded until this succeeds", id, err)
+		var behind *AnchorBehindError
+		switch {
+		case errors.As(err, &behind):
+			m.recordRefusal(behind.Checkpoint, behind.LastAnchored)
+		case errors.Is(err, ErrAnchorConflict):
+			m.recordRefusal(id, 0)
+		}
 		return
 	}
 	m.lastCheckpoint = id
+	m.recordPublished()
+}
+
+// recordRefusal marks the sink as refusing checkpoint and counts the refusal.
+// The first refusal after a success also says, once, what the state means;
+// the per-tick ERROR line above repeats only the checkpoints.
+func (m *AnchorManager) recordRefusal(checkpoint, lastAnchored int64) {
+	m.stateMu.Lock()
+	was := m.state.Refused
+	m.state.Refused = true
+	m.state.Checkpoint = checkpoint
+	m.state.LastAnchored = lastAnchored
+	m.state.Refusals++
+	st := m.state
+	m.stateMu.Unlock()
+	if was {
+		return
+	}
+	if lastAnchored > 0 {
+		log.Printf("[audit-anchor] DEGRADED: the audit chain is at checkpoint %d, behind the anchor's last checkpoint %d, so every tick refuses to anchor it. "+
+			"Either the audit database was recreated or restored from an older copy, or its rows were rewritten; the daemon cannot tell which. "+
+			"Anchoring resumes on its own once the chain passes checkpoint %d. Keep the anchor file: it is the only record of the anchored history. "+
+			"/health reports degraded and `containarium doctor` lists it; see \"The daemon refuses to anchor the audit chain\" in docs/security/OPERATOR-SECURITY-RUNBOOK.md",
+			checkpoint, lastAnchored, lastAnchored)
+	} else {
+		log.Printf("[audit-anchor] DEGRADED: checkpoint %d is already anchored with a different root, so every tick refuses to anchor it: "+
+			"the audit chain no longer matches what was anchored, or an anchor was planted. Run `containarium audit verify-anchor`. "+
+			"/health reports degraded and `containarium doctor` lists it; see \"The daemon refuses to anchor the audit chain\" in docs/security/OPERATOR-SECURITY-RUNBOOK.md",
+			checkpoint)
+	}
+	if m.onStateChange != nil {
+		m.onStateChange(st)
+	}
+}
+
+// recordPublished clears a refusal after a successful publish.
+func (m *AnchorManager) recordPublished() {
+	m.stateMu.Lock()
+	was := m.state.Refused
+	m.state.Refused = false
+	m.state.Checkpoint = 0
+	m.state.LastAnchored = 0
+	st := m.state
+	m.stateMu.Unlock()
+	if !was {
+		return
+	}
+	log.Printf("[audit-anchor] anchoring resumed: published checkpoint %d", m.lastCheckpoint)
+	if m.onStateChange != nil {
+		m.onStateChange(st)
+	}
 }

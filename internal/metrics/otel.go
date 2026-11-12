@@ -146,6 +146,15 @@ type Collector struct {
 	peerMTLS   otelmetric.Int64Gauge
 	peerMTLSFn func() (enabled, relevant bool)
 
+	// Audit hash-chain anchoring (#3549): whether the anchor sink refuses the
+	// chain, and how many publishes it refused. auditAnchorRefusalsSeen is the
+	// cumulative count already added to the counter; collect runs on one
+	// goroutine, so it needs no lock.
+	auditAnchorDegraded     otelmetric.Int64Gauge
+	auditAnchorRefusals     otelmetric.Int64Counter
+	auditAnchorFn           func() (degraded bool, refusals int64)
+	auditAnchorRefusalsSeen int64
+
 	ctx           context.Context
 	cancel        context.CancelFunc
 	peerFetcher   PeerMetricsFetcher
@@ -376,6 +385,18 @@ func (c *Collector) initInstruments() error {
 		return err
 	}
 
+	c.auditAnchorDegraded, err = meter.Int64Gauge("containarium.audit.anchor.degraded",
+		otelmetric.WithDescription("The audit anchor sink refuses the hash chain's current checkpoint on every tick (1=refused, 0=anchoring). Emitted only on daemons with audit logging"))
+	if err != nil {
+		return err
+	}
+
+	c.auditAnchorRefusals, err = meter.Int64Counter("containarium.audit.anchor.refusals",
+		otelmetric.WithDescription("Audit anchor publishes the sink refused (chain behind the anchor, or a conflicting root) since the daemon started"))
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -401,6 +422,33 @@ func (c *Collector) recordPeerMTLS() {
 	c.peerMTLS.Record(c.ctx, v, otelmetric.WithAttributes(
 		attribute.String("backend.id", c.config.LocalBackendID),
 	))
+}
+
+// SetAuditAnchorFunc sets the source behind containarium.audit.anchor.degraded
+// and containarium.audit.anchor.refusals (#3549): whether anchoring is refused
+// now, and the cumulative count of refused publishes. Without it neither
+// metric is emitted.
+func (c *Collector) SetAuditAnchorFunc(fn func() (degraded bool, refusals int64)) {
+	c.auditAnchorFn = fn
+}
+
+// recordAuditAnchor records the anchoring metrics for this tick. The counter
+// gets the refusals since the previous tick.
+func (c *Collector) recordAuditAnchor() {
+	if c.auditAnchorFn == nil {
+		return
+	}
+	degraded, refusals := c.auditAnchorFn()
+	attrs := otelmetric.WithAttributes(attribute.String("backend.id", c.config.LocalBackendID))
+	var v int64
+	if degraded {
+		v = 1
+	}
+	c.auditAnchorDegraded.Record(c.ctx, v, attrs)
+	if delta := refusals - c.auditAnchorRefusalsSeen; delta > 0 {
+		c.auditAnchorRefusals.Add(c.ctx, delta, attrs)
+		c.auditAnchorRefusalsSeen = refusals
+	}
 }
 
 // Start begins the metrics collection loop
@@ -452,6 +500,7 @@ func (c *Collector) collect() {
 	// Record local backend health (always healthy if collecting)
 	c.backendHealthy.Record(ctx, 1, localAttrs)
 	c.recordPeerMTLS()
+	c.recordAuditAnchor()
 
 	// Record peer backend health
 	if c.peerFetcher != nil {
