@@ -18,7 +18,7 @@ func withTestHomeRoot(t *testing.T, homeRoot string, userExistsFn func(string) b
 	authorizedKeysHomeRoot = homeRoot
 	authorizedKeysUserExists = userExistsFn
 	origChown := authorizedKeysChown
-	authorizedKeysChown = func(string, string) error { return nil }
+	authorizedKeysChown = func(*os.File, int, int) error { return nil }
 	origOwner := userSSHOwner
 	userSSHOwner = func(string) (int, int, error) { return os.Getuid(), os.Getgid(), nil }
 	t.Cleanup(func() {

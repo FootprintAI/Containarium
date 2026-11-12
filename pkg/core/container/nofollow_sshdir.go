@@ -25,6 +25,13 @@ import (
 // so a symlink at .ssh, or at the home directory, fails instead of being
 // followed.
 func openUserSSHDir(homeRoot, username string) (fd, uid, gid int, err error) {
+	return openUserSSHDirMode(homeRoot, username, true)
+}
+
+// openUserSSHDirMode is openUserSSHDir with create choosing whether a missing
+// home or .ssh is made. With create false, a missing directory fails with an
+// error that matches fs.ErrNotExist.
+func openUserSSHDirMode(homeRoot, username string, create bool) (fd, uid, gid int, err error) {
 	uid, gid, err = userSSHOwner(username)
 	if err != nil {
 		return -1, 0, 0, err
@@ -36,13 +43,13 @@ func openUserSSHDir(homeRoot, username string) (fd, uid, gid int, err error) {
 	}
 	defer func() { _ = unix.Close(rootFd) }()
 
-	userFd, err := openDirNoFollow(rootFd, username, true)
+	userFd, err := openDirNoFollow(rootFd, username, create)
 	if err != nil {
 		return -1, 0, 0, err
 	}
 	defer func() { _ = unix.Close(userFd) }()
 
-	fd, err = openDirNoFollow(userFd, ".ssh", true)
+	fd, err = openDirNoFollow(userFd, ".ssh", create)
 	if err != nil {
 		return -1, 0, 0, err
 	}
