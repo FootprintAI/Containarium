@@ -386,7 +386,8 @@ func (m *CaddyManager) EnsureCaddyUser() error {
 	}
 
 	// Set ownership
-	cmd = exec.Command("chown", "-R", "caddy:caddy", "/var/lib/caddy")
+	chownArgs := CaddyHomeChownArgs()
+	cmd = exec.Command(chownArgs[0], chownArgs[1:]...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("chown caddy home: %s: %w", string(output), err)
 	}

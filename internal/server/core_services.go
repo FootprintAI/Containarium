@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/footprintai/containarium/internal/app"
+	"github.com/footprintai/containarium/internal/hosting"
 	"github.com/footprintai/containarium/internal/releases"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/stacks"
@@ -565,7 +566,7 @@ func (cs *CoreServices) setupCaddy(ctx context.Context, baseDomain string) error
 	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{"mkdir", "-p", "/var/lib/caddy", "/etc/caddy"}); err != nil {
 		log.Printf("Warning: failed to create caddy directories: %v", err)
 	}
-	if err := cs.incusClient.Exec(CoreCaddyContainer, []string{"chown", "-R", "caddy:caddy", "/var/lib/caddy"}); err != nil {
+	if err := cs.incusClient.Exec(CoreCaddyContainer, hosting.CaddyHomeChownArgs()); err != nil {
 		log.Printf("Warning: failed to chown caddy directory: %v", err)
 	}
 
