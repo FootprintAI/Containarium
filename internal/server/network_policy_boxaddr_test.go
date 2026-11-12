@@ -132,7 +132,7 @@ func TestGather_ValidateOnlyEntriesForUnpolicedInstances(t *testing.T) {
 			{Name: "cld-tenant-container", State: "running", IPAddress: "10.100.0.10"},
 		},
 		veth: veth, rawCalls: map[string]int{},
-		network: "testbr0", staticIP: "10.100.0.200",
+		network: "testbr0", staticIPByName: map[string]string{"controlplane-container": "10.100.0.200"},
 	}
 	e := NewNetworkPolicyEnforcer("", nil, NewMemTenantRegistry(), insp, nil, nil, false)
 	e.ctx = context.Background()
