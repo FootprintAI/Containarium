@@ -1,10 +1,9 @@
 package container
 
 import (
+	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"io/fs"
 	"strings"
 	"sync"
 
@@ -17,16 +16,6 @@ import (
 // replacing a box's keys cannot lock the sentinel (and so every inbound SSH
 // session) out.
 const SentinelKeyMarker = "# sshpiper sentinel upstream key"
-
-// authorizedKeysChown gives path to the box's host user. A var so tests,
-// which run without such a user, can stub it.
-var authorizedKeysChown = func(username, path string) error {
-	// #nosec G204 -- username passed isValidUsername; the command is fixed.
-	if out, err := exec.Command("chown", username+":"+username, path).CombinedOutput(); err != nil {
-		return fmt.Errorf("chown %s: %w: %s", path, err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
 
 // ReplaceHooks lets the caller run work inside ReplaceAuthorizedKeys's
 // critical section (the per-user lock), so related state changes are ordered
@@ -174,12 +163,14 @@ func ReplaceAuthorizedKeys(username string, keys []string, hooks ReplaceHooks) (
 
 	defer LockAuthorizedKeys(username)()
 
-	sshDir := filepath.Join(authorizedKeysHomeRoot, username, ".ssh")
-	akPath := filepath.Join(sshDir, "authorized_keys")
-	// #nosec G304 -- akPath is a fixed suffix under the home root; username passed isValidUsername.
-	existing, err := os.ReadFile(akPath)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("read %s: %w", akPath, err)
+	sshFd, uid, gid, err := openUserSSHDir(authorizedKeysHomeRoot, username)
+	if err != nil {
+		return nil, err
+	}
+	defer closeFD(sshFd)
+	existing, err := readFileNoFollow(sshFd, "authorized_keys")
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("read authorized_keys: %w", err)
 	}
 
 	// Pass 1: collect the platform blocks (kept) and their key material, so
@@ -241,42 +232,11 @@ func ReplaceAuthorizedKeys(username string, keys []string, hooks ReplaceHooks) (
 		out.WriteString(strings.Join(platform, "\n") + "\n")
 	}
 
-	if err := os.MkdirAll(sshDir, 0o700); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", sshDir, err)
+	// Ownership of the directory, then the atomic write of the file under it.
+	if err := fchownFD(sshFd, uid, gid); err != nil {
+		return nil, fmt.Errorf("chown .ssh: %w", err)
 	}
-	tmp, err := os.CreateTemp(sshDir, ".authorized_keys.tmp.*")
-	if err != nil {
-		return nil, fmt.Errorf("create temp: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return nil, fmt.Errorf("chmod tmp: %w", err)
-	}
-	if _, err := tmp.WriteString(out.String()); err != nil {
-		_ = tmp.Close()
-		return nil, fmt.Errorf("write tmp: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return nil, fmt.Errorf("sync tmp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return nil, fmt.Errorf("close tmp: %w", err)
-	}
-	// Ownership is fixed before the rename, and checked, so a failed chown
-	// cannot leave the live file root-owned.
-	if err := authorizedKeysChown(username, sshDir); err != nil {
-		return nil, err
-	}
-	if err := authorizedKeysChown(username, tmpPath); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(tmpPath, akPath); err != nil {
-		return nil, fmt.Errorf("rename tmp -> %s: %w", akPath, err)
-	}
-	if err := syncDir(sshDir); err != nil {
+	if err := writeAuthorizedKeysAt(sshFd, []byte(out.String()), uid, gid); err != nil {
 		return nil, err
 	}
 	if hooks.AfterWrite != nil {
@@ -285,17 +245,4 @@ func ReplaceAuthorizedKeys(username string, keys []string, hooks ReplaceHooks) (
 		}
 	}
 	return removed, nil
-}
-
-// syncDir fsyncs a directory so a rename into it survives a crash.
-func syncDir(dir string) error {
-	d, err := os.Open(dir) // #nosec G304 -- built from a validated username
-	if err != nil {
-		return fmt.Errorf("open %s: %w", dir, err)
-	}
-	defer func() { _ = d.Close() }()
-	if err := d.Sync(); err != nil {
-		return fmt.Errorf("sync %s: %w", dir, err)
-	}
-	return nil
 }

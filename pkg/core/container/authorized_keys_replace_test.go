@@ -455,8 +455,8 @@ func TestReplaceAuthorizedKeys_ChownFailureLeavesFile(t *testing.T) {
 	user, path := replaceFixture(t, orig+"\n")
 	// Fail only for the temp file: the directory chown alone must not hide a
 	// missing, unchecked temp-file chown.
-	authorizedKeysChown = func(_, p string) error {
-		if strings.Contains(p, ".authorized_keys.tmp.") {
+	authorizedKeysChown = func(f *os.File, _, _ int) error {
+		if strings.Contains(f.Name(), ".authorized_keys.tmp.") {
 			return fmt.Errorf("chown denied")
 		}
 		return nil
