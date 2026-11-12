@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -12,6 +13,7 @@ import (
 	containariumv1alpha1 "github.com/footprintai/containarium/apis/containarium/v1alpha1"
 	box "github.com/footprintai/containarium/pkg/core/box"
 	"github.com/footprintai/containarium/pkg/core/naming"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // BoxWriter upserts a Box CR from a runtime-neutral box.BoxSpec. It is the
@@ -89,6 +91,46 @@ func boxFromSpec(spec box.BoxSpec, namespace string) *containariumv1alpha1.Box {
 			WorkspacePath: spec.WorkspacePath,
 			Labels:        spec.Labels,
 			AutoStart:     &autoStart,
+			Isolation:     isolationString(spec.Isolation),
+			TTLSeconds:    ttlSecondsOf(spec.TTL),
 		},
 	}
+}
+
+// isolationVM is the Box spec value for a VM-isolated box (#3688).
+const isolationVM = "vm"
+
+// isolationString maps the backend isolation enum onto the Box spec value.
+// Anything that is not VM is the default, container.
+func isolationString(iso pb.IsolationType) string {
+	if iso == pb.IsolationType_ISOLATION_TYPE_VM {
+		return isolationVM
+	}
+	return "container"
+}
+
+// isolationFromString is the inverse of isolationString. An empty or unknown
+// value reads as container, the default.
+func isolationFromString(s string) pb.IsolationType {
+	if s == isolationVM {
+		return pb.IsolationType_ISOLATION_TYPE_VM
+	}
+	return pb.IsolationType_ISOLATION_TYPE_CONTAINER
+}
+
+// ttlSecondsOf returns the Box spec TTLSeconds for a backend TTL; nil means none.
+func ttlSecondsOf(d time.Duration) *int64 {
+	if d <= 0 {
+		return nil
+	}
+	s := int64(d / time.Second)
+	return &s
+}
+
+// ttlFromSeconds is the inverse of ttlSecondsOf; nil or zero means none.
+func ttlFromSeconds(s *int64) time.Duration {
+	if s == nil || *s <= 0 {
+		return 0
+	}
+	return time.Duration(*s) * time.Second
 }

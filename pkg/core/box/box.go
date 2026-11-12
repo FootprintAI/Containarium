@@ -134,6 +134,10 @@ type BoxSpec struct {
 	// installing packages/stack — the daemon uses it to flip async-create
 	// state to "provisioning". A K8s backend may never call it.
 	OnProvisioning func()
+
+	// TTL, when non-zero, expires the box this long after creation (#3688).
+	// Enforced by the backend that owns the box's lifecycle (the K8s controller).
+	TTL time.Duration
 }
 
 // BoxEndpoint describes how an agent reaches a box over SSH. The server turns
