@@ -214,8 +214,14 @@ type ContainerServer struct {
 	// a temp home. boxSkillSetLocks is the per-box gate (boxSkillSetGate): an
 	// apply holds it for writing, a run start for reading (#3510).
 	boxSkillSetsInstall boxSkillSetsInstallFunc
-	boxSkillSetLocks    sync.Map       // key: box name -> *sync.RWMutex
-	boxGateHolders      boxGateHolders // who holds each box's gate (run starts, an apply), for a refused apply's reason and message (#3530, #3537)
+	// boxBootstrapExec is ApplyBoxBootstrap's exec seam (#3694,
+	// box_bootstrap_apply.go): production is `su - <user>` through the
+	// container manager, keeping the bundle script's exit code.
+	boxBootstrapExec boxBootstrapExecFunc
+	// boxBootstrapLocks: one ApplyBoxBootstrap per box at a time.
+	boxBootstrapLocks sync.Map       // key: box name -> *sync.Mutex
+	boxSkillSetLocks  sync.Map       // key: box name -> *sync.RWMutex
+	boxGateHolders    boxGateHolders // who holds each box's gate (run starts, an apply), for a refused apply's reason and message (#3530, #3537)
 	// skillSetsApplyLease overrides the apply marker's lease
 	// (sdlcskills.ApplyMarkerLease) for tests; 0 = the default (#3529).
 	skillSetsApplyLease time.Duration

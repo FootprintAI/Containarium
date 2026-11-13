@@ -12,6 +12,10 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/status"
+
+	"github.com/footprintai/containarium/internal/client"
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
 // `containarium code bootstrap <box>` (#3512) re-applies a bootstrap bundle
@@ -26,8 +30,10 @@ import (
 // self-hoster's own bundle server) plugs in.
 
 var (
-	codeBootstrapFlagURL    string
-	codeBootstrapFlagURLCmd string
+	codeBootstrapFlagURL       string
+	codeBootstrapFlagURLCmd    string
+	codeBootstrapFlagViaDaemon bool
+	codeBootstrapFlagBoxUser   string
 )
 
 var codeBootstrapCmd = &cobra.Command{
@@ -59,9 +65,18 @@ URL may already be consumed, so if a retry fails request a new one; if the
 bundle was fetched but is unreadable or its apply.sh fails, the URL is spent,
 so request a new one and re-run. The URL is never printed.
 
+--via-daemon applies the bundle through the daemon (--server) instead of over
+SSH: the daemon runs the same script inside the box as the box user (--box-user,
+default the box owner) and reports the bundle_revision of the applied bundle's
+manifest.json. No SSH client or key is needed, and no preflight probe runs; the
+daemon refuses a stopped box before the URL is used. With --url-cmd, the hook
+runs on this machine before the call. A daemon too old to support it is
+reported as such.
+
 Examples:
   containarium code bootstrap alice --url https://bundles.example.com/team.tar.gz
-  containarium code bootstrap alice --url-cmd 'my-bundle-server url "$CONTAINARIUM_BOX"'`,
+  containarium code bootstrap alice --url-cmd 'my-bundle-server url "$CONTAINARIUM_BOX"'
+  containarium code bootstrap alice --via-daemon --server <host> --url https://bundles.example.com/team.tar.gz`,
 	Args: cobra.ExactArgs(1),
 	RunE: runCodeBootstrap,
 }
@@ -72,6 +87,10 @@ func init() {
 		"URL of the .tar.gz bundle to apply (mutually exclusive with --url-cmd)")
 	codeBootstrapCmd.Flags().StringVar(&codeBootstrapFlagURLCmd, "url-cmd", "",
 		"command that prints the bundle URL on its first stdout line; run through $SHELL, after the preflight, with CONTAINARIUM_BOX set (mutually exclusive with --url)")
+	codeBootstrapCmd.Flags().BoolVar(&codeBootstrapFlagViaDaemon, "via-daemon", false,
+		"apply the bundle through the daemon (--server) instead of over SSH; reports the applied bundle_revision")
+	codeBootstrapCmd.Flags().StringVar(&codeBootstrapFlagBoxUser, "box-user", "",
+		"with --via-daemon: the OS user in the box to apply the bundle as (default: the box owner)")
 }
 
 // runURLCmdFn runs --url-cmd. Test seam.
@@ -169,10 +188,31 @@ func runCodeBootstrap(cmd *cobra.Command, args []string) error {
 		return errors.New("give the bundle with --url or --url-cmd")
 	}
 
+	boxUser := strings.TrimSpace(codeBootstrapFlagBoxUser)
+	if boxUser != "" && !codeBootstrapFlagViaDaemon {
+		return errors.New("--box-user is only used with --via-daemon; over SSH the bundle runs as the user you connect as")
+	}
+
 	diag := cmd.ErrOrStderr()
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if codeBootstrapFlagViaDaemon {
+		if serverAddr == "" {
+			return errors.New("--via-daemon needs --server")
+		}
+		c, err := newBootstrapApplierFn()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = c.Close() }()
+		if urlCmd != "" {
+			if url, err = runURLCmdFn(ctx, urlCmd, box, diag); err != nil {
+				return fmt.Errorf("obtain the bootstrap URL for %q: %w; nothing was applied", box, err)
+			}
+		}
+		return codeBootstrapViaDaemon(c, box, url, boxUser, cmd.OutOrStdout())
 	}
 	target, privPath, err := resolveCodeTargetFn(ctx, box, diag)
 	if err != nil {
@@ -196,4 +236,44 @@ func runCodeBootstrap(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "✓ bootstrap bundle applied on %s\n", box)
 	return nil
+}
+
+// bootstrapApplierCloser is a daemon client that can apply a bundle.
+type bootstrapApplierCloser interface {
+	client.BoxBootstrapApplier
+	Close() error
+}
+
+// newBootstrapApplierFn dials the daemon named by --server. Test seam.
+var newBootstrapApplierFn = func() (bootstrapApplierCloser, error) {
+	if httpMode {
+		return client.NewHTTPClient(serverAddr, authToken)
+	}
+	return client.NewGRPCClient(serverAddr, certsDir, insecure)
+}
+
+// codeBootstrapViaDaemon applies url to box through the daemon's
+// ApplyBoxBootstrap (#3694), as boxUser (empty: the box owner). The URL is
+// never printed, and no error built here quotes it.
+func codeBootstrapViaDaemon(c client.BoxBootstrapApplier, box, url, boxUser string, w io.Writer) error {
+	resp, err := c.ApplyBoxBootstrap(&pb.ApplyBoxBootstrapRequest{Name: box, BootstrapUrl: url, BoxUser: boxUser})
+	if isUnimplemented(err) {
+		return fmt.Errorf("this daemon does not support applying a bootstrap bundle (ApplyBoxBootstrap); upgrade it, or re-run without --via-daemon to apply it over SSH (the URL was not sent to a handler, so it was not consumed)")
+	}
+	if err != nil {
+		if reason, exit := client.BootstrapFailureOf(err); reason != pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_UNSPECIFIED {
+			name := strings.TrimPrefix(reason.String(), "BOX_BOOTSTRAP_FAILURE_")
+			if exit > 0 {
+				return fmt.Errorf("apply bootstrap bundle on %q through the daemon: %s (exit %d): %s", box, name, exit, status.Convert(err).Message())
+			}
+			return fmt.Errorf("apply bootstrap bundle on %q through the daemon: %s: %s", box, name, status.Convert(err).Message())
+		}
+		return fmt.Errorf("apply bootstrap bundle on %q through the daemon: %w", box, err)
+	}
+	if resp.GetManifestFound() {
+		_, err = fmt.Fprintf(w, "✓ bootstrap bundle applied on %s (bundle revision %d)\n", box, resp.GetBundleRevision())
+	} else {
+		_, err = fmt.Fprintf(w, "✓ bootstrap bundle applied on %s (the bundle carries no manifest.json)\n", box)
+	}
+	return err
 }

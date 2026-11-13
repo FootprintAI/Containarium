@@ -1634,6 +1634,35 @@ func (c *HTTPClient) ApplyBoxSkillSets(req *pb.ApplyBoxSkillSetsRequest) (*pb.Ap
 	return out, nil
 }
 
+// ApplyBoxBootstrap is the REST form of GRPCClient.ApplyBoxBootstrap (#3694).
+// The gateway mux's own 404 (a daemon too old to expose the route) maps to
+// codes.Unimplemented, as on the gRPC transport; any other error keeps its
+// gRPC code and its details (bootstrapHTTPError). The bundle URL travels only in the request body,
+// and no error built here quotes it.
+func (c *HTTPClient) ApplyBoxBootstrap(req *pb.ApplyBoxBootstrapRequest) (*pb.ApplyBoxBootstrapResponse, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), applyBoxBootstrapTimeout)
+	defer cancel()
+	path := fmt.Sprintf("/v1/containers/%s/bootstrap:apply", url.PathEscape(req.GetName()))
+	resp, err := c.doRequest(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("apply bootstrap bundle: %w", err)
+	}
+	defer drainClose(resp)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, bootstrapHTTPError(resp.StatusCode, bodyBytes)
+	}
+	out := &pb.ApplyBoxBootstrapResponse{}
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(bodyBytes, out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return out, nil
+}
+
 // WriteBoxFile is the REST form of GRPCClient.WriteBoxFile (#3548). A daemon
 // too old to expose the route maps to codes.Unimplemented, as on the gRPC
 // transport, and a refusal keeps its gRPC code (boxFileHTTPError).

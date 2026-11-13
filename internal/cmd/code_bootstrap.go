@@ -15,83 +15,30 @@ import (
 // the URL consumed? The preflight answers "no, and nothing will be" before
 // the URL is used; the bundle script's exit code answers it afterwards.
 
-// Exit codes of bootstrapScript. Anything else (ssh failing mid-run, mktemp
-// failing) is reported without a claim either way.
+// Exit codes of bootstrapScript: the shared script's (internal/coderun), so
+// the CLI and the daemon's ApplyBoxBootstrap report the same codes.
 const (
-	// bootstrapExitFetch: the server was never reached (curl 5, 6, 7: proxy
-	// or host not resolved, connection failed), so the URL was not consumed.
-	bootstrapExitFetch = 3
-	// bootstrapExitBundle: the bundle was fetched but is not a .tar.gz with
-	// an apply.sh at its root.
-	bootstrapExitBundle = 4
-	// bootstrapExitApply: the bundle was fetched and its apply.sh failed.
-	bootstrapExitApply = 5
-	// bootstrapExitFetchReached: the download failed after the server was
-	// reached (an HTTP error such as 404/410, a mid-transfer failure, or any
-	// other curl error). A one-shot URL may already be marked used.
-	bootstrapExitFetchReached = 6
+	bootstrapExitFetch        = coderun.BootstrapExitFetch
+	bootstrapExitBundle       = coderun.BootstrapExitBundle
+	bootstrapExitApply        = coderun.BootstrapExitApply
+	bootstrapExitFetchReached = coderun.BootstrapExitFetchReached
 )
 
-// Exit codes of bootstrapPreflightScript, one per thing bootstrapScript is
-// about to need.
+// Exit codes of bootstrapPreflightScript: the shared preflight's
+// (internal/coderun).
 const (
-	preflightExitHome  = 10 // $HOME is not writable
-	preflightExitTmp   = 11 // no temporary directory can be created
-	preflightExitTools = 12 // curl or tar is missing
+	preflightExitHome  = coderun.PreflightExitHome
+	preflightExitTmp   = coderun.PreflightExitTmp
+	preflightExitTools = coderun.PreflightExitTools
 )
 
-// bootstrapScript fetches url to a file, unpacks it into a throwaway
-// directory, and runs its apply.sh from there as the box user: the seam a
-// team uses to drop in skills, an MCP config, or dotfiles without this
-// command growing a flag per item. No sudo anywhere: a bootstrap bundle is
-// the user's own content and gets the user's own privileges.
-//
-// Fetch and apply are separate steps with their own exit codes, so a download
-// that never reached the server (the URL was not consumed) is told apart from
-// one that did (it may have been) and from a failed apply (it was). The URL is
-// never echoed: curl runs without -S, so its own error text (which names the
-// URL's path) is suppressed and only its exit code is reported. `--` keeps a
-// URL that starts with "-" from being read as a curl option.
-func bootstrapScript(url string) string {
-	return `set -e
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-rc=0
-curl -fsL -o "$tmp/bundle.tgz" -- ` + coderun.ShellQuoteSingle(url) + ` </dev/null || rc=$?
-case "$rc" in
-  0) ;;
-  5|6|7)
-    echo "bootstrap bundle server could not be reached (curl exit $rc)" >&2
-    exit 3 ;;
-  *)
-    echo "bootstrap bundle fetch failed after reaching the server (curl exit $rc)" >&2
-    exit 6 ;;
-esac
-bundle_error() {
-  echo "bootstrap bundle is not a .tar.gz with an apply.sh at its root" >&2
-  exit 4
-}
-mkdir "$tmp/bundle" || bundle_error
-if ! tar -xzf "$tmp/bundle.tgz" -C "$tmp/bundle" || [ ! -f "$tmp/bundle/apply.sh" ]; then
-  bundle_error
-fi
-chmod +x "$tmp/bundle/apply.sh" || bundle_error
-cd "$tmp/bundle" || bundle_error
-if ! ./apply.sh; then
-  echo "bootstrap bundle's apply.sh failed" >&2
-  exit 5
-fi`
-}
+// bootstrapScript is the shared bundle step (coderun.BootstrapScript): the
+// same script the daemon's ApplyBoxBootstrap runs.
+func bootstrapScript(url string) string { return coderun.BootstrapScript(url) }
 
-// bootstrapPreflightScript checks exactly what bootstrapScript is about to
-// need, and changes nothing on the box.
-func bootstrapPreflightScript() string {
-	return `test -w "$HOME" || exit 10
-d="$(mktemp -d)" || exit 11
-rmdir "$d" || exit 11
-command -v curl >/dev/null 2>&1 || exit 12
-command -v tar >/dev/null 2>&1 || exit 12`
-}
+// bootstrapPreflightScript is the shared preflight
+// (coderun.BootstrapPreflightScript): the same check ApplyBoxBootstrap runs.
+func bootstrapPreflightScript() string { return coderun.BootstrapPreflightScript() }
 
 // bootstrapPreflight is one silent SSH round trip, under kw, that confirms
 // the box is reachable, accepts the key, and can run the bundle step, BEFORE

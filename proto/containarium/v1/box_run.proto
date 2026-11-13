@@ -609,6 +609,101 @@ message ApplyBoxSkillSetsResponse {
   string release = 5;
 }
 
+// Applying a bootstrap bundle to an existing box (#3694). `containarium code
+// install --bootstrap-url` and `code bootstrap` apply a bundle (a .tar.gz with
+// an apply.sh at its root) over SSH from the user's own machine;
+// ApplyBoxBootstrap runs the very same script from the daemon, as the box's
+// own user, so a control plane that manages boxes can re-bootstrap one with
+// no user machine in the loop. The bundle URL is treated as a single-use
+// credential: the daemon never writes it to its logs or into error text.
+
+// BoxBootstrapFailure is the typed reason an ApplyBoxBootstrap call failed,
+// so a caller never matches on message text. It is carried as the `reason`
+// of a google.rpc.ErrorInfo in the error's details (domain
+// "containarium.v1"), spelled as the enum value's name. For a failure of the
+// bundle step, the ErrorInfo's metadata also carries `exit_code`: the bundle
+// script's exit code, the same one `containarium code install
+// --bootstrap-url` reports (3, 4, 5 or 6), or the preflight's (10-12).
+//
+// Errors WITHOUT an ErrorInfo: request validation (INVALID_ARGUMENT: a
+// missing or non-http(s) URL, or a URL containing a single quote; a
+// box_user that is root, the run user or not a plain login name), an unknown
+// box (NOT_FOUND), a denied caller (PERMISSION_DENIED), and a failure to
+// look the box up or to reach it before the URL is used (UNAVAILABLE; the URL
+// was not consumed). A client whose own deadline expires first sees
+// DEADLINE_EXCEEDED with no ErrorInfo: the outcome is unknown, as for
+// OUTCOME_UNKNOWN. The fetch inside the box is stall-bounded (30s to connect,
+// aborted below 1 byte/s for 60s, reported as FETCH_FAILED), so a stalled
+// bundle server does not hold the box's apply for long.
+enum BoxBootstrapFailure {
+  BOX_BOOTSTRAP_FAILURE_UNSPECIFIED = 0;
+  // The box exists but is not running (FAILED_PRECONDITION). Nothing was
+  // fetched; the URL was not consumed.
+  BOX_BOOTSTRAP_FAILURE_BOX_NOT_RUNNING = 1;
+  // The bundle server was never reached (UNAVAILABLE, exit_code 3). The URL
+  // was not consumed; a retry is safe.
+  BOX_BOOTSTRAP_FAILURE_FETCH_UNREACHED = 2;
+  // The download failed after the server was reached, e.g. an HTTP 404/410
+  // (FAILED_PRECONDITION, exit_code 6). A one-shot URL may already be spent.
+  BOX_BOOTSTRAP_FAILURE_FETCH_FAILED = 3;
+  // The bundle was fetched but is not a .tar.gz with an apply.sh at its root
+  // (FAILED_PRECONDITION, exit_code 4). The URL is spent.
+  BOX_BOOTSTRAP_FAILURE_BUNDLE_INVALID = 4;
+  // The bundle was fetched and its apply.sh failed (FAILED_PRECONDITION,
+  // exit_code 5). The URL is spent.
+  BOX_BOOTSTRAP_FAILURE_APPLY_FAILED = 5;
+  // The exec into the box failed while the bundle step ran (a transport
+  // error, or output over the daemon's exec cap), so its outcome is unknown
+  // (UNKNOWN). The bundle may have been applied and the URL may be spent: do
+  // NOT treat this as retry-safe; check the box (e.g. its manifest) before
+  // requesting a new URL.
+  BOX_BOOTSTRAP_FAILURE_OUTCOME_UNKNOWN = 6;
+  // The bundle step exited with a code the script never uses (INTERNAL,
+  // exit_code set), e.g. mktemp failing. The URL may be spent.
+  BOX_BOOTSTRAP_FAILURE_UNEXPECTED_EXIT = 7;
+  // Another ApplyBoxBootstrap is running on this box (ABORTED). Nothing was
+  // fetched by this call; the URL was not consumed. Retry once the other
+  // call has returned.
+  BOX_BOOTSTRAP_FAILURE_APPLY_IN_PROGRESS = 8;
+  // The preflight, run before the URL is used, did not run as box_user:
+  // the user may not exist in the box or cannot log in, or su or sh is
+  // missing (FAILED_PRECONDITION). The URL was not consumed.
+  BOX_BOOTSTRAP_FAILURE_BOX_USER_UNAVAILABLE = 9;
+  // The preflight ran as box_user and found the box unable to apply a bundle:
+  // $HOME not writable, no temp dir, or curl/tar missing
+  // (FAILED_PRECONDITION, exit_code 10, 11 or 12 as in `code bootstrap`'s
+  // preflight). The URL was not consumed.
+  BOX_BOOTSTRAP_FAILURE_PREFLIGHT_FAILED = 10;
+}
+
+// ApplyBoxBootstrapRequest applies a bootstrap bundle to a running box.
+message ApplyBoxBootstrapRequest {
+  // The box's name: the owner's username (the box is <name>-container),
+  // the same convention as the other per-box RPCs.
+  string name = 1;
+  // URL of the .tar.gz bundle. Treated as a single-use credential: never
+  // logged, never echoed in an error.
+  string bootstrap_url = 2;
+  // The OS user inside the box the bundle is applied as (its apply.sh runs
+  // with that user's $HOME). Empty means `name`: the box owner's login, the
+  // same user StartBoxRun and `code install` use. An explicit value must be a
+  // plain login name (lowercase letters, digits, '_', '-', '.', at most 32,
+  // not starting with '-' or '.'); root and the platform's unprivileged run
+  // user are refused.
+  string box_user = 3;
+}
+
+message ApplyBoxBootstrapResponse {
+  // bundle_revision from the applied bundle's manifest.json. 0 when
+  // manifest_found is false, or when the manifest has no bundle_revision.
+  int32 bundle_revision = 1;
+  // True when the applied bundle carried a manifest.json that decoded:
+  // valid JSON whose bundle_revision, if present, fits an int32. False when
+  // the bundle had no manifest.json, or one that did not decode; the apply
+  // itself still succeeded either way (the URL is spent).
+  bool manifest_found = 2;
+}
+
 // Permission requests of a box run (#2183, #2184). A run started with
 // `code run --approvals ask` journals each tool call that needs a permission
 // to <run_name>.input.jsonl beside its log and waits for a signed answer.
