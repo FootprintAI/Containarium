@@ -423,7 +423,11 @@ func (BoxSkillSetsRefusal) EnumDescriptor() ([]byte, []int) {
 // box_user that is root, the run user or not a plain login name), an unknown
 // box (NOT_FOUND), a denied caller (PERMISSION_DENIED), and a failure to
 // look the box up or to reach it before the URL is used (UNAVAILABLE; the URL
-// was not consumed).
+// was not consumed). A client whose own deadline expires first sees
+// DEADLINE_EXCEEDED with no ErrorInfo: the outcome is unknown, as for
+// OUTCOME_UNKNOWN. The fetch inside the box is stall-bounded (30s to connect,
+// aborted below 1 byte/s for 60s, reported as FETCH_FAILED), so a stalled
+// bundle server does not hold the box's apply for long.
 type BoxBootstrapFailure int32
 
 const (
@@ -456,9 +460,9 @@ const (
 	// fetched by this call; the URL was not consumed. Retry once the other
 	// call has returned.
 	BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_APPLY_IN_PROGRESS BoxBootstrapFailure = 8
-	// The preflight, run before the URL is used, could not run as box_user:
-	// the user does not exist in the box, or cannot log in
-	// (FAILED_PRECONDITION). The URL was not consumed.
+	// The preflight, run before the URL is used, did not run as box_user:
+	// the user may not exist in the box or cannot log in, or su or sh is
+	// missing (FAILED_PRECONDITION). The URL was not consumed.
 	BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_BOX_USER_UNAVAILABLE BoxBootstrapFailure = 9
 	// The preflight ran as box_user and found the box unable to apply a bundle:
 	// $HOME not writable, no temp dir, or curl/tar missing

@@ -136,6 +136,14 @@ func TestHTTPApplyBoxBootstrap_ErrorsThroughTheDaemonGateway(t *testing.T) {
 			t.Errorf("err = %v, want Aborted APPLY_IN_PROGRESS", err)
 		}
 	})
+	t.Run("outcome unknown keeps Unknown and its reason", func(t *testing.T) {
+		c := startBootstrapGateway(t, &fakeBootstrapServer{err: typedBootstrapErr(codes.Unknown,
+			pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_OUTCOME_UNKNOWN, "", "the exec into the box failed")})
+		_, err := c.ApplyBoxBootstrap(req)
+		if reason, _ := BootstrapFailureOf(err); status.Code(err) != codes.Unknown || reason != pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_OUTCOME_UNKNOWN {
+			t.Errorf("err = %v (reason %v), want Unknown OUTCOME_UNKNOWN", err, reason)
+		}
+	})
 	t.Run("transport error never carries the URL", func(t *testing.T) {
 		c, _ := NewHTTPClient("http://127.0.0.1:1", "tok")
 		_, err := c.ApplyBoxBootstrap(req)

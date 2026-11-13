@@ -497,7 +497,13 @@ contain a single quote, and it never appears in the daemon's logs or in an error
 Errors with no `google.rpc.ErrorInfo`: request validation (`INVALID_ARGUMENT`),
 an unknown box (`NOT_FOUND`), a denied caller (`PERMISSION_DENIED`), and a box
 that cannot be looked up or reached before the URL is used (`UNAVAILABLE`; the
-URL was not consumed). Every other failure carries an `ErrorInfo` whose
+URL was not consumed). A client whose own deadline expires first (the typed
+clients wait 10 minutes) sees `DEADLINE_EXCEEDED` with no `ErrorInfo`: treat it
+like `OUTCOME_UNKNOWN`. The fetch inside the box is stall-bounded, not
+size-bounded: 30s to connect, and aborted when it moves less than 1 byte/s for
+60s (reported as `FETCH_FAILED`, exit 6), so a stalled bundle server does not
+hold the box's apply for long. A box name starting with `-` needs an explicit
+`box_user`. Every other failure carries an `ErrorInfo` whose
 `reason` is a `BoxBootstrapFailure` name; where a script exit code applies,
 `metadata.exit_code` is the same one `code install` / `code bootstrap` uses:
 
@@ -505,7 +511,7 @@ URL was not consumed). Every other failure carries an `ErrorInfo` whose
 | --- | --- | --- | --- |
 | `BOX_NOT_RUNNING` | `FAILED_PRECONDITION` | none | no |
 | `APPLY_IN_PROGRESS` (another apply on the box) | `ABORTED` | none | no |
-| `BOX_USER_UNAVAILABLE` (no such user, or it cannot log in) | `FAILED_PRECONDITION` | none | no |
+| `BOX_USER_UNAVAILABLE` (no such user, it cannot log in, or su/sh missing) | `FAILED_PRECONDITION` | none | no |
 | `PREFLIGHT_FAILED` | `FAILED_PRECONDITION` | 10, 11, 12 | no |
 | `FETCH_UNREACHED` | `UNAVAILABLE` | 3 | no, retry is safe |
 | `FETCH_FAILED` | `FAILED_PRECONDITION` | 6 | maybe |

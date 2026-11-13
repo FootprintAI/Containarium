@@ -2,6 +2,7 @@ package coderun
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -31,6 +32,19 @@ const (
 	BootstrapExitFetchReached = 6
 )
 
+// Stall bounds of the bundle fetch. They bound a server that stops sending,
+// not the size of the bundle: a large bundle on a slow link still completes
+// as long as it moves. A fetch cut off by either is curl exit 28, reported
+// as BootstrapExitFetchReached (the URL may be consumed). Variables only so
+// tests can shorten them.
+var (
+	// BootstrapConnectTimeoutSeconds bounds connecting to the bundle server.
+	BootstrapConnectTimeoutSeconds = 30
+	// BootstrapStallSeconds aborts a transfer slower than 1 byte/s for this
+	// long (curl --speed-limit 1 --speed-time N).
+	BootstrapStallSeconds = 60
+)
+
 // BootstrapScript fetches url to a file, unpacks it into a throwaway
 // directory, and runs its apply.sh from there as the box user: the seam a
 // team uses to drop in skills, an MCP config, or dotfiles without the CLI
@@ -48,7 +62,7 @@ func BootstrapScript(url string) string {
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 rc=0
-curl -fsL -o "$tmp/bundle.tgz" -- ` + ShellQuoteSingle(url) + ` </dev/null || rc=$?
+curl -fsL --connect-timeout ` + strconv.Itoa(BootstrapConnectTimeoutSeconds) + ` --speed-limit 1 --speed-time ` + strconv.Itoa(BootstrapStallSeconds) + ` -o "$tmp/bundle.tgz" -- ` + ShellQuoteSingle(url) + ` </dev/null || rc=$?
 case "$rc" in
   0) ;;
   5|6|7)

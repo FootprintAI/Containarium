@@ -509,3 +509,17 @@ func TestApplyBoxBootstrap_OneApplyPerBoxAtATime(t *testing.T) {
 		t.Errorf("apply after the first returned: %v", err)
 	}
 }
+
+// A box name may start with '-', but su would read it as an option: the
+// default box_user is refused for it, and nothing runs.
+func TestApplyBoxBootstrap_RefusesADefaultBoxUserThatLooksLikeAnOption(t *testing.T) {
+	s, calls := bootstrapServer(t, t.TempDir(), pb.ContainerState_CONTAINER_STATE_RUNNING)
+	withBoxes(s, "-c")
+	_, err := s.ApplyBoxBootstrap(tenantCtx("-c"), &pb.ApplyBoxBootstrapRequest{Name: "-c", BootstrapUrl: "https://example.com/b.tgz"})
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "must not start with '-'") {
+		t.Errorf("err = %v, want the leading-dash refusal", err)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("ran in the box: %v", *calls)
+	}
+}

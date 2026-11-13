@@ -134,6 +134,10 @@ func (s *ContainerServer) ApplyBoxBootstrap(ctx context.Context, req *pb.ApplyBo
 		user = name
 	}
 	switch {
+	case strings.HasPrefix(user, "-"):
+		// su would read it as an option. The box name may start with '-'
+		// (validateBoxRunOwner allows it), so this guards the default too.
+		return nil, status.Errorf(codes.InvalidArgument, "box_user %q must not start with '-'; pass an explicit box_user", user)
 	case explicitUser && !boxUserPattern.MatchString(user):
 		return nil, status.Errorf(codes.InvalidArgument, "box_user %q is not a plain login name", user)
 	case user == "root":
@@ -258,7 +262,7 @@ func boxBootstrapPreflightError(name, user string, code int, detail string) erro
 		why = "curl or tar is missing on the box"
 	default:
 		return boxBootstrapFailure(codes.FailedPrecondition, pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_BOX_USER_UNAVAILABLE, 0,
-			fmt.Sprintf("bootstrap preflight on %q could not run as %q (exit %d): the user does not exist in the box or cannot log in; nothing was fetched%s", name, user, code, suffix))
+			fmt.Sprintf("bootstrap preflight on %q did not run as %q (exit %d): the user may not exist in the box or cannot log in, or su or sh is missing there; nothing was fetched%s", name, user, code, suffix))
 	}
 	return boxBootstrapFailure(codes.FailedPrecondition, pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_PREFLIGHT_FAILED, code,
 		fmt.Sprintf("bootstrap preflight on %q as %q: %s; nothing was fetched (exit %d)", name, user, why, code))

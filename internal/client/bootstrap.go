@@ -54,13 +54,16 @@ func BootstrapFailureOf(err error) (pb.BoxBootstrapFailure, int) {
 func bootstrapHTTPError(statusCode int, body []byte) error {
 	base := boxFileHTTPError(statusCode, body, "ApplyBoxBootstrap")
 	st, ok := status.FromError(base)
-	if !ok || st.Code() == codes.Unimplemented || st.Code() == codes.Unknown || len(st.Proto().GetDetails()) > 0 {
+	if !ok || st.Code() == codes.Unimplemented || len(st.Proto().GetDetails()) > 0 {
 		return base
 	}
 	var b struct {
+		Error   string            `json:"error"`
 		Details []json.RawMessage `json:"details"`
 	}
-	if json.Unmarshal(body, &b) != nil || len(b.Details) == 0 {
+	// Only the daemon's shape carries details to restore; any other body
+	// (a proxy's error page, a plain status body) is returned as parsed.
+	if json.Unmarshal(body, &b) != nil || !gatewayErrorText.MatchString(b.Error) || len(b.Details) == 0 {
 		return base
 	}
 	p := st.Proto()
