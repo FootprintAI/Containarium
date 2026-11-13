@@ -90,6 +90,17 @@ func (m *MemStore) SetState(ctx context.Context, owner, name string, st State, r
 	return nil
 }
 
+func (m *MemStore) SetCAIDBound(ctx context.Context, owner, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.clusters[key(owner, name)]
+	if !ok {
+		return ErrNotFound
+	}
+	c.CAIDBound, c.UpdatedAt = true, time.Now().UTC()
+	return nil
+}
+
 func (m *MemStore) SetEndpoint(ctx context.Context, owner, name, endpoint string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

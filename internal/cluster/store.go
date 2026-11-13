@@ -27,6 +27,9 @@ type Store interface {
 	List(ctx context.Context, owner string) ([]*Cluster, error)
 	SetState(ctx context.Context, owner, name string, st State, reason string) error
 	SetEndpoint(ctx context.Context, owner, name, endpoint string) error
+	// SetCAIDBound records that the cluster's autoscaler credential now carries
+	// its id (#3689).
+	SetCAIDBound(ctx context.Context, owner, name string) error
 	UpdateNodeGroups(ctx context.Context, owner, name string, groups []NodeGroup) error
 	// SetNodeGroupTarget updates exactly one group's TargetNodes,
 	// atomically with respect to a concurrent call for a DIFFERENT
@@ -95,6 +98,7 @@ func (s *PGStore) initSchema(ctx context.Context) error {
 		-- were all VMs; the DEFAULT states that for the existing rows
 		-- rather than leaving their boundary unknown.
 		ALTER TABLE k8s_clusters ADD COLUMN IF NOT EXISTS node_isolation TEXT NOT NULL DEFAULT 'vm';
+		ALTER TABLE k8s_clusters ADD COLUMN IF NOT EXISTS ca_id_bound BOOLEAN NOT NULL DEFAULT FALSE;
 
 		CREATE TABLE IF NOT EXISTS k8s_cluster_nodes (
 			vm_name TEXT PRIMARY KEY,
@@ -151,7 +155,7 @@ func scanCluster(row pgx.Row) (*Cluster, error) {
 	var c Cluster
 	var state, isolation string
 	var groups []byte
-	err := row.Scan(&c.ID, &c.Owner, &c.Name, &state, &c.StateReason, &c.K3sVersion, &c.APIEndpoint, &groups, &isolation, &c.CreatedAt, &c.UpdatedAt)
+	err := row.Scan(&c.ID, &c.Owner, &c.Name, &state, &c.StateReason, &c.K3sVersion, &c.APIEndpoint, &groups, &isolation, &c.CreatedAt, &c.UpdatedAt, &c.CAIDBound)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -166,7 +170,7 @@ func scanCluster(row pgx.Row) (*Cluster, error) {
 	return &c, nil
 }
 
-const clusterCols = `id, owner, name, state, state_reason, k3s_version, api_endpoint, node_groups, node_isolation, created_at, updated_at`
+const clusterCols = `id, owner, name, state, state_reason, k3s_version, api_endpoint, node_groups, node_isolation, created_at, updated_at, ca_id_bound`
 
 func (s *PGStore) Get(ctx context.Context, owner, name string) (*Cluster, error) {
 	return scanCluster(s.pool.QueryRow(ctx,
@@ -211,6 +215,12 @@ func (s *PGStore) SetState(ctx context.Context, owner, name string, st State, re
 	return s.exec1(ctx,
 		`UPDATE k8s_clusters SET state = $3, state_reason = $4, updated_at = $5 WHERE owner = $1 AND name = $2`,
 		owner, name, string(st), reason, time.Now().UTC())
+}
+
+func (s *PGStore) SetCAIDBound(ctx context.Context, owner, name string) error {
+	return s.exec1(ctx,
+		`UPDATE k8s_clusters SET ca_id_bound = TRUE, updated_at = $3 WHERE owner = $1 AND name = $2`,
+		owner, name, time.Now().UTC())
 }
 
 func (s *PGStore) SetEndpoint(ctx context.Context, owner, name, endpoint string) error {
