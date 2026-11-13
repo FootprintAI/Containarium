@@ -397,3 +397,57 @@ func TestOutboundFanoutRule_EvidenceNewestFirstWithCount(t *testing.T) {
 		t.Fatalf("matched = %q", ev[0].Matched)
 	}
 }
+
+func (h *fanoutHarness) feedBoxes(tenants, boxes map[string]string, flows []netbpf.FlowRecord) {
+	ctx := h.ctx(tenants)
+	ctx.ContainerForIP = func(ip netip.Addr) (string, bool) { b, ok := boxes[ip.String()]; return b, ok }
+	h.r.OnFlows(ctx, flows)
+}
+
+// A tenant is an org and can own several boxes: two boxes fanning out are two
+// findings, each naming its own box and carrying only its own evidence.
+func TestOutboundFanoutRule_NamesTheBox(t *testing.T) {
+	h := newFanoutHarness(t, OutboundFanoutThresholds{})
+	tenants := map[string]string{"10.0.3.2": "org", "10.0.3.3": "org"}
+	boxes := map[string]string{"10.0.3.2": "box-x", "10.0.3.3": "box-y"}
+	h.feedBoxes(tenants, boxes, append(fanoutFlows("10.0.3.2", 20, 3128, 6), fanoutFlows("10.0.3.3", 20, 3128, 6)...))
+	got := h.sweep()
+	if len(got) != 2 {
+		t.Fatalf("findings = %d, want 2 (one per box of the same tenant)", len(got))
+	}
+	subjects := map[string]string{}
+	for _, f := range got {
+		subjects[f.Container] = f.Subject
+		for _, e := range f.Evidence.Flows {
+			if (f.Container == "box-x") != (e.SrcIP == "10.0.3.2") {
+				t.Fatalf("evidence from the wrong box in %s's finding: %+v", f.Container, e)
+			}
+		}
+	}
+	if subjects["box-x"] != "proxy-fanout:box-x" || subjects["box-y"] != "proxy-fanout:box-y" {
+		t.Fatalf("subjects = %v, want distinct per-box subjects", subjects)
+	}
+}
+
+// With no box resolver (or an unknown IP) the rule keeps tenant-level
+// attribution and the plain subject.
+func TestOutboundFanoutRule_NoBoxFallsBackToTenant(t *testing.T) {
+	h := newFanoutHarness(t, OutboundFanoutThresholds{})
+	h.feed(fanoutFlows(fanoutBoxIP, 20, 3128, 6))
+	got := h.sweep()
+	if len(got) != 1 || got[0].Container != "" || got[0].Subject != "proxy-fanout" {
+		t.Fatalf("findings = %+v, want one tenant-level finding", got)
+	}
+}
+
+// An address that moves to another box does not carry the old box's history.
+func TestOutboundFanoutRule_BoxChangeResetsHistory(t *testing.T) {
+	h := newFanoutHarness(t, OutboundFanoutThresholds{})
+	tenants := map[string]string{fanoutBoxIP: "org"}
+	flows := fanoutFlows(fanoutBoxIP, 20, 3128, 6)
+	h.feedBoxes(tenants, map[string]string{fanoutBoxIP: "box-old"}, flows[:10])
+	h.feedBoxes(tenants, map[string]string{fanoutBoxIP: "box-new"}, flows[10:])
+	if got := h.sweep(); len(got) != 0 {
+		t.Fatalf("findings = %+v, want none: 10 addresses on each side of the move", got)
+	}
+}

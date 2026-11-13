@@ -369,3 +369,39 @@ func TestPlanIPTenantIgnoresGuestClaimedAddress(t *testing.T) {
 		t.Errorf("mallory's host-known 10.100.0.99 maps to %d, want 9", got)
 	}
 }
+
+// ipBox follows ip_tenant's precedence (#3690): a host-known address names the
+// box, a guest-reported one is only a fallback and never overrides a host-known
+// row, and a validate-only instance is never named.
+func TestPlanReconcile_IPBox(t *testing.T) {
+	views := []containerView{
+		{Name: "a-container", Tenant: "org", TenantID: 1, IP: [4]byte{10, 0, 0, 10}, HasIP: true, HostIP: [4]byte{10, 0, 0, 10}, HasHostIP: true, Ifindex: 11, HasVeth: true, Running: true},
+		{Name: "b-container", Tenant: "org", TenantID: 1, IP: [4]byte{10, 0, 0, 20}, HasIP: true, HostIP: [4]byte{10, 0, 0, 21}, HasHostIP: true, Ifindex: 12, HasVeth: true, Running: true},
+		// A box that reports a host-known box's address as its own must not
+		// take the name over.
+		{Name: "liar-container", Tenant: "other", TenantID: 2, IP: [4]byte{10, 0, 0, 10}, HasIP: true, Running: false},
+		// No host-known address: the guest-reported one is the fallback.
+		{Name: "stopped-container", Tenant: "org", TenantID: 1, IP: [4]byte{10, 0, 0, 30}, HasIP: true, Running: false},
+		{Name: "infra", ValidateOnly: true, HostIP: [4]byte{10, 0, 0, 99}, HasHostIP: true, Ifindex: 30, HasVeth: true, Running: true},
+	}
+	plan := planReconcile(views, nil, true)
+	want := map[[4]byte]string{
+		{10, 0, 0, 10}: "a-container",
+		{10, 0, 0, 21}: "b-container", // host-leased, not the guest-reported .20
+		{10, 0, 0, 30}: "stopped-container",
+	}
+	if len(plan.ipBox) != len(want) {
+		t.Fatalf("ipBox = %v, want %v", plan.ipBox, want)
+	}
+	for ip, name := range want {
+		if plan.ipBox[ip] != name {
+			t.Errorf("ipBox[%v] = %q, want %q", ip, plan.ipBox[ip], name)
+		}
+	}
+	// Same keys as ip_tenant: the two maps never disagree on which IPs exist.
+	for ip := range plan.ipTenant {
+		if _, ok := plan.ipBox[ip]; !ok {
+			t.Errorf("ip %v is in ipTenant but has no box name", ip)
+		}
+	}
+}

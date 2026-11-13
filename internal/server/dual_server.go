@@ -2235,6 +2235,7 @@ skipAppHosting:
 		if sink != nil && networkPolicyEnforcer != nil {
 			findingSink = sink
 			threatDetectEngine = threatdetect.NewEngine(sink, "", degraded, networkPolicyEnforcer.TenantForIP, nil)
+			threatDetectEngine.SetContainerForIP(networkPolicyEnforcer.ContainerForIP)
 			// Fence-probe rules (#1642): a breached fence (cross-tenant
 			// flow) and a probed fence (deny-burst) are both continuous
 			// forms of checks that previously only ran one-shot or landed

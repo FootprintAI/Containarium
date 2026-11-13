@@ -112,9 +112,10 @@ type fanoutEntry struct {
 
 // fanoutSource is one container's recent destinations, keyed by address.
 type fanoutSource struct {
-	tenantID string
-	proxy    map[netip.Addr]fanoutEntry
-	wide     map[netip.Addr]fanoutEntry
+	tenantID  string
+	container string // "" when the IP does not resolve to a box
+	proxy     map[netip.Addr]fanoutEntry
+	wide      map[netip.Addr]fanoutEntry
 	// dirtyProxy/dirtyWide: an address was added or refreshed since the last
 	// Sweep. A finished burst is not re-fired for as long as its addresses
 	// linger in the window.
@@ -191,9 +192,13 @@ func (r *OutboundFanoutRule) OnFlows(ctx RuleContext, flows []netbpf.FlowRecord)
 		if !ok {
 			continue
 		}
+		box := ""
+		if ctx.ContainerForIP != nil {
+			box, _ = ctx.ContainerForIP(src)
+		}
 		s := r.sources[src]
-		if s != nil && s.tenantID != tenantID {
-			// The address was reassigned to another tenant's box: what was
+		if s != nil && (s.tenantID != tenantID || s.container != box) {
+			// The address was reassigned to another box (or tenant): what was
 			// counted against the old one must not carry over.
 			delete(r.sources, src)
 			s = nil
@@ -207,9 +212,10 @@ func (r *OutboundFanoutRule) OnFlows(ctx RuleContext, flows []netbpf.FlowRecord)
 				continue
 			}
 			s = &fanoutSource{
-				tenantID: tenantID,
-				proxy:    make(map[netip.Addr]fanoutEntry),
-				wide:     make(map[netip.Addr]fanoutEntry),
+				tenantID:  tenantID,
+				container: box,
+				proxy:     make(map[netip.Addr]fanoutEntry),
+				wide:      make(map[netip.Addr]fanoutEntry),
 			}
 			r.sources[src] = s
 		}
@@ -304,12 +310,19 @@ func fanoutFinding(src netip.Addr, s *fanoutSource, subject string, set map[neti
 			Matched:  matched,
 		})
 	}
+	// The finding store dedupes on (rule, tenant, subject) and a tenant is an
+	// org that can own several boxes, so the box is part of the subject:
+	// two boxes fanning out are two findings, not one with lost attribution.
+	if s.container != "" {
+		subject += ":" + s.container
+	}
 	return RawFinding{
-		Rule:     pb.ThreatRuleId_THREAT_RULE_ID_OUTBOUND_FANOUT,
-		Severity: pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM,
-		TenantID: s.tenantID,
-		Subject:  subject,
-		Evidence: Evidence{Flows: flows},
+		Rule:      pb.ThreatRuleId_THREAT_RULE_ID_OUTBOUND_FANOUT,
+		Severity:  pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM,
+		TenantID:  s.tenantID,
+		Container: s.container,
+		Subject:   subject,
+		Evidence:  Evidence{Flows: flows},
 	}
 }
 

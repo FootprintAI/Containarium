@@ -44,6 +44,7 @@ type containerView struct {
 // so planReconcile is unit-testable without a kernel.
 type reconcilePlan struct {
 	ipTenant   map[[4]byte]uint32          // container IP -> tenant id
+	ipBox      map[[4]byte]string          // container IP -> container name (same precedence as ipTenant; never written to the kernel)
 	vethPolicy map[int]netbpf.PolicyConfig // running container veth ifindex -> policy config
 	ifName     map[int]string              // ifindex -> container name (for bookkeeping)
 	egress     []netbpf.EgressEntry        // per-tenant egress allow-list entries
@@ -75,6 +76,7 @@ type compileFailure struct {
 func planReconcile(views []containerView, policies map[string]netpolicy.CompiledPolicy, enforceEnabled bool) reconcilePlan {
 	plan := reconcilePlan{
 		ipTenant:   make(map[[4]byte]uint32),
+		ipBox:      make(map[[4]byte]string),
 		vethPolicy: make(map[int]netbpf.PolicyConfig),
 		ifName:     make(map[int]string),
 
@@ -93,6 +95,7 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 	for _, v := range views {
 		if !v.ValidateOnly && v.HasHostIP {
 			plan.ipTenant[v.HostIP] = v.TenantID
+			plan.ipBox[v.HostIP] = v.Name
 		}
 	}
 	for _, v := range views {
@@ -101,6 +104,7 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 		}
 		if _, taken := plan.ipTenant[v.IP]; !taken {
 			plan.ipTenant[v.IP] = v.TenantID
+			plan.ipBox[v.IP] = v.Name
 		}
 	}
 

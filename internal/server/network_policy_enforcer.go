@@ -189,6 +189,7 @@ type NetworkPolicyEnforcer struct {
 	mu                sync.Mutex
 	attached          map[int]string                      // ifindex -> container name currently attached
 	idName            map[uint32]string                   // tenant id -> name (for audit/log)
+	ipBox             map[[4]byte]string                  // container IP -> container name, from the last reconcile plan (read by ContainerForIP)
 	enforced          map[uint32]bool                     // tenant ids whose effective mode is ENFORCE (deny == dropped)
 	egressInstalled   map[netbpf.EgressEntry]bool         // egress LPM entries currently in the map
 	denyInstalled     map[netbpf.DenyKey]netbpf.DenyEntry // virtual-patch deny entries currently in the map (#660)
@@ -344,6 +345,21 @@ func (e *NetworkPolicyEnforcer) TenantForIP(ip netip.Addr) (tenantID string, ok 
 		return "", false
 	}
 	return name, true
+}
+
+// ContainerForIP resolves a container IP to the container's name from the
+// same plan that tags ip_tenant, so a host-known address wins over a
+// guest-reported one. A tenant is an org and can own several boxes; this is
+// what lets a flow-based finding name the box. ok is false for an IP this
+// backend doesn't recognize, and for IPv6.
+func (e *NetworkPolicyEnforcer) ContainerForIP(ip netip.Addr) (name string, ok bool) {
+	if !ip.Is4() {
+		return "", false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	name, ok = e.ipBox[ip.As4()]
+	return name, ok
 }
 
 // SetSignaturesEnabled opts into Tier 2 (#661) cleartext exploit-signature
@@ -980,6 +996,7 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 		}
 	}
 	e.idName = idName
+	e.ipBox = plan.ipBox
 	e.enforced = enforced
 	e.mu.Unlock()
 	// What GetNetworkPolicyStatus reports: built from the plan this pass

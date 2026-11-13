@@ -386,3 +386,14 @@ func TestEngine_RedeliverExec_OnlyThatRule(t *testing.T) {
 		t.Fatalf("deliveries: target=%d other=%d, want 1 and 0", a, b)
 	}
 }
+
+func TestEngine_RuleContext_ContainerForIP(t *testing.T) {
+	e := NewEngine(&fakeSink{}, "b1", false, nil, nil)
+	if e.ruleCtx.ContainerForIP != nil {
+		t.Fatal("default ContainerForIP should be nil (rules fall back to tenant-level attribution)")
+	}
+	e.SetContainerForIP(func(ip netip.Addr) (string, bool) { return "box-" + ip.String(), true })
+	if got, ok := e.ruleCtx.ContainerForIP(netip.MustParseAddr("10.0.0.5")); !ok || got != "box-10.0.0.5" {
+		t.Fatalf("ContainerForIP = (%q, %v)", got, ok)
+	}
+}
