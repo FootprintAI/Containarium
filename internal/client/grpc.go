@@ -781,6 +781,20 @@ func (c *GRPCClient) ApplyBoxSkillSets(req *pb.ApplyBoxSkillSetsRequest) (*pb.Ap
 	return c.client.ApplyBoxSkillSets(ctx, req)
 }
 
+// applyBoxBootstrapTimeout bounds a bootstrap apply: the box fetches the
+// bundle and runs its apply.sh as the box user.
+const applyBoxBootstrapTimeout = 10 * time.Minute
+
+// ApplyBoxBootstrap applies a bootstrap bundle to a running box from the
+// daemon (#3694). The error is returned UNWRAPPED so an older daemon surfaces
+// as codes.Unimplemented and a typed failure keeps its status details (see
+// BootstrapFailureOf).
+func (c *GRPCClient) ApplyBoxBootstrap(req *pb.ApplyBoxBootstrapRequest) (*pb.ApplyBoxBootstrapResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), applyBoxBootstrapTimeout)
+	defer cancel()
+	return c.client.ApplyBoxBootstrap(ctx, req)
+}
+
 // TailBoxRunLog reads one window of a box run's log via gRPC (#2123). The
 // deadline covers the server's follow_seconds wait.
 func (c *GRPCClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error) {

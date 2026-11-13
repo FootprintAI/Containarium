@@ -57,6 +57,7 @@ const (
 	ContainerService_WriteBoxFileStream_FullMethodName        = "/containarium.v1.ContainerService/WriteBoxFileStream"
 	ContainerService_SweepBoxRunCheckouts_FullMethodName      = "/containarium.v1.ContainerService/SweepBoxRunCheckouts"
 	ContainerService_ApplyBoxSkillSets_FullMethodName         = "/containarium.v1.ContainerService/ApplyBoxSkillSets"
+	ContainerService_ApplyBoxBootstrap_FullMethodName         = "/containarium.v1.ContainerService/ApplyBoxBootstrap"
 	ContainerService_GetRunApprovalKey_FullMethodName         = "/containarium.v1.ContainerService/GetRunApprovalKey"
 	ContainerService_ListRunInputs_FullMethodName             = "/containarium.v1.ContainerService/ListRunInputs"
 	ContainerService_ListRunCommandEvents_FullMethodName      = "/containarium.v1.ContainerService/ListRunCommandEvents"
@@ -334,6 +335,12 @@ type ContainerServiceClient interface {
 	// under a run in progress, for an unknown set id, or when a set that
 	// predates the manifest would be removed. Same access as StartBoxRun.
 	ApplyBoxSkillSets(ctx context.Context, in *ApplyBoxSkillSetsRequest, opts ...grpc.CallOption) (*ApplyBoxSkillSetsResponse, error)
+	// ApplyBoxBootstrap applies a bootstrap bundle to a running box from the
+	// daemon (#3694): the same script `containarium code install
+	// --bootstrap-url` runs over SSH, run as the box's own user. Advertised as
+	// the "box_bootstrap" capability; an older daemon has no route (a REST 404
+	// without a status body, or gRPC UNIMPLEMENTED).
+	ApplyBoxBootstrap(ctx context.Context, in *ApplyBoxBootstrapRequest, opts ...grpc.CallOption) (*ApplyBoxBootstrapResponse, error)
 	// GetRunApprovalKey returns the public key a box's permission-request
 	// answers are signed with (#2184). `code run --approvals ask` hands it to
 	// the box. Same access as StartBoxRun.
@@ -888,6 +895,16 @@ func (c *containerServiceClient) ApplyBoxSkillSets(ctx context.Context, in *Appl
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ApplyBoxSkillSetsResponse)
 	err := c.cc.Invoke(ctx, ContainerService_ApplyBoxSkillSets_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *containerServiceClient) ApplyBoxBootstrap(ctx context.Context, in *ApplyBoxBootstrapRequest, opts ...grpc.CallOption) (*ApplyBoxBootstrapResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplyBoxBootstrapResponse)
+	err := c.cc.Invoke(ctx, ContainerService_ApplyBoxBootstrap_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1556,6 +1573,12 @@ type ContainerServiceServer interface {
 	// under a run in progress, for an unknown set id, or when a set that
 	// predates the manifest would be removed. Same access as StartBoxRun.
 	ApplyBoxSkillSets(context.Context, *ApplyBoxSkillSetsRequest) (*ApplyBoxSkillSetsResponse, error)
+	// ApplyBoxBootstrap applies a bootstrap bundle to a running box from the
+	// daemon (#3694): the same script `containarium code install
+	// --bootstrap-url` runs over SSH, run as the box's own user. Advertised as
+	// the "box_bootstrap" capability; an older daemon has no route (a REST 404
+	// without a status body, or gRPC UNIMPLEMENTED).
+	ApplyBoxBootstrap(context.Context, *ApplyBoxBootstrapRequest) (*ApplyBoxBootstrapResponse, error)
 	// GetRunApprovalKey returns the public key a box's permission-request
 	// answers are signed with (#2184). `code run --approvals ask` hands it to
 	// the box. Same access as StartBoxRun.
@@ -1846,6 +1869,9 @@ func (UnimplementedContainerServiceServer) SweepBoxRunCheckouts(context.Context,
 }
 func (UnimplementedContainerServiceServer) ApplyBoxSkillSets(context.Context, *ApplyBoxSkillSetsRequest) (*ApplyBoxSkillSetsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ApplyBoxSkillSets not implemented")
+}
+func (UnimplementedContainerServiceServer) ApplyBoxBootstrap(context.Context, *ApplyBoxBootstrapRequest) (*ApplyBoxBootstrapResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApplyBoxBootstrap not implemented")
 }
 func (UnimplementedContainerServiceServer) GetRunApprovalKey(context.Context, *GetRunApprovalKeyRequest) (*GetRunApprovalKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRunApprovalKey not implemented")
@@ -2666,6 +2692,24 @@ func _ContainerService_ApplyBoxSkillSets_Handler(srv interface{}, ctx context.Co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ContainerServiceServer).ApplyBoxSkillSets(ctx, req.(*ApplyBoxSkillSetsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ContainerService_ApplyBoxBootstrap_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyBoxBootstrapRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ContainerServiceServer).ApplyBoxBootstrap(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ContainerService_ApplyBoxBootstrap_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ContainerServiceServer).ApplyBoxBootstrap(ctx, req.(*ApplyBoxBootstrapRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3598,6 +3642,10 @@ var ContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ApplyBoxSkillSets",
 			Handler:    _ContainerService_ApplyBoxSkillSets_Handler,
+		},
+		{
+			MethodName: "ApplyBoxBootstrap",
+			Handler:    _ContainerService_ApplyBoxBootstrap_Handler,
 		},
 		{
 			MethodName: "GetRunApprovalKey",

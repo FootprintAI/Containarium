@@ -683,6 +683,23 @@ service ContainerService {
     };
   }
 
+  // ApplyBoxBootstrap applies a bootstrap bundle to a running box from the
+  // daemon (#3694): the same script `containarium code install
+  // --bootstrap-url` runs over SSH, run as the box's own user. Advertised as
+  // the "box_bootstrap" capability; an older daemon has no route (a REST 404
+  // without a status body, or gRPC UNIMPLEMENTED).
+  rpc ApplyBoxBootstrap(ApplyBoxBootstrapRequest) returns (ApplyBoxBootstrapResponse) {
+    option (google.api.http) = {
+      post: "/v1/containers/{name}/bootstrap:apply"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Apply a bootstrap bundle to a box";
+      description: "Fetches the bundle at bootstrap_url (a .tar.gz with an apply.sh at its root) inside the box, unpacks it into a temp dir and runs its apply.sh as box_user (default: the box owner), exactly as `containarium code install --bootstrap-url` does over SSH, and returns bundle_revision from the bundle's manifest.json. The URL is treated as a single-use credential and never appears in the daemon's logs or error text. An unknown box is NOT_FOUND. A failure carries a google.rpc.ErrorInfo whose reason is a BoxBootstrapFailure name: a stopped box is FAILED_PRECONDITION (BOX_NOT_RUNNING); a bundle server that was never reached is UNAVAILABLE (FETCH_UNREACHED, exit_code 3, the URL was not consumed); a fetch that failed after reaching the server (FETCH_FAILED, exit_code 6), a bundle with no apply.sh (BUNDLE_INVALID, exit_code 4) and a failing apply.sh (APPLY_FAILED, exit_code 5) are FAILED_PRECONDITION. Daemons that support it list \"box_bootstrap\" in GetSystemInfo capabilities. Box owner or collaborator, ssh:write scope.";
+      tags: "Code Runs";
+    };
+  }
+
   // GetRunApprovalKey returns the public key a box's permission-request
   // answers are signed with (#2184). `code run --approvals ask` hands it to
   // the box. Same access as StartBoxRun.

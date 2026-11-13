@@ -3092,6 +3092,47 @@
         ]
       }
     },
+    "/v1/containers/{name}/bootstrap:apply": {
+      "post": {
+        "summary": "Apply a bootstrap bundle to a box",
+        "description": "Fetches the bundle at bootstrap_url (a .tar.gz with an apply.sh at its root) inside the box, unpacks it into a temp dir and runs its apply.sh as box_user (default: the box owner), exactly as `containarium code install --bootstrap-url` does over SSH, and returns bundle_revision from the bundle's manifest.json. The URL is treated as a single-use credential and never appears in the daemon's logs or error text. An unknown box is NOT_FOUND. A failure carries a google.rpc.ErrorInfo whose reason is a BoxBootstrapFailure name: a stopped box is FAILED_PRECONDITION (BOX_NOT_RUNNING); a bundle server that was never reached is UNAVAILABLE (FETCH_UNREACHED, exit_code 3, the URL was not consumed); a fetch that failed after reaching the server (FETCH_FAILED, exit_code 6), a bundle with no apply.sh (BUNDLE_INVALID, exit_code 4) and a failing apply.sh (APPLY_FAILED, exit_code 5) are FAILED_PRECONDITION. Daemons that support it list \"box_bootstrap\" in GetSystemInfo capabilities. Box owner or collaborator, ssh:write scope.",
+        "operationId": "ContainerService_ApplyBoxBootstrap",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ApplyBoxBootstrapResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "description": "The box's name: the owner's username (the box is \u003cname\u003e-container),\nthe same convention as the other per-box RPCs.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ApplyBoxBootstrapBody"
+            }
+          }
+        ],
+        "tags": [
+          "Code Runs"
+        ]
+      }
+    },
     "/v1/containers/{name}/delete-policy": {
       "post": {
         "summary": "Protect or unprotect a container from automated deletion",
@@ -11986,6 +12027,34 @@
       "default": "APP_STATE_UNSPECIFIED",
       "description": "- APP_STATE_UNSPECIFIED: Unspecified state (should not be used)\n - APP_STATE_UPLOADING: Source code is being uploaded\n - APP_STATE_BUILDING: Container image is being built (using Podman)\n - APP_STATE_RUNNING: App is running and healthy\n - APP_STATE_STOPPED: App is stopped by user\n - APP_STATE_FAILED: Build or runtime failure\n - APP_STATE_RESTARTING: App is restarting",
       "title": "AppState represents the lifecycle state of an application"
+    },
+    "ApplyBoxBootstrapBody": {
+      "type": "object",
+      "properties": {
+        "bootstrapUrl": {
+          "type": "string",
+          "description": "URL of the .tar.gz bundle. Treated as a single-use credential: never\nlogged, never echoed in an error."
+        },
+        "boxUser": {
+          "type": "string",
+          "description": "The OS user inside the box the bundle is applied as (its apply.sh runs\nwith that user's $HOME). Empty means `name`, the box owner. root and the\nplatform's unprivileged run user are refused."
+        }
+      },
+      "description": "ApplyBoxBootstrapRequest applies a bootstrap bundle to a running box."
+    },
+    "ApplyBoxBootstrapResponse": {
+      "type": "object",
+      "properties": {
+        "bundleRevision": {
+          "type": "integer",
+          "format": "int32",
+          "description": "bundle_revision from the applied bundle's manifest.json. 0 when the\nbundle carries no manifest.json or the manifest has no bundle_revision\n(manifest_found tells the two apart)."
+        },
+        "manifestFound": {
+          "type": "boolean",
+          "description": "True when the applied bundle carried a manifest.json."
+        }
+      }
     },
     "ApplyBoxSkillSetsBody": {
       "type": "object",
@@ -23379,7 +23448,7 @@
           "items": {
             "type": "string"
           },
-          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model),\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds),\n\"box_run_workdir\" (StartBoxRunRequest.workdir, BoxRun.workdir, #3551),\n\"box_skill_sets\" (the ApplyBoxSkillSets RPC, #3374), \"box_files\" (the\nWriteBoxFile RPC, #3548) and \"box_files_stream\" (the WriteBoxFileStream\nRPC, files up to 64 MiB, #3548).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
+          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model),\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds),\n\"box_run_workdir\" (StartBoxRunRequest.workdir, BoxRun.workdir, #3551),\n\"box_skill_sets\" (the ApplyBoxSkillSets RPC, #3374), \"box_files\" (the\nWriteBoxFile RPC, #3548), \"box_files_stream\" (the WriteBoxFileStream\nRPC, files up to 64 MiB, #3548) and \"box_bootstrap\" (the\nApplyBoxBootstrap RPC, #3694).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
         },
         "storagePools": {
           "type": "array",
