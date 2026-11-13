@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
@@ -47,8 +48,12 @@ type boxBootstrapExecFunc func(boxName, user, script string) (stdout, stderr str
 // where the failing step is) carried into an error.
 const boxBootstrapMaxDetail = 2048
 
-// boxUserPattern is a plain Linux login name: nothing in it is shell syntax.
-var boxUserPattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+// boxUserPattern is what an explicit box_user must look like: a plain login
+// name (digits may lead, as useradd allows with its default settings). An
+// empty box_user defaults to the box name, which validateBoxRunOwner already
+// checked and which is the login the box-run and `code install` paths use;
+// either way the user only ever reaches a shell single-quoted.
+var boxUserPattern = regexp.MustCompile(`^[a-z0-9_][a-z0-9_.-]{0,31}$`)
 
 // boxBootstrapExecFn returns the exec seam: the injected fake, else `su -
 // <user> -c <script>` through the container manager, which keeps the exit code
@@ -67,13 +72,14 @@ func (s *ContainerServer) boxBootstrapExecFn() boxBootstrapExecFunc {
 	}
 }
 
-// redactBootstrapURL removes the URL from text, in its raw and its
-// shell-quoted spelling (the script carries the latter).
+// redactBootstrapURL removes the URL from text. A URL with a single quote is
+// refused (validBootstrapURL), so the URL's shell-quoted spelling in the
+// script ('<url>') contains it verbatim, at every level of quoting the exec
+// wrapper adds, and one replacement of the raw URL covers them all.
 func redactBootstrapURL(text, rawURL string) string {
 	if rawURL == "" {
 		return text
 	}
-	text = strings.ReplaceAll(text, coderun.ShellQuoteSingle(rawURL), boxBootstrapRedacted)
 	return strings.ReplaceAll(text, rawURL, boxBootstrapRedacted)
 }
 
@@ -92,9 +98,13 @@ func boxBootstrapFailure(code codes.Code, reason pb.BoxBootstrapFailure, exitCod
 	return st.Err()
 }
 
-// validBootstrapURL accepts an absolute http(s) URL with a host. The check
-// never echoes the URL.
+// validBootstrapURL accepts an absolute http(s) URL with a host and no single
+// quote (one would be escaped in the script, and the escaped spelling would
+// escape redaction). The check never echoes the URL.
 func validBootstrapURL(raw string) bool {
+	if strings.ContainsRune(raw, '\'') {
+		return false
+	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return false
@@ -116,14 +126,15 @@ func (s *ContainerServer) ApplyBoxBootstrap(ctx context.Context, req *pb.ApplyBo
 		return nil, status.Error(codes.InvalidArgument, "bootstrap_url is required")
 	}
 	if !validBootstrapURL(rawURL) {
-		return nil, status.Error(codes.InvalidArgument, "bootstrap_url must be an absolute http or https URL")
+		return nil, status.Error(codes.InvalidArgument, "bootstrap_url must be an absolute http or https URL without a single quote")
 	}
 	user := strings.TrimSpace(req.GetBoxUser())
-	if user == "" {
+	explicitUser := user != ""
+	if !explicitUser {
 		user = name
 	}
 	switch {
-	case !boxUserPattern.MatchString(user):
+	case explicitUser && !boxUserPattern.MatchString(user):
 		return nil, status.Errorf(codes.InvalidArgument, "box_user %q is not a plain login name", user)
 	case user == "root":
 		return nil, status.Error(codes.InvalidArgument, "box_user must not be root: a bootstrap bundle gets the box user's own privileges")
@@ -151,11 +162,33 @@ func (s *ContainerServer) ApplyBoxBootstrap(ctx context.Context, req *pb.ApplyBo
 		boxName = info.Ref.Name
 	}
 
+	// One apply per box at a time: a client retrying a call whose reply it
+	// lost must not run a second apply.sh in the same home concurrently.
+	mu, _ := s.boxBootstrapLocks.LoadOrStore(boxName, &sync.Mutex{})
+	lock := mu.(*sync.Mutex)
+	if !lock.TryLock() {
+		return nil, boxBootstrapFailure(codes.Aborted, pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_APPLY_IN_PROGRESS, 0,
+			fmt.Sprintf("another bootstrap apply is running on %q; nothing was fetched by this call, retry once it has returned", name))
+	}
+	defer lock.Unlock()
+
+	// Preflight, before the URL is used: the user exists and can run the step.
+	_, pstderr, pcode, err := exec(boxName, user, coderun.BootstrapPreflightScript())
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "bootstrap preflight on %q as %q: %v; nothing was fetched", name, user, err)
+	}
+	if pcode != 0 {
+		return nil, boxBootstrapPreflightError(name, user, pcode, strings.TrimSpace(pstderr))
+	}
+
 	stdout, stderr, code, err := exec(boxName, user, coderun.BootstrapReportScript(rawURL))
 	if err != nil {
-		msg := redactBootstrapURL(fmt.Sprintf("apply bootstrap bundle on %q as %q: %v", name, user, err), rawURL)
+		// The step may have run to completion (e.g. output over the exec cap):
+		// the outcome is unknown and the URL may be spent, so this is not the
+		// retry-safe FETCH_UNREACHED.
+		msg := redactBootstrapURL(fmt.Sprintf("apply bootstrap bundle on %q as %q: the exec into the box failed, so whether the bundle was applied is unknown and the URL may be spent: %v", name, user, err), rawURL)
 		log.Printf("[bootstrap] %s", msg)
-		return nil, status.Error(codes.Unavailable, msg)
+		return nil, boxBootstrapFailure(codes.Unknown, pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_OUTCOME_UNKNOWN, 0, msg)
 	}
 	if code != 0 {
 		detail := redactBootstrapURL(strings.TrimSpace(stderr), rawURL)
@@ -200,5 +233,33 @@ func boxBootstrapExitError(name string, code int, detail string) error {
 		return boxBootstrapFailure(codes.FailedPrecondition, pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_APPLY_FAILED, code,
 			fmt.Sprintf("apply bootstrap bundle on %q: the bundle was fetched but its apply.sh failed; the URL is spent (exit %d)%s", name, code, suffix))
 	}
-	return status.Errorf(codes.Internal, "apply bootstrap bundle on %q: exit %d%s", name, code, suffix)
+	return boxBootstrapFailure(codes.Internal, pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_UNEXPECTED_EXIT, code,
+		fmt.Sprintf("apply bootstrap bundle on %q: unexpected exit %d; the URL may be spent%s", name, code, suffix))
+}
+
+// boxBootstrapPreflightError maps a failed preflight. 10-12 are the
+// preflight's own codes; anything else means the script never ran as user (su
+// refused: no such user, or it cannot log in). Nothing was fetched.
+func boxBootstrapPreflightError(name, user string, code int, detail string) error {
+	if len(detail) > boxBootstrapMaxDetail {
+		detail = "..." + detail[len(detail)-boxBootstrapMaxDetail:]
+	}
+	suffix := ""
+	if detail != "" {
+		suffix = ": " + detail
+	}
+	var why string
+	switch code {
+	case coderun.PreflightExitHome:
+		why = "$HOME is not writable for the box user"
+	case coderun.PreflightExitTmp:
+		why = "no temporary directory can be created on the box"
+	case coderun.PreflightExitTools:
+		why = "curl or tar is missing on the box"
+	default:
+		return boxBootstrapFailure(codes.FailedPrecondition, pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_BOX_USER_UNAVAILABLE, 0,
+			fmt.Sprintf("bootstrap preflight on %q could not run as %q (exit %d): the user does not exist in the box or cannot log in; nothing was fetched%s", name, user, code, suffix))
+	}
+	return boxBootstrapFailure(codes.FailedPrecondition, pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_PREFLIGHT_FAILED, code,
+		fmt.Sprintf("bootstrap preflight on %q as %q: %s; nothing was fetched (exit %d)", name, user, why, code))
 }

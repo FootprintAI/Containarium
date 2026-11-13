@@ -483,28 +483,41 @@ put-file` then says the daemon needs an upgrade for files above 2 MiB.
 
 `POST /v1/containers/{name}/bootstrap:apply` with `{"bootstrap_url": ..., "box_user": ...}`
 runs the bundle step of `containarium code install --bootstrap-url` from the
-daemon: inside the running box, as `box_user` (default: the box owner; `root`
-and the unprivileged run user are refused), it fetches the `.tar.gz`, unpacks it
-and runs its `apply.sh`, then returns `bundle_revision` from the bundle's
-`manifest.json` (`manifest_found` is false when the bundle has none). The URL is
-treated as a single-use credential: it never appears in the daemon's logs or in
-an error.
+daemon. Inside the running box, as `box_user`, it first runs the same preflight
+`code bootstrap` does (home writable, a temp dir, curl and tar), then fetches the
+`.tar.gz`, unpacks it and runs its `apply.sh`. It returns `bundle_revision` from
+the bundle's `manifest.json`; `manifest_found` is false when the bundle has no
+manifest, or one that is not JSON or whose revision does not fit an int32 (the
+apply still succeeded). `box_user` defaults to the box name, the login the
+box-run and `code install` paths use; an explicit value must be a plain login
+name, and `root` and the unprivileged run user are refused. One apply runs per
+box at a time. The URL is treated as a single-use credential: it must not
+contain a single quote, and it never appears in the daemon's logs or in an error.
 
-An unknown box is `NOT_FOUND`. Every other failure carries a `google.rpc.ErrorInfo`
-whose `reason` is a `BoxBootstrapFailure` name and, for the bundle step, whose
-`metadata.exit_code` is the script's exit code, the same one `code install` uses:
+Errors with no `google.rpc.ErrorInfo`: request validation (`INVALID_ARGUMENT`),
+an unknown box (`NOT_FOUND`), a denied caller (`PERMISSION_DENIED`), and a box
+that cannot be looked up or reached before the URL is used (`UNAVAILABLE`; the
+URL was not consumed). Every other failure carries an `ErrorInfo` whose
+`reason` is a `BoxBootstrapFailure` name; where a script exit code applies,
+`metadata.exit_code` is the same one `code install` / `code bootstrap` uses:
 
 | reason | gRPC code | exit_code | URL consumed? |
 | --- | --- | --- | --- |
 | `BOX_NOT_RUNNING` | `FAILED_PRECONDITION` | none | no |
+| `APPLY_IN_PROGRESS` (another apply on the box) | `ABORTED` | none | no |
+| `BOX_USER_UNAVAILABLE` (no such user, or it cannot log in) | `FAILED_PRECONDITION` | none | no |
+| `PREFLIGHT_FAILED` | `FAILED_PRECONDITION` | 10, 11, 12 | no |
 | `FETCH_UNREACHED` | `UNAVAILABLE` | 3 | no, retry is safe |
 | `FETCH_FAILED` | `FAILED_PRECONDITION` | 6 | maybe |
 | `BUNDLE_INVALID` (no `apply.sh`) | `FAILED_PRECONDITION` | 4 | yes |
 | `APPLY_FAILED` | `FAILED_PRECONDITION` | 5 | yes |
+| `UNEXPECTED_EXIT` | `INTERNAL` | the code | maybe |
+| `OUTCOME_UNKNOWN` (exec failed during the bundle step) | `UNKNOWN` | none | maybe; not retry-safe |
 
-A daemon that supports it lists `box_bootstrap` in `SystemInfo.capabilities`; an
-older one has no route (gRPC `UNIMPLEMENTED`, or a REST 404 with no status body,
-which the typed client maps to `UNIMPLEMENTED`). From the shell:
+A daemon that supports it lists `box_bootstrap` in `SystemInfo.capabilities`. An
+older one has no route: gRPC answers `UNIMPLEMENTED`, and over REST the gateway's
+own 404 (body `{"error":"rpc error: code = NotFound desc = Not Found","code":404,...}`),
+which the typed HTTP client maps to `UNIMPLEMENTED`. From the shell:
 `containarium code bootstrap <box> --via-daemon --server <host> --url <url>`.
 
 ## Feature detection

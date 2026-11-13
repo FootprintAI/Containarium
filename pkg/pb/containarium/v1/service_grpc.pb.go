@@ -338,8 +338,9 @@ type ContainerServiceClient interface {
 	// ApplyBoxBootstrap applies a bootstrap bundle to a running box from the
 	// daemon (#3694): the same script `containarium code install
 	// --bootstrap-url` runs over SSH, run as the box's own user. Advertised as
-	// the "box_bootstrap" capability; an older daemon has no route (a REST 404
-	// without a status body, or gRPC UNIMPLEMENTED).
+	// the "box_bootstrap" capability; an older daemon has no route: gRPC
+	// UNIMPLEMENTED, or over REST the gateway's own 404 whose message is
+	// "Not Found" (the typed HTTP client maps it to UNIMPLEMENTED).
 	ApplyBoxBootstrap(ctx context.Context, in *ApplyBoxBootstrapRequest, opts ...grpc.CallOption) (*ApplyBoxBootstrapResponse, error)
 	// GetRunApprovalKey returns the public key a box's permission-request
 	// answers are signed with (#2184). `code run --approvals ask` hands it to
@@ -1576,8 +1577,9 @@ type ContainerServiceServer interface {
 	// ApplyBoxBootstrap applies a bootstrap bundle to a running box from the
 	// daemon (#3694): the same script `containarium code install
 	// --bootstrap-url` runs over SSH, run as the box's own user. Advertised as
-	// the "box_bootstrap" capability; an older daemon has no route (a REST 404
-	// without a status body, or gRPC UNIMPLEMENTED).
+	// the "box_bootstrap" capability; an older daemon has no route: gRPC
+	// UNIMPLEMENTED, or over REST the gateway's own 404 whose message is
+	// "Not Found" (the typed HTTP client maps it to UNIMPLEMENTED).
 	ApplyBoxBootstrap(context.Context, *ApplyBoxBootstrapRequest) (*ApplyBoxBootstrapResponse, error)
 	// GetRunApprovalKey returns the public key a box's permission-request
 	// answers are signed with (#2184). `code run --approvals ask` hands it to

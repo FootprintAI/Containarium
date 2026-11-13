@@ -74,6 +74,26 @@ if ! ./apply.sh; then
 fi`
 }
 
+// Exit codes of BootstrapPreflightScript, one per thing BootstrapScript is
+// about to need.
+const (
+	PreflightExitHome  = 10 // $HOME is not writable
+	PreflightExitTmp   = 11 // no temporary directory can be created
+	PreflightExitTools = 12 // curl or tar is missing
+)
+
+// BootstrapPreflightScript checks exactly what BootstrapScript is about to
+// need, as the user it will run as, and changes nothing on the box. It is
+// run before the bundle URL is used, so a failure means nothing was
+// requested or applied.
+func BootstrapPreflightScript() string {
+	return `test -w "$HOME" || exit 10
+d="$(mktemp -d)" || exit 11
+rmdir "$d" || exit 11
+command -v curl >/dev/null 2>&1 || exit 12
+command -v tar >/dev/null 2>&1 || exit 12`
+}
+
 // BootstrapManifestMarker separates whatever apply.sh printed from the copy
 // of the bundle's manifest.json that BootstrapReportScript prints after it.
 const BootstrapManifestMarker = "=== containarium bootstrap manifest ==="

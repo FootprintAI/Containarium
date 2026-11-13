@@ -194,7 +194,7 @@ func TestApplyBoxBootstrap_RefusesPrivilegedOrRunUser(t *testing.T) {
 
 func TestApplyBoxBootstrap_RequiresAnHTTPURL(t *testing.T) {
 	s, _ := bootstrapServer(t, t.TempDir(), pb.ContainerState_CONTAINER_STATE_RUNNING)
-	for _, u := range []string{"", "   ", "file:///etc/passwd", "-o/tmp/x"} {
+	for _, u := range []string{"", "   ", "file:///etc/passwd", "-o/tmp/x", "https://bundles.example.com/b/it's-a-token"} {
 		_, err := s.ApplyBoxBootstrap(tenantCtx("alice"), &pb.ApplyBoxBootstrapRequest{Name: "alice", BootstrapUrl: u})
 		if status.Code(err) != codes.InvalidArgument {
 			t.Errorf("url %q: err = %v, want InvalidArgument", u, err)
@@ -291,17 +291,29 @@ func TestApplyBoxBootstrap_URLNeverInLogsOrErrors(t *testing.T) {
 		{"transport error echoes the script", func(t *testing.T) error {
 			s, _ := bootstrapServer(t, t.TempDir(), pb.ContainerState_CONTAINER_STATE_RUNNING)
 			s.boxBootstrapExec = func(_, _, script string) (string, string, int, error) {
+				if !isBundleStep(script) {
+					return "", "", 0, nil
+				}
 				return "", "stderr: " + script, -1, errors.New("exec failed running: " + script)
 			}
 			_, err := s.ApplyBoxBootstrap(tenantCtx("alice"), &pb.ApplyBoxBootstrapRequest{Name: "alice", BootstrapUrl: "https://bundles.example.com" + bootstrapSecretPath})
+			if reason, _ := bootstrapFailureOf(t, err); reason != pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_OUTCOME_UNKNOWN || status.Code(err) != codes.Unknown {
+				t.Errorf("transport failure in the bundle step = %v, want UNKNOWN / OUTCOME_UNKNOWN", err)
+			}
 			return err
 		}},
 		{"unexpected exit code with the script in stderr", func(t *testing.T) error {
 			s, _ := bootstrapServer(t, t.TempDir(), pb.ContainerState_CONTAINER_STATE_RUNNING)
 			s.boxBootstrapExec = func(_, _, script string) (string, string, int, error) {
+				if !isBundleStep(script) {
+					return "", "", 0, nil
+				}
 				return "", "su: " + script, 1, nil
 			}
 			_, err := s.ApplyBoxBootstrap(tenantCtx("alice"), &pb.ApplyBoxBootstrapRequest{Name: "alice", BootstrapUrl: "https://bundles.example.com" + bootstrapSecretPath})
+			if reason, exit := bootstrapFailureOf(t, err); reason != pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_UNEXPECTED_EXIT || exit != "1" {
+				t.Errorf("unexpected exit = %v, want UNEXPECTED_EXIT with exit_code 1", err)
+			}
 			return err
 		}},
 	}
@@ -362,4 +374,138 @@ func TestApplyBoxBootstrap_IsAdvertisedAsACapability(t *testing.T) {
 		}
 	}
 	t.Errorf("capabilities %v do not list %q", daemonCapabilities(), DaemonCapBoxBootstrap)
+}
+
+// isBundleStep tells the bundle step's script from the preflight's.
+func isBundleStep(script string) bool { return strings.Contains(script, "curl -fsL") }
+
+// withBoxes makes the fake backend list a running box for each name.
+func withBoxes(s *ContainerServer, names ...string) {
+	s.runCheckoutBoxes = func(context.Context) ([]box.BoxStatus, error) {
+		var out []box.BoxStatus
+		for _, n := range names {
+			out = append(out, box.BoxStatus{Ref: box.BoxRef{Tenant: n, Name: n + "-container"}, State: pb.ContainerState_CONTAINER_STATE_RUNNING})
+		}
+		return out, nil
+	}
+}
+
+// The default box user is the box name, which need not be a strict login
+// name (it may start with a digit or be longer than 32): it is not refused.
+func TestApplyBoxBootstrap_DefaultBoxUserIsTheBoxNameWhateverItsShape(t *testing.T) {
+	long := strings.Repeat("a", 40)
+	for _, name := range []string{"9lives", long} {
+		t.Run(name, func(t *testing.T) {
+			s, calls := bootstrapServer(t, t.TempDir(), pb.ContainerState_CONTAINER_STATE_RUNNING)
+			withBoxes(s, name)
+			url := serveBundle(t, fixtureBundle(t, map[string]string{"apply.sh": "#!/bin/sh\ntrue\n"}))
+			if _, err := s.ApplyBoxBootstrap(tenantCtx(name), &pb.ApplyBoxBootstrapRequest{Name: name, BootstrapUrl: url}); err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range *calls {
+				if c.user != name || c.box != name+"-container" {
+					t.Errorf("ran in %q as %q, want %s-container as %s", c.box, c.user, name, name)
+				}
+			}
+		})
+	}
+	// An explicit box_user may lead with a digit too.
+	s, _ := bootstrapServer(t, t.TempDir(), pb.ContainerState_CONTAINER_STATE_RUNNING)
+	url := serveBundle(t, fixtureBundle(t, map[string]string{"apply.sh": "#!/bin/sh\ntrue\n"}))
+	if _, err := s.ApplyBoxBootstrap(tenantCtx("alice"), &pb.ApplyBoxBootstrapRequest{Name: "alice", BootstrapUrl: url, BoxUser: "9lives"}); err != nil {
+		t.Errorf("box_user 9lives: %v", err)
+	}
+}
+
+// A box_user that does not exist in the box is a typed refusal from the
+// preflight, before the URL is used.
+func TestApplyBoxBootstrap_UnknownBoxUserIsTypedAndFetchesNothing(t *testing.T) {
+	s, _ := bootstrapServer(t, t.TempDir(), pb.ContainerState_CONTAINER_STATE_RUNNING)
+	bundleSteps := 0
+	s.boxBootstrapExec = func(_, user, script string) (string, string, int, error) {
+		if isBundleStep(script) {
+			bundleSteps++
+		}
+		// What `su - ghost` does for a user that does not exist.
+		return "", "su: user ghost does not exist", 1, nil
+	}
+	_, err := s.ApplyBoxBootstrap(tenantCtx("alice"), &pb.ApplyBoxBootstrapRequest{Name: "alice", BootstrapUrl: "https://example.com/b.tgz", BoxUser: "ghost"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("err = %v, want FailedPrecondition", err)
+	}
+	if reason, _ := bootstrapFailureOf(t, err); reason != pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_BOX_USER_UNAVAILABLE {
+		t.Errorf("reason = %v, want BOX_USER_UNAVAILABLE", reason)
+	}
+	if bundleSteps != 0 {
+		t.Errorf("the bundle step ran %d times after a failed preflight", bundleSteps)
+	}
+}
+
+func TestApplyBoxBootstrap_PreflightFailureIsTypedAndFetchesNothing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write a read-only home")
+	}
+	home := t.TempDir()
+	s, _ := bootstrapServer(t, home, pb.ContainerState_CONTAINER_STATE_RUNNING)
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++ }))
+	t.Cleanup(srv.Close)
+	if err := os.Chmod(home, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(home, 0o700) })
+	_, err := s.ApplyBoxBootstrap(tenantCtx("alice"), &pb.ApplyBoxBootstrapRequest{Name: "alice", BootstrapUrl: srv.URL + bootstrapSecretPath})
+	reason, exit := bootstrapFailureOf(t, err)
+	if status.Code(err) != codes.FailedPrecondition || reason != pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_PREFLIGHT_FAILED || exit != strconv.Itoa(coderun.PreflightExitHome) {
+		t.Errorf("err = %v (reason %v, exit %q), want PREFLIGHT_FAILED exit %d", err, reason, exit, coderun.PreflightExitHome)
+	}
+	if hits != 0 {
+		t.Errorf("the bundle server was hit %d times after a failed preflight", hits)
+	}
+}
+
+// A second call while one is applying on the same box is refused, typed, and
+// runs nothing; the box is free again once the first returns.
+func TestApplyBoxBootstrap_OneApplyPerBoxAtATime(t *testing.T) {
+	s, _ := bootstrapServer(t, t.TempDir(), pb.ContainerState_CONTAINER_STATE_RUNNING)
+	inside, release := make(chan struct{}), make(chan struct{})
+	var mu sync.Mutex
+	bundleSteps := 0
+	s.boxBootstrapExec = func(_, _, script string) (string, string, int, error) {
+		if !isBundleStep(script) {
+			return "", "", 0, nil
+		}
+		mu.Lock()
+		bundleSteps++
+		first := bundleSteps == 1
+		mu.Unlock()
+		if first {
+			close(inside)
+			<-release
+		}
+		return "", "", 0, nil
+	}
+	req := &pb.ApplyBoxBootstrapRequest{Name: "alice", BootstrapUrl: "https://example.com/b.tgz"}
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.ApplyBoxBootstrap(tenantCtx("alice"), req)
+		done <- err
+	}()
+	<-inside
+	_, err := s.ApplyBoxBootstrap(tenantCtx("alice"), req)
+	if status.Code(err) != codes.Aborted {
+		t.Errorf("concurrent apply: err = %v, want Aborted", err)
+	} else if reason, _ := bootstrapFailureOf(t, err); reason != pb.BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_APPLY_IN_PROGRESS {
+		t.Errorf("concurrent apply: reason = %v, want APPLY_IN_PROGRESS", reason)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	if bundleSteps != 1 {
+		t.Errorf("bundle steps = %d, want 1 (the refused call ran one)", bundleSteps)
+	}
+	if _, err := s.ApplyBoxBootstrap(tenantCtx("alice"), req); err != nil {
+		t.Errorf("apply after the first returned: %v", err)
+	}
 }

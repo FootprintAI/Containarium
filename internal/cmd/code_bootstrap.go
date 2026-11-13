@@ -24,27 +24,21 @@ const (
 	bootstrapExitFetchReached = coderun.BootstrapExitFetchReached
 )
 
-// Exit codes of bootstrapPreflightScript, one per thing bootstrapScript is
-// about to need.
+// Exit codes of bootstrapPreflightScript: the shared preflight's
+// (internal/coderun).
 const (
-	preflightExitHome  = 10 // $HOME is not writable
-	preflightExitTmp   = 11 // no temporary directory can be created
-	preflightExitTools = 12 // curl or tar is missing
+	preflightExitHome  = coderun.PreflightExitHome
+	preflightExitTmp   = coderun.PreflightExitTmp
+	preflightExitTools = coderun.PreflightExitTools
 )
 
 // bootstrapScript is the shared bundle step (coderun.BootstrapScript): the
 // same script the daemon's ApplyBoxBootstrap runs.
 func bootstrapScript(url string) string { return coderun.BootstrapScript(url) }
 
-// bootstrapPreflightScript checks exactly what bootstrapScript is about to
-// need, and changes nothing on the box.
-func bootstrapPreflightScript() string {
-	return `test -w "$HOME" || exit 10
-d="$(mktemp -d)" || exit 11
-rmdir "$d" || exit 11
-command -v curl >/dev/null 2>&1 || exit 12
-command -v tar >/dev/null 2>&1 || exit 12`
-}
+// bootstrapPreflightScript is the shared preflight
+// (coderun.BootstrapPreflightScript): the same check ApplyBoxBootstrap runs.
+func bootstrapPreflightScript() string { return coderun.BootstrapPreflightScript() }
 
 // bootstrapPreflight is one silent SSH round trip, under kw, that confirms
 // the box is reachable, accepts the key, and can run the bundle step, BEFORE

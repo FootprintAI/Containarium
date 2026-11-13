@@ -416,7 +416,14 @@ func (BoxSkillSetsRefusal) EnumDescriptor() ([]byte, []int) {
 // "containarium.v1"), spelled as the enum value's name. For a failure of the
 // bundle step, the ErrorInfo's metadata also carries `exit_code`: the bundle
 // script's exit code, the same one `containarium code install
-// --bootstrap-url` reports (3, 4, 5 or 6).
+// --bootstrap-url` reports (3, 4, 5 or 6), or the preflight's (10-12).
+//
+// Errors WITHOUT an ErrorInfo: request validation (INVALID_ARGUMENT: a
+// missing or non-http(s) URL, or a URL containing a single quote; a
+// box_user that is root, the run user or not a plain login name), an unknown
+// box (NOT_FOUND), a denied caller (PERMISSION_DENIED), and a failure to
+// look the box up or to reach it before the URL is used (UNAVAILABLE; the URL
+// was not consumed).
 type BoxBootstrapFailure int32
 
 const (
@@ -436,25 +443,57 @@ const (
 	// The bundle was fetched and its apply.sh failed (FAILED_PRECONDITION,
 	// exit_code 5). The URL is spent.
 	BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_APPLY_FAILED BoxBootstrapFailure = 5
+	// The exec into the box failed while the bundle step ran (a transport
+	// error, or output over the daemon's exec cap), so its outcome is unknown
+	// (UNKNOWN). The bundle may have been applied and the URL may be spent: do
+	// NOT treat this as retry-safe; check the box (e.g. its manifest) before
+	// requesting a new URL.
+	BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_OUTCOME_UNKNOWN BoxBootstrapFailure = 6
+	// The bundle step exited with a code the script never uses (INTERNAL,
+	// exit_code set), e.g. mktemp failing. The URL may be spent.
+	BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_UNEXPECTED_EXIT BoxBootstrapFailure = 7
+	// Another ApplyBoxBootstrap is running on this box (ABORTED). Nothing was
+	// fetched by this call; the URL was not consumed. Retry once the other
+	// call has returned.
+	BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_APPLY_IN_PROGRESS BoxBootstrapFailure = 8
+	// The preflight, run before the URL is used, could not run as box_user:
+	// the user does not exist in the box, or cannot log in
+	// (FAILED_PRECONDITION). The URL was not consumed.
+	BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_BOX_USER_UNAVAILABLE BoxBootstrapFailure = 9
+	// The preflight ran as box_user and found the box unable to apply a bundle:
+	// $HOME not writable, no temp dir, or curl/tar missing
+	// (FAILED_PRECONDITION, exit_code 10, 11 or 12 as in `code bootstrap`'s
+	// preflight). The URL was not consumed.
+	BoxBootstrapFailure_BOX_BOOTSTRAP_FAILURE_PREFLIGHT_FAILED BoxBootstrapFailure = 10
 )
 
 // Enum value maps for BoxBootstrapFailure.
 var (
 	BoxBootstrapFailure_name = map[int32]string{
-		0: "BOX_BOOTSTRAP_FAILURE_UNSPECIFIED",
-		1: "BOX_BOOTSTRAP_FAILURE_BOX_NOT_RUNNING",
-		2: "BOX_BOOTSTRAP_FAILURE_FETCH_UNREACHED",
-		3: "BOX_BOOTSTRAP_FAILURE_FETCH_FAILED",
-		4: "BOX_BOOTSTRAP_FAILURE_BUNDLE_INVALID",
-		5: "BOX_BOOTSTRAP_FAILURE_APPLY_FAILED",
+		0:  "BOX_BOOTSTRAP_FAILURE_UNSPECIFIED",
+		1:  "BOX_BOOTSTRAP_FAILURE_BOX_NOT_RUNNING",
+		2:  "BOX_BOOTSTRAP_FAILURE_FETCH_UNREACHED",
+		3:  "BOX_BOOTSTRAP_FAILURE_FETCH_FAILED",
+		4:  "BOX_BOOTSTRAP_FAILURE_BUNDLE_INVALID",
+		5:  "BOX_BOOTSTRAP_FAILURE_APPLY_FAILED",
+		6:  "BOX_BOOTSTRAP_FAILURE_OUTCOME_UNKNOWN",
+		7:  "BOX_BOOTSTRAP_FAILURE_UNEXPECTED_EXIT",
+		8:  "BOX_BOOTSTRAP_FAILURE_APPLY_IN_PROGRESS",
+		9:  "BOX_BOOTSTRAP_FAILURE_BOX_USER_UNAVAILABLE",
+		10: "BOX_BOOTSTRAP_FAILURE_PREFLIGHT_FAILED",
 	}
 	BoxBootstrapFailure_value = map[string]int32{
-		"BOX_BOOTSTRAP_FAILURE_UNSPECIFIED":     0,
-		"BOX_BOOTSTRAP_FAILURE_BOX_NOT_RUNNING": 1,
-		"BOX_BOOTSTRAP_FAILURE_FETCH_UNREACHED": 2,
-		"BOX_BOOTSTRAP_FAILURE_FETCH_FAILED":    3,
-		"BOX_BOOTSTRAP_FAILURE_BUNDLE_INVALID":  4,
-		"BOX_BOOTSTRAP_FAILURE_APPLY_FAILED":    5,
+		"BOX_BOOTSTRAP_FAILURE_UNSPECIFIED":          0,
+		"BOX_BOOTSTRAP_FAILURE_BOX_NOT_RUNNING":      1,
+		"BOX_BOOTSTRAP_FAILURE_FETCH_UNREACHED":      2,
+		"BOX_BOOTSTRAP_FAILURE_FETCH_FAILED":         3,
+		"BOX_BOOTSTRAP_FAILURE_BUNDLE_INVALID":       4,
+		"BOX_BOOTSTRAP_FAILURE_APPLY_FAILED":         5,
+		"BOX_BOOTSTRAP_FAILURE_OUTCOME_UNKNOWN":      6,
+		"BOX_BOOTSTRAP_FAILURE_UNEXPECTED_EXIT":      7,
+		"BOX_BOOTSTRAP_FAILURE_APPLY_IN_PROGRESS":    8,
+		"BOX_BOOTSTRAP_FAILURE_BOX_USER_UNAVAILABLE": 9,
+		"BOX_BOOTSTRAP_FAILURE_PREFLIGHT_FAILED":     10,
 	}
 )
 
@@ -2674,8 +2713,11 @@ type ApplyBoxBootstrapRequest struct {
 	// logged, never echoed in an error.
 	BootstrapUrl string `protobuf:"bytes,2,opt,name=bootstrap_url,json=bootstrapUrl,proto3" json:"bootstrap_url,omitempty"`
 	// The OS user inside the box the bundle is applied as (its apply.sh runs
-	// with that user's $HOME). Empty means `name`, the box owner. root and the
-	// platform's unprivileged run user are refused.
+	// with that user's $HOME). Empty means `name`: the box owner's login, the
+	// same user StartBoxRun and `code install` use. An explicit value must be a
+	// plain login name (lowercase letters, digits, '_', '-', '.', at most 32,
+	// not starting with '-' or '.'); root and the platform's unprivileged run
+	// user are refused.
 	BoxUser       string `protobuf:"bytes,3,opt,name=box_user,json=boxUser,proto3" json:"box_user,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2734,11 +2776,13 @@ func (x *ApplyBoxBootstrapRequest) GetBoxUser() string {
 
 type ApplyBoxBootstrapResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// bundle_revision from the applied bundle's manifest.json. 0 when the
-	// bundle carries no manifest.json or the manifest has no bundle_revision
-	// (manifest_found tells the two apart).
+	// bundle_revision from the applied bundle's manifest.json. 0 when
+	// manifest_found is false, or when the manifest has no bundle_revision.
 	BundleRevision int32 `protobuf:"varint,1,opt,name=bundle_revision,json=bundleRevision,proto3" json:"bundle_revision,omitempty"`
-	// True when the applied bundle carried a manifest.json.
+	// True when the applied bundle carried a manifest.json that decoded:
+	// valid JSON whose bundle_revision, if present, fits an int32. False when
+	// the bundle had no manifest.json, or one that did not decode; the apply
+	// itself still succeeded either way (the URL is spent).
 	ManifestFound bool `protobuf:"varint,2,opt,name=manifest_found,json=manifestFound,proto3" json:"manifest_found,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3711,14 +3755,20 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"(BOX_SKILL_SETS_REFUSAL_UNKNOWN_SKILL_SET\x10\x01\x12*\n" +
 	"&BOX_SKILL_SETS_REFUSAL_RUN_IN_PROGRESS\x10\x02\x120\n" +
 	",BOX_SKILL_SETS_REFUSAL_SET_PREDATES_MANIFEST\x10\x03\x12,\n" +
-	"(BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS\x10\x04*\x8c\x02\n" +
+	"(BOX_SKILL_SETS_REFUSAL_APPLY_IN_PROGRESS\x10\x04*\xeb\x03\n" +
 	"\x13BoxBootstrapFailure\x12%\n" +
 	"!BOX_BOOTSTRAP_FAILURE_UNSPECIFIED\x10\x00\x12)\n" +
 	"%BOX_BOOTSTRAP_FAILURE_BOX_NOT_RUNNING\x10\x01\x12)\n" +
 	"%BOX_BOOTSTRAP_FAILURE_FETCH_UNREACHED\x10\x02\x12&\n" +
 	"\"BOX_BOOTSTRAP_FAILURE_FETCH_FAILED\x10\x03\x12(\n" +
 	"$BOX_BOOTSTRAP_FAILURE_BUNDLE_INVALID\x10\x04\x12&\n" +
-	"\"BOX_BOOTSTRAP_FAILURE_APPLY_FAILED\x10\x05*M\n" +
+	"\"BOX_BOOTSTRAP_FAILURE_APPLY_FAILED\x10\x05\x12)\n" +
+	"%BOX_BOOTSTRAP_FAILURE_OUTCOME_UNKNOWN\x10\x06\x12)\n" +
+	"%BOX_BOOTSTRAP_FAILURE_UNEXPECTED_EXIT\x10\a\x12+\n" +
+	"'BOX_BOOTSTRAP_FAILURE_APPLY_IN_PROGRESS\x10\b\x12.\n" +
+	"*BOX_BOOTSTRAP_FAILURE_BOX_USER_UNAVAILABLE\x10\t\x12*\n" +
+	"&BOX_BOOTSTRAP_FAILURE_PREFLIGHT_FAILED\x10\n" +
+	"*M\n" +
 	"\fRunInputKind\x12\x1e\n" +
 	"\x1aRUN_INPUT_KIND_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19RUN_INPUT_KIND_PERMISSION\x10\x01*i\n" +

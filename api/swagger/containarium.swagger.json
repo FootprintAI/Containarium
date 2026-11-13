@@ -3095,7 +3095,7 @@
     "/v1/containers/{name}/bootstrap:apply": {
       "post": {
         "summary": "Apply a bootstrap bundle to a box",
-        "description": "Fetches the bundle at bootstrap_url (a .tar.gz with an apply.sh at its root) inside the box, unpacks it into a temp dir and runs its apply.sh as box_user (default: the box owner), exactly as `containarium code install --bootstrap-url` does over SSH, and returns bundle_revision from the bundle's manifest.json. The URL is treated as a single-use credential and never appears in the daemon's logs or error text. An unknown box is NOT_FOUND. A failure carries a google.rpc.ErrorInfo whose reason is a BoxBootstrapFailure name: a stopped box is FAILED_PRECONDITION (BOX_NOT_RUNNING); a bundle server that was never reached is UNAVAILABLE (FETCH_UNREACHED, exit_code 3, the URL was not consumed); a fetch that failed after reaching the server (FETCH_FAILED, exit_code 6), a bundle with no apply.sh (BUNDLE_INVALID, exit_code 4) and a failing apply.sh (APPLY_FAILED, exit_code 5) are FAILED_PRECONDITION. Daemons that support it list \"box_bootstrap\" in GetSystemInfo capabilities. Box owner or collaborator, ssh:write scope.",
+        "description": "Fetches the bundle at bootstrap_url (a .tar.gz with an apply.sh at its root) inside the box, unpacks it into a temp dir and runs its apply.sh as box_user (default: the box owner), exactly as `containarium code install --bootstrap-url` does over SSH, and returns bundle_revision from the bundle's manifest.json. The URL is treated as a single-use credential and never appears in the daemon's logs or error text. Before the URL is used, a preflight runs as box_user. Validation errors are INVALID_ARGUMENT, an unknown box is NOT_FOUND, and a box that cannot be looked up or reached before the URL is used is UNAVAILABLE; these carry no ErrorInfo. Every other failure carries a google.rpc.ErrorInfo whose reason is a BoxBootstrapFailure name: a stopped box is FAILED_PRECONDITION (BOX_NOT_RUNNING); a concurrent apply on the same box is ABORTED (APPLY_IN_PROGRESS); a box_user that cannot run the preflight (BOX_USER_UNAVAILABLE) or a failed preflight (PREFLIGHT_FAILED, exit_code 10-12) is FAILED_PRECONDITION; a bundle server that was never reached is UNAVAILABLE (FETCH_UNREACHED, exit_code 3, the URL was not consumed); a fetch that failed after reaching the server (FETCH_FAILED, exit_code 6), a bundle with no apply.sh (BUNDLE_INVALID, exit_code 4) and a failing apply.sh (APPLY_FAILED, exit_code 5) are FAILED_PRECONDITION; an unexpected exit code is INTERNAL (UNEXPECTED_EXIT); an exec failure during the bundle step is UNKNOWN (OUTCOME_UNKNOWN, not retry-safe). Daemons that support it list \"box_bootstrap\" in GetSystemInfo capabilities; an older daemon answers UNIMPLEMENTED, or over REST the gateway's own 404 \"Not Found\". Box owner or collaborator, ssh:write scope.",
         "operationId": "ContainerService_ApplyBoxBootstrap",
         "responses": {
           "200": {
@@ -12037,7 +12037,7 @@
         },
         "boxUser": {
           "type": "string",
-          "description": "The OS user inside the box the bundle is applied as (its apply.sh runs\nwith that user's $HOME). Empty means `name`, the box owner. root and the\nplatform's unprivileged run user are refused."
+          "description": "The OS user inside the box the bundle is applied as (its apply.sh runs\nwith that user's $HOME). Empty means `name`: the box owner's login, the\nsame user StartBoxRun and `code install` use. An explicit value must be a\nplain login name (lowercase letters, digits, '_', '-', '.', at most 32,\nnot starting with '-' or '.'); root and the platform's unprivileged run\nuser are refused."
         }
       },
       "description": "ApplyBoxBootstrapRequest applies a bootstrap bundle to a running box."
@@ -12048,11 +12048,11 @@
         "bundleRevision": {
           "type": "integer",
           "format": "int32",
-          "description": "bundle_revision from the applied bundle's manifest.json. 0 when the\nbundle carries no manifest.json or the manifest has no bundle_revision\n(manifest_found tells the two apart)."
+          "description": "bundle_revision from the applied bundle's manifest.json. 0 when\nmanifest_found is false, or when the manifest has no bundle_revision."
         },
         "manifestFound": {
           "type": "boolean",
-          "description": "True when the applied bundle carried a manifest.json."
+          "description": "True when the applied bundle carried a manifest.json that decoded:\nvalid JSON whose bundle_revision, if present, fits an int32. False when\nthe bundle had no manifest.json, or one that did not decode; the apply\nitself still succeeded either way (the URL is spent)."
         }
       }
     },

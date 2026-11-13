@@ -218,8 +218,10 @@ type ContainerServer struct {
 	// box_bootstrap_apply.go): production is `su - <user>` through the
 	// container manager, keeping the bundle script's exit code.
 	boxBootstrapExec boxBootstrapExecFunc
-	boxSkillSetLocks sync.Map       // key: box name -> *sync.RWMutex
-	boxGateHolders   boxGateHolders // who holds each box's gate (run starts, an apply), for a refused apply's reason and message (#3530, #3537)
+	// boxBootstrapLocks: one ApplyBoxBootstrap per box at a time.
+	boxBootstrapLocks sync.Map       // key: box name -> *sync.Mutex
+	boxSkillSetLocks  sync.Map       // key: box name -> *sync.RWMutex
+	boxGateHolders    boxGateHolders // who holds each box's gate (run starts, an apply), for a refused apply's reason and message (#3530, #3537)
 	// skillSetsApplyLease overrides the apply marker's lease
 	// (sdlcskills.ApplyMarkerLease) for tests; 0 = the default (#3529).
 	skillSetsApplyLease time.Duration
