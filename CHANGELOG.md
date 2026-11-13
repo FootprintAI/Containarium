@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.137.0] - 2026-11-14
+
+
+### Added
+
+- **Apply a bootstrap bundle to an existing box from the daemon** (#3694).
+  New `ApplyBoxBootstrap` RPC (`POST /v1/containers/{name}/bootstrap:apply`)
+  runs the same preflight and bundle script `containarium code install
+  --bootstrap-url` runs over SSH, inside the box as the box user (one apply
+  per box at a time), and returns the applied bundle's `bundle_revision`. The URL is treated as a single-use credential
+  and never appears in the daemon's logs or errors. Failures are typed
+  (`BoxBootstrapFailure` in a `google.rpc.ErrorInfo`, with the script's exit
+  code); daemons that support it advertise the `box_bootstrap` capability.
+  From the shell: `containarium code bootstrap <box> --via-daemon --server
+  <host> --url <url> [--box-user <user>]`.
+- **Threat sentry flags outbound DDoS / proxy fan-out** (#3709). A new `OUTBOUND_FANOUT` rule raises a MEDIUM, record-only finding when one container reaches many distinct public addresses in a short window (the finding names the box): 15 or more on open-proxy ports (the shape of a DDoS or scraping tool rotating a public proxy list), or 200 or more on non-web ports below 32768 (a scanner). Web, DNS and NTP traffic, replies to clients, private and reserved destinations never count; IPv4 only. Previously no rule saw this traffic, so such a tool ran unnoticed unless a provider firewall happened to match its destination port.
+- **Opt-in response to outbound fan-out** (#3709). Set `CONTAINARIUM_THREAT_FANOUT_RESPOND=1` to raise a box-attributed fan-out finding to HIGH so it becomes eligible for the existing process policy (throttle or freeze, with a TTL). Off by default; the policy's default action is still `ALERT`, so nothing is contained until an operator also chooses an action. A fan-out finding never kills a process.
+- **Per-box outbound connection-rate cap** (#3709). The eBPF network policy can now cap how many new outbound TCP connections a box opens per second to public addresses, the way a DDoS or scraping tool behaves. It needs the BPF object built with `-mcpu=v3` and a 5.12+ kernel. Off by default. Set `CONTAINARIUM_EGRESS_CONN_CAP_PER_SEC` to turn it on; `CONTAINARIUM_EGRESS_CONN_CAP_MODE` is `log_only` (default: count and report) or `enforce` (drop, and only when the network-policy enforce switch is armed). Reported as a `conn-cap` deny event, one per box per second.
+- **Flow log: attribute a provider egress alert to a box** (#3709). A cloud firewall alert names a VM and a destination but not the box. Set `CONTAINARIUM_THREAT_FLOWLOG_HOURS` (1 to 72) to keep an in-memory, size-bounded record of which box contacted which public address, and ask it with `containarium security flow-history <ip> [--port N] [--since 24h]` (or the `query_flow_history` MCP tool, or `GET /v1/security/flow-history`). Off by default because it retains destination addresses; a restart empties it; every answer states the time it covers so an empty result is not mistaken for "no box did it".
+- **Abuse-tool rule: reverse tunnels and DDoS tools** (#3709). A new `ABUSE_TOOL` rule raises a MEDIUM, record-only finding when a box runs a reverse-tunnel client (`frpc`, `frps`, `chisel`, `rathole`) or a known DDoS / stress tool, by binary name or by the script an interpreter was asked to run. Unlike the miner-signature rule it is never acted on by the process responder and never kills a process, because a tunnel client has legitimate uses. Needs exec telemetry.
+
+### Changed
+
+- **`WriteBoxFile` can place a file for a run in the run user's home** (#3678).
+  Platform runs on a box with a recorded tool-access level execute as the
+  unprivileged run user (`ctn-run`), which could not read a file placed in the
+  owner's home with mode 0600, so an attachment sent with a run was invisible
+  to it. `WriteBoxFile` and `WriteBoxFileStream` take a new `for_run` field
+  (`containarium code put-file --for-run`, the MCP `put_file` argument
+  `for_run`): on such a box the file is placed in the run user's home, placed
+  and owned by the run user, with the same path rules, modes, atomic rename and
+  checksum check. The run user's home is `0700`, so no other non-root user on
+  the box can read the file. The run user is created first if the box has not
+  had a run yet, `path` is relative to the run user's home, and the response's
+  `path` is where the file is. An unreadable level or a run user that cannot be
+  created is `UNAVAILABLE` and writes nothing. A path the run staging step
+  rewrites at each run start is `INVALID_ARGUMENT` there (#3701). Without
+  `for_run`, or on a box with no recorded level, nothing changes: the file goes
+  into the owner's home, where an SSH run reads it. Advertised as the
+  `box_files_run_user` capability. See `docs/BOX-RUN-API.md`.
+
+### Fixed
+
+- **A run-user file write beneath a platform-managed file is refused** (#3701). A file written for a run could sit beneath a managed name such as `.gitconfig`, which turns that name into a directory and makes the next run start fail. Any path beneath a managed file is now refused before anything is written.
+- **First use of a run user no longer fails when two writes or runs race to create it** (#3702). The provisioning step checked for the run user and then created it; if another write or run created it in between, the create failed and the caller got an error. The create now accepts an existing user and still fails for a real error.
+
+### Security
+
+- **Root-run steps inside a box no longer follow a symlink planted in the box user's home** (#3670). The podman restart unit enable, the `slides` directory setup and the kubeflow manifests ownership change ran as root over paths the box user owns. A symlink on those paths could redirect the write or the chown. Each step now refuses a symlink on its path, and the recursive chowns use `-h`.
+- **Database dumps staged in a tenant container get an unguessable name** (#3680). A backup, restore or verification wrote its dump to a predictable path under `/tmp` in the tenant container, as root, so a tenant who guessed the name could pre-place a symlink and have the dump written through it. Each staging path now carries a 16-byte random suffix.
+- **The CLI and client read HTTP response bodies through a 16 MiB cap** (#3687). The typed client and the CLI commands read each response body whole with `io.ReadAll`, so a large or endless body from the daemon could grow the process without limit. They now read through the shared capped reader; a body over the cap is an error, not buffered in full.
+- **The reverse proxy reads upstream response bodies through the 16 MiB cap** (#3687). The tenant-facing proxy (HTTP and L4) buffered each upstream response whole with `io.ReadAll`. It now reads through the shared capped reader; a body over the cap is an error.
+- **Guacamole, model-gateway, runner and pentest HTTP bodies are read through the 16 MiB cap** (#3687). The remaining unbounded reads of upstream response bodies, and of inbound model-gateway request bodies, now go through the shared capped reader; a body over the cap is an error.
+- **Tracker API responses are read through the 16 MiB cap** (#3687). The GitHub and GitLab tracker adapters read each response body whole with `io.ReadAll`. They now read through the shared capped reader; a body over the cap is an error.
+- **Kubernetes boxes carry their isolation class and TTL** (#3688). The Box CRD now has an `isolation` field (`container`, the default, or `vm`), and the controller maps it and `ttlSeconds` in both directions. A box that asks for `vm` is refused with a `IsolationUnsupported` condition, because a pod has no VM to offer; before, the field was dropped and the box ran as a shared-kernel pod. `ttlSeconds` is enforced: an expired box is deleted and a live one is requeued for its expiry.
+- **A cluster's machine certificate names its immutable id** (#3689, stage 2). New cluster certificates carry the cluster id in the subject, and the autoscaler endpoint refuses a certificate issued for an earlier cluster that had the same name. Certificates already issued by name only keep working until the cluster is re-minted.
+- **Ready clusters are re-issued the id-bearing autoscaler credential** (#3689, stage 3a). A ready cluster still on the name-only credential is moved onto the id-bearing one, one at a time, on each reconcile pass. A failed re-issue is logged and retried; the cluster stays ready. The server logs how many ready clusters remain on the name-only credential. Name-only credentials are still accepted.
+- **Traffic from a box is attributed to a tenant by its host-known address only** (#3690). The network-policy plan keyed the `ip_tenant` map on the address the guest reports about itself, so a box could claim another tenant's address and have that address attributed to its own tenant. Attribution now uses the host-known address (device config or a DHCP lease that agrees). A box with no host-known address gets no attribution row, which is a failure for that box only.
+- **Staging into a run user's home no longer follows a planted symlink** (#3703). The run staging step runs as root and writes, deletes and changes ownership under the run user's home. A symlink the run user placed there could redirect those operations to a file of its choice. The step now refuses a symlink on each target path and changes ownership without following links.
+
 ## [0.136.0] - 2026-11-12
 
 

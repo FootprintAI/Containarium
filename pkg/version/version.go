@@ -13,7 +13,7 @@ var (
 	// ldflags (`make build-release VERSION=<tag>` in .github/workflows/release.yml),
 	// so the tag is the source of truth; keep this constant in sync as the
 	// fallback for plain `make build` / `go build`.
-	Version = "0.136.0"
+	Version = "0.137.0"
 
 	// GitCommit is the git commit hash (set by build flag via ldflags)
 	GitCommit = ""
