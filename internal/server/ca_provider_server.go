@@ -56,28 +56,65 @@ func NewCAProviderServer(store clusterstore.Store, mgr *clustercore.Manager) *CA
 // CASubjectPrefix marks the cluster machine identity's subject.
 const CASubjectPrefix = "k8s-cluster:"
 
-// CASubject renders the machine-identity subject for a cluster.
-func CASubject(owner, name string) string {
-	return CASubjectPrefix + owner + "/" + name
+// CASubject renders the machine-identity subject for a cluster. The subject
+// carries the cluster's immutable id (#3689): a cluster deleted and recreated
+// under the same name gets a new id, so a certificate issued for the old one
+// no longer matches. An empty id renders the legacy name-only subject.
+func CASubject(owner, name, id string) string {
+	s := CASubjectPrefix + owner + "/" + name
+	if id != "" {
+		s += "#" + id
+	}
+	return s
+}
+
+// parseCASubject splits a machine-identity subject into owner, name and id.
+// The id is empty for a legacy name-only subject, which is still accepted
+// until the cluster is re-minted (#3689).
+func parseCASubject(subject string) (owner, name, id string, err error) {
+	if !strings.HasPrefix(subject, CASubjectPrefix) {
+		return "", "", "", fmt.Errorf("not a cluster subject")
+	}
+	rest := strings.TrimPrefix(subject, CASubjectPrefix)
+	rest, id, _ = strings.Cut(rest, "#")
+	owner, name, ok := strings.Cut(rest, "/")
+	if !ok || owner == "" || name == "" {
+		return "", "", "", fmt.Errorf("malformed cluster subject")
+	}
+	return owner, name, id, nil
+}
+
+// boundCluster loads the caller's cluster. When the certificate names a cluster
+// id, a record with another id is refused: the certificate was issued for an
+// earlier cluster of this name (#3689).
+func (s *CAProviderServer) boundCluster(ctx context.Context, owner, name, id string) (*clusterstore.Cluster, error) {
+	c, err := s.store.Get(ctx, owner, name)
+	if err != nil {
+		return nil, storeErr(err)
+	}
+	if id != "" && c.ID != id {
+		return nil, status.Errorf(codes.PermissionDenied, "certificate was issued for a previous cluster named %q", name)
+	}
+	return c, nil
 }
 
 // caIdentity resolves and enforces the calling cluster's identity.
 // Only the dedicated machine subject passes — an admin user token is
 // deliberately NOT accepted on this surface (it is machine-to-machine
 // only; humans use ClusterService).
-func (s *CAProviderServer) caIdentity(ctx context.Context) (owner, name string, err error) {
+func (s *CAProviderServer) caIdentity(ctx context.Context) (owner, name, id string, err error) {
 	if err := auth.RequireScope(ctx, auth.ScopeClustersScale); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	subject, _, ok := auth.SubjectFromGRPCContext(ctx)
 	if !ok || !strings.HasPrefix(subject, CASubjectPrefix) {
-		return "", "", status.Error(codes.PermissionDenied, "this surface accepts only a cluster machine identity")
+		return "", "", "", status.Error(codes.PermissionDenied, "this surface accepts only a cluster machine identity")
 	}
-	owner, name, ok = strings.Cut(strings.TrimPrefix(subject, CASubjectPrefix), "/")
-	if !ok || owner == "" || name == "" {
-		return "", "", status.Error(codes.PermissionDenied, "malformed cluster machine identity")
+	owner, name, id, err = parseCASubject(subject)
+	if err != nil {
+		return "", "", "", status.Error(codes.PermissionDenied, "malformed cluster machine identity")
 	}
-	return owner, name, nil
+	return owner, name, id, nil
 }
 
 // groupID is "<owner>/<cluster>/<group>" — debuggable, and verified
@@ -85,7 +122,7 @@ func (s *CAProviderServer) caIdentity(ctx context.Context) (owner, name string, 
 func groupID(owner, name, group string) string { return owner + "/" + name + "/" + group }
 
 func (s *CAProviderServer) groupFromID(ctx context.Context, id string) (owner, name string, g clusterstore.NodeGroup, err error) {
-	owner, name, err = s.caIdentity(ctx)
+	owner, name, certID, err := s.caIdentity(ctx)
 	if err != nil {
 		return "", "", g, err
 	}
@@ -93,9 +130,9 @@ func (s *CAProviderServer) groupFromID(ctx context.Context, id string) (owner, n
 	if len(parts) != 3 || parts[0] != owner || parts[1] != name {
 		return "", "", g, status.Errorf(codes.PermissionDenied, "node group %q does not belong to the authenticated cluster", id)
 	}
-	c, err := s.store.Get(ctx, owner, name)
+	c, err := s.boundCluster(ctx, owner, name, certID)
 	if err != nil {
-		return "", "", g, storeErr(err)
+		return "", "", g, err
 	}
 	for _, cand := range c.NodeGroups {
 		if cand.Name == parts[2] {
@@ -110,11 +147,11 @@ const providerIDPrefix = "containarium://"
 // --- identity-shaped RPCs ---------------------------------------------
 
 func (s *CAProviderServer) NodeGroups(ctx context.Context, _ *capb.NodeGroupsRequest) (*capb.NodeGroupsResponse, error) {
-	owner, name, err := s.caIdentity(ctx)
+	owner, name, id, err := s.caIdentity(ctx)
 	if err != nil {
 		return nil, err
 	}
-	c, err := s.store.Get(ctx, owner, name)
+	c, err := s.boundCluster(ctx, owner, name, id)
 	if err != nil {
 		return nil, storeErr(err)
 	}
@@ -131,8 +168,11 @@ func (s *CAProviderServer) NodeGroups(ctx context.Context, _ *capb.NodeGroupsReq
 }
 
 func (s *CAProviderServer) NodeGroupForNode(ctx context.Context, req *capb.NodeGroupForNodeRequest) (*capb.NodeGroupForNodeResponse, error) {
-	owner, name, err := s.caIdentity(ctx)
+	owner, name, id, err := s.caIdentity(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := s.boundCluster(ctx, owner, name, id); err != nil {
 		return nil, err
 	}
 	nodes, err := s.store.ListNodes(ctx, owner, name)
@@ -450,7 +490,7 @@ func sizeToResourceList(s clusterstore.Size) map[string]*resourcepb.Quantity {
 // --- trivia the contract requires --------------------------------------
 
 func (s *CAProviderServer) GPULabel(ctx context.Context, _ *capb.GPULabelRequest) (*capb.GPULabelResponse, error) {
-	if _, _, err := s.caIdentity(ctx); err != nil {
+	if _, _, _, err := s.caIdentity(ctx); err != nil {
 		return nil, err
 	}
 	// GPU node pools are a later phase; the label is reserved now so
@@ -459,21 +499,21 @@ func (s *CAProviderServer) GPULabel(ctx context.Context, _ *capb.GPULabelRequest
 }
 
 func (s *CAProviderServer) GetAvailableGPUTypes(ctx context.Context, _ *capb.GetAvailableGPUTypesRequest) (*capb.GetAvailableGPUTypesResponse, error) {
-	if _, _, err := s.caIdentity(ctx); err != nil {
+	if _, _, _, err := s.caIdentity(ctx); err != nil {
 		return nil, err
 	}
 	return &capb.GetAvailableGPUTypesResponse{}, nil
 }
 
 func (s *CAProviderServer) Cleanup(ctx context.Context, _ *capb.CleanupRequest) (*capb.CleanupResponse, error) {
-	if _, _, err := s.caIdentity(ctx); err != nil {
+	if _, _, _, err := s.caIdentity(ctx); err != nil {
 		return nil, err
 	}
 	return &capb.CleanupResponse{}, nil
 }
 
 func (s *CAProviderServer) Refresh(ctx context.Context, _ *capb.RefreshRequest) (*capb.RefreshResponse, error) {
-	if _, _, err := s.caIdentity(ctx); err != nil {
+	if _, _, _, err := s.caIdentity(ctx); err != nil {
 		return nil, err
 	}
 	return &capb.RefreshResponse{}, nil

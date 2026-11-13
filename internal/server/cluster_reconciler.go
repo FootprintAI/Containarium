@@ -59,7 +59,7 @@ type ClusterReconciler struct {
 	// clusters run without an autoscaler (reconciler still converges
 	// to min).
 	caAddr     string
-	mintCACert func(owner, name string) (clustercore.CACredentials, error)
+	mintCACert func(owner, name, id string) (clustercore.CACredentials, error)
 
 	// caScaleDownDelay / caScaleDownUnneeded override the autoscaler's
 	// scale-down timers; zero = stock. See SetCAScaleDown.
@@ -86,7 +86,7 @@ func (r *ClusterReconciler) SetVPADisabled(v bool) { r.vpaDisabled = v }
 // SetCADeployer wires autoscaler deployment: providerAddr is the
 // daemon's CA-provider mTLS listener as reachable from cluster VMs,
 // mint issues each cluster's client credential.
-func (r *ClusterReconciler) SetCADeployer(providerAddr string, mint func(owner, name string) (clustercore.CACredentials, error)) {
+func (r *ClusterReconciler) SetCADeployer(providerAddr string, mint func(owner, name, id string) (clustercore.CACredentials, error)) {
 	r.caAddr, r.mintCACert = providerAddr, mint
 }
 
@@ -403,7 +403,7 @@ func (r *ClusterReconciler) settleState(ctx context.Context, c *clusterstore.Clu
 
 	// The autoscaler rides the settle path too: DeployCA is idempotent.
 	if r.mintCACert != nil && c.State != clusterstore.StateReady {
-		creds, err := r.mintCACert(c.Owner, c.Name)
+		creds, err := r.mintCACert(c.Owner, c.Name, c.ID)
 		if err != nil {
 			return fmt.Errorf("mint autoscaler credential: %w", err)
 		}

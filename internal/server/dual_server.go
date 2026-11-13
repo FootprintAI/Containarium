@@ -1621,8 +1621,8 @@ skipAppHosting:
 					if _, _, lErr := StartClusterCAListener(caListen, []string{sanHost}, pki, caProvider); lErr != nil {
 						log.Printf("[cluster] autoscaler disabled: CA-provider listener: %v", lErr)
 					} else {
-						clusterReconciler.SetCADeployer(caAdvertise, func(owner, name string) (clustercore.CACredentials, error) {
-							cert, key, mErr := pki.MintClientCert(owner, name)
+						clusterReconciler.SetCADeployer(caAdvertise, func(owner, name, id string) (clustercore.CACredentials, error) {
+							cert, key, mErr := pki.MintClientCert(owner, name, id)
 							if mErr != nil {
 								return clustercore.CACredentials{}, mErr
 							}

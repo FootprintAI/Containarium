@@ -122,14 +122,14 @@ func (p *ClusterPKI) CAPEM() []byte { return p.caPEM }
 // MintClientCert issues a client certificate whose CN is the cluster's
 // machine subject. Valid 2 years — cluster deletion revokes access by
 // tearing down the VM holding the key.
-func (p *ClusterPKI) MintClientCert(owner, name string) (certPEM, keyPEM []byte, err error) {
+func (p *ClusterPKI) MintClientCert(owner, name, id string) (certPEM, keyPEM []byte, err error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, err
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: newSerial(),
-		Subject:      pkix.Name{CommonName: CASubject(owner, name), Organization: []string{"Containarium"}},
+		Subject:      pkix.Name{CommonName: CASubject(owner, name, id), Organization: []string{"Containarium"}},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().AddDate(2, 0, 0),
 		KeyUsage:     x509.KeyUsageDigitalSignature,

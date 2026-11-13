@@ -57,7 +57,7 @@ func caRig(t *testing.T) (capb.CloudProviderClient, *ClusterServer, *ClusterReco
 // clusters:scale).
 func caCtx(owner, name string) context.Context {
 	return metadata.AppendToOutgoingContext(context.Background(),
-		auth.MDKeyUsername, CASubject(owner, name),
+		auth.MDKeyUsername, CASubject(owner, name, ""),
 		auth.MDKeyRoles, "machine",
 		auth.MDKeyScopes, auth.ScopeClustersScale,
 	)
@@ -100,7 +100,7 @@ func TestCAProvider_NodeGroupsAndIdentity(t *testing.T) {
 
 	// Missing scope is refused before anything else.
 	noScope := metadata.AppendToOutgoingContext(context.Background(),
-		auth.MDKeyUsername, CASubject("alice", "demo"), auth.MDKeyRoles, "machine", auth.MDKeyScopes, auth.ScopeClustersRead)
+		auth.MDKeyUsername, CASubject("alice", "demo", ""), auth.MDKeyRoles, "machine", auth.MDKeyScopes, auth.ScopeClustersRead)
 	_, err = client.NodeGroups(noScope, &capb.NodeGroupsRequest{})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("wrong scope = %v, want PermissionDenied", err)
