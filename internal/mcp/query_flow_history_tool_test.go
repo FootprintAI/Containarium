@@ -19,14 +19,14 @@ func TestQueryFlowHistoryTool_ForwardsAndRenders(t *testing.T) {
 		for k := range r.URL.Query() {
 			gotQuery[k] = r.URL.Query().Get(k)
 		}
-		_, _ = w.Write([]byte(`{"entries":[{"container":"box-a","tenantId":"org","srcIp":"10.0.3.2","dstIp":"91.121.106.55",` +
+		_, _ = w.Write([]byte(`{"entries":[{"container":"box-a","tenantId":"org","srcIp":"10.0.3.2","dstIp":"203.0.113.9",` +
 			`"dstPort":4444,"protocol":"tcp","firstSeen":"2026-11-13T16:30:00Z","lastSeen":"2026-11-13T16:36:00Z","bytes":"300","packets":"3"}],` +
 			`"coveredSince":"2026-11-13T12:00:00Z","retentionSeconds":"7200","someFutureField":1}`))
 	}))
 	defer srv.Close()
 
 	out, err := handleQueryFlowHistory(NewClient(srv.URL, "tok"), map[string]interface{}{
-		"dst_ip": " 91.121.106.55 ", "dst_port": float64(4444), "since": "2026-11-13T16:00:00Z", "tenant": "org", "limit": float64(10),
+		"dst_ip": " 203.0.113.9 ", "dst_port": float64(4444), "since": "2026-11-13T16:00:00Z", "tenant": "org", "limit": float64(10),
 	})
 	if err != nil {
 		t.Fatalf("handleQueryFlowHistory: %v", err)
@@ -34,7 +34,7 @@ func TestQueryFlowHistoryTool_ForwardsAndRenders(t *testing.T) {
 	if gotPath != "/v1/security/flow-history" {
 		t.Errorf("path = %q", gotPath)
 	}
-	for k, want := range map[string]string{"dst_ip": "91.121.106.55", "dst_port": "4444", "since": "2026-11-13T16:00:00Z", "tenant_id": "org", "limit": "10"} {
+	for k, want := range map[string]string{"dst_ip": "203.0.113.9", "dst_port": "4444", "since": "2026-11-13T16:00:00Z", "tenant_id": "org", "limit": "10"} {
 		if gotQuery[k] != want {
 			t.Errorf("query %s = %q, want %q", k, gotQuery[k], want)
 		}
@@ -43,7 +43,7 @@ func TestQueryFlowHistoryTool_ForwardsAndRenders(t *testing.T) {
 		t.Error("an unset until must not be sent")
 	}
 	// The result names the box and, always, what the log covers.
-	for _, want := range []string{"box-a", "91.121.106.55", "coveredSince", "retentionSeconds"} {
+	for _, want := range []string{"box-a", "203.0.113.9", "coveredSince", "retentionSeconds"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
@@ -58,7 +58,7 @@ func TestQueryFlowHistoryTool_DisabledLogIsAnError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":9,"message":"the flow log is not enabled"}`))
 	}))
 	defer srv.Close()
-	_, err := handleQueryFlowHistory(NewClient(srv.URL, "tok"), map[string]interface{}{"dst_ip": "91.121.106.55"})
+	_, err := handleQueryFlowHistory(NewClient(srv.URL, "tok"), map[string]interface{}{"dst_ip": "203.0.113.9"})
 	if err == nil || !strings.Contains(err.Error(), "query flow history") {
 		t.Fatalf("err = %v, want a wrapped query error", err)
 	}
@@ -72,8 +72,8 @@ func TestQueryFlowHistoryTool_RejectsBadInputBeforeAnyRequest(t *testing.T) {
 		"missing":      {},
 		"hostname":     {"dst_ip": "pool.example.com"},
 		"ipv6":         {"dst_ip": "2001:db8::1"},
-		"port too big": {"dst_ip": "91.121.106.55", "dst_port": float64(70000)},
-		"negative":     {"dst_ip": "91.121.106.55", "dst_port": float64(-1)},
+		"port too big": {"dst_ip": "203.0.113.9", "dst_port": float64(70000)},
+		"negative":     {"dst_ip": "203.0.113.9", "dst_port": float64(-1)},
 	} {
 		if _, err := handleQueryFlowHistory(NewClient(srv.URL, "tok"), args); err == nil {
 			t.Errorf("%s: want an error", name)

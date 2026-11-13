@@ -30,7 +30,7 @@ the new `netpolicy_egress` program and the wider `flow_stat` at first load.
 
 ```sh
 # On the backend, from experimental/ebpf-phaseA:
-clang -O2 -g -target bpfel -I/usr/include/$(uname -m)-linux-gnu \
+clang -O2 -g -target bpfel -mcpu=v3 -I/usr/include/$(uname -m)-linux-gnu \
     -c netpolicy.bpf.c -o /etc/containarium/netpolicy.bpf.o
 
 # Sanity: the object must carry BOTH programs + the flows map.

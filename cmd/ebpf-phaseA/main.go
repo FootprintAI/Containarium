@@ -18,7 +18,7 @@
 //
 // Build the BPF object first (on the backend):
 //
-//	clang -O2 -g -target bpf -I/usr/include/$(uname -m)-linux-gnu \
+//	clang -O2 -g -target bpf -mcpu=v3 -I/usr/include/$(uname -m)-linux-gnu \
 //	    -c experimental/ebpf-phaseA/netpolicy.bpf.c -o netpolicy.bpf.o
 package main
 

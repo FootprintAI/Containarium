@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"net/netip"
 	"slices"
 	"strings"
@@ -460,5 +461,49 @@ func TestConnCapModeLabel(t *testing.T) {
 	}
 	if got := connCapModeLabel(false, true); !strings.HasPrefix(got, "log-only") {
 		t.Errorf("log-only = %q", got)
+	}
+}
+
+func flowFrom(ifindex uint32, src string) netbpf.FlowRecord {
+	a := netip.MustParseAddr(src).As4()
+	return netbpf.FlowRecord{Ifindex: ifindex, Saddr: binary.NativeEndian.Uint32(a[:]), Dport: 4444, Proto: 6}
+}
+
+// A box forging a neighbour's address must not be recorded as the neighbour:
+// the sentry and the flow log would attribute its traffic to the wrong box.
+func TestDropForgedSources(t *testing.T) {
+	boxIPs := map[int][4]byte{11: {10, 0, 0, 10}, 12: {10, 0, 0, 11}}
+	in := []netbpf.FlowRecord{
+		flowFrom(11, "10.0.0.10"), // honest
+		flowFrom(11, "10.0.0.11"), // veth 11 forging veth 12's address
+		flowFrom(12, "10.0.0.11"), // honest
+		flowFrom(12, "8.8.8.8"),   // forging an outside address
+		flowFrom(99, "10.0.0.77"), // a veth with no known address: cannot be checked
+	}
+	got := dropForgedSources(in, boxIPs)
+	if len(got) != 3 {
+		t.Fatalf("kept %d records, want 3: %+v", len(got), got)
+	}
+	for _, f := range got {
+		if want, ok := boxIPs[int(f.Ifindex)]; ok && f.Src().As4() != want {
+			t.Errorf("a forged record survived: veth %d src %v", f.Ifindex, f.Src())
+		}
+	}
+	if len(in) != 5 {
+		t.Error("the input slice must not be modified")
+	}
+	if got := dropForgedSources(in, nil); len(got) != 5 {
+		t.Errorf("with no known addresses nothing can be checked, got %d records, want 5", len(got))
+	}
+}
+
+func TestBoxIPByIfindex(t *testing.T) {
+	plan := reconcilePlan{vethPolicy: map[int]netbpf.PolicyConfig{
+		11: {BoxIP: [4]byte{10, 0, 0, 10}},
+		12: {}, // unknown address: left out, never compared against zero
+	}}
+	got := boxIPByIfindex(plan)
+	if len(got) != 1 || got[11] != ([4]byte{10, 0, 0, 10}) {
+		t.Fatalf("boxIPByIfindex = %v", got)
 	}
 }

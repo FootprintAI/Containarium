@@ -100,6 +100,14 @@ type findingLifecycle interface {
 // call cannot interleave for the same container. Audit entries go through
 // the package's auditLogger (agent_server.go), satisfied by *audit.Store.
 type ProcessResponder struct {
+	// fanoutRespond is the operator's opt-in for acting on outbound fan-out
+	// findings (CONTAINARIUM_THREAT_FANOUT_RESPOND, #3709). It is checked here
+	// and not only where the rule picks its severity: a finding raised to HIGH
+	// while the opt-in was on stays HIGH in the store (severity only ever
+	// rises), so without this gate turning the opt-in off would not stop the
+	// response on a finding that is still open.
+	fanoutRespond atomic.Bool
+
 	policies *threatdetect.ProcessPolicyStore
 	actions  threatdetect.ActionStore
 	findings findingLifecycle
@@ -151,6 +159,17 @@ func NewProcessResponder(policies *threatdetect.ProcessPolicyStore, actions thre
 
 // respondable reports whether the responder could act on f at all: an open
 // HIGH finding from a mining rule, attributed to a container.
+// SetFanoutRespond sets the opt-in for acting on outbound fan-out findings.
+func (r *ProcessResponder) SetFanoutRespond(on bool) { r.fanoutRespond.Store(on) }
+
+// canRespond is respondable plus the operator opt-in a fan-out finding needs.
+func (r *ProcessResponder) canRespond(f *threatdetect.Finding) bool {
+	if !respondable(f) {
+		return false
+	}
+	return f.Rule != pb.ThreatRuleId_THREAT_RULE_ID_OUTBOUND_FANOUT || r.fanoutRespond.Load()
+}
+
 func respondable(f *threatdetect.Finding) bool {
 	return f != nil && f.Container != "" && f.State == threatdetect.FindingStateOpen &&
 		f.Severity == pb.ThreatSeverity_THREAT_SEVERITY_HIGH && threatdetect.RespondsTo(f.Rule)
@@ -376,7 +395,7 @@ func (r *ProcessResponder) onFinding(ctx context.Context, f *threatdetect.Findin
 // rest of the response acts on) and a non-empty reason when the job is
 // stale, which aborts (the queued-job path, see runJob).
 func (r *ProcessResponder) onFindingChecked(ctx context.Context, f *threatdetect.Finding, target *threatdetect.ExecEvidence, recheck func() (*threatdetect.Finding, string)) *threatdetect.Finding {
-	if !respondable(f) {
+	if !r.canRespond(f) {
 		return nil
 	}
 	// kill_process (#2638) is additive and per process: it runs for every
@@ -1353,7 +1372,7 @@ func (s *ActingSink) Upsert(ctx context.Context, f *threatdetect.Finding) (*thre
 	if s.async {
 		// Only findings the responder can act on take a queue slot, so
 		// posture or health findings never crowd out a miner.
-		if respondable(out) {
+		if s.responder.canRespond(out) {
 			s.responder.enqueue(out, target)
 		}
 		return out, nil

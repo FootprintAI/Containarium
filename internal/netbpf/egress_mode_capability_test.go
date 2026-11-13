@@ -117,3 +117,34 @@ func TestSpecSupportsEgressMode(t *testing.T) {
 		})
 	}
 }
+
+// #3709: the loader reports whether the object applies the connection-rate cap.
+// An object from before it loads fine and ignores the bytes the daemon writes,
+// so the daemon must be able to tell and say so.
+func TestSpecSupportsConnCap(t *testing.T) {
+	u8 := &btf.Int{Name: "__u8", Size: 1}
+	u16 := &btf.Int{Name: "__u16", Size: 2}
+	withCap := policyCfgBTFWithBoxIP()
+	withCap.Members = append(withCap.Members,
+		btf.Member{Name: "conn_cap_mode", Type: u8, Offset: 104},
+		btf.Member{Name: "conn_cap_per_sec", Type: u16, Offset: 112})
+	withMap := func(spec *ebpf.CollectionSpec) *ebpf.CollectionSpec {
+		spec.Maps[mapConnRate] = &ebpf.MapSpec{Name: mapConnRate}
+		return spec
+	}
+	for _, tc := range []struct {
+		name string
+		spec *ebpf.CollectionSpec
+		want bool
+	}{
+		{"object with the member and the map", withMap(specWithVethPolicyValue(withCap)), true},
+		{"member but no window map", specWithVethPolicyValue(withCap), false},
+		{"map but an older struct", withMap(specWithVethPolicyValue(policyCfgBTFWithBoxIP())), false},
+		{"an object from before #2618", withMap(specWithVethPolicyValue(policyCfgBTF("egress_mode"))), false},
+		{"no veth_policy map at all", &ebpf.CollectionSpec{Maps: map[string]*ebpf.MapSpec{}}, false},
+	} {
+		if got := specSupportsConnCap(tc.spec); got != tc.want {
+			t.Errorf("%s: specSupportsConnCap = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

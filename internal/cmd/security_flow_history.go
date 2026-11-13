@@ -40,7 +40,7 @@ out. Non-admin callers only see their own tenant.
 
 --since and --until take an RFC3339 timestamp or a duration meaning that long
 ago (for example 2h).`,
-	Example: `  containarium security flow-history 91.121.106.55 --port 4444 --since 24h`,
+	Example: `  containarium security flow-history 203.0.113.9 --port 4444 --since 24h`,
 	Args:    cobra.ExactArgs(1),
 	RunE:    runSecurityFlowHistory,
 }
@@ -165,7 +165,8 @@ func renderFlowHistory(w io.Writer, out *pb.QueryFlowHistoryResponse) {
 			note = "reply?"
 		}
 		fmt.Fprintf(w, "%-24s %-14s %-15s %-15s %-6d %-5s %-20s %-20s %s\n",
-			box, escapeControl(e.GetTenantId()), e.GetSrcIp(), e.GetDstIp(), e.GetDstPort(), e.GetProtocol(),
+			box, escapeControl(e.GetTenantId()), e.GetSrcIp(), e.GetDstIp(), e.GetDstPort(),
+			strings.ToLower(enumLabel(e.GetProtocol().String(), "FLOW_PROTOCOL_")),
 			timestampText(e.GetFirstSeen()), timestampText(e.GetLastSeen()), note)
 	}
 }

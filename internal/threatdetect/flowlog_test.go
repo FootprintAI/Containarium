@@ -52,11 +52,11 @@ func TestFlowLog_NilIsOff(t *testing.T) {
 func TestFlowLog_AttributesTheBox(t *testing.T) {
 	l := NewFlowLog(2*time.Hour, flowLogT0)
 	l.Record(flowLogT0, []netbpf.FlowRecord{
-		flowLogFlow("10.0.3.2", "91.121.106.55", 4444, 5000),
+		flowLogFlow("10.0.3.2", "93.184.216.34", 4444, 5000),
 		flowLogFlow("10.0.3.3", "93.184.1.1", 443, 100),
 	}, flowLogTenants, flowLogBoxes)
 
-	got, _ := l.Query(flowLogT0, FlowLogQuery{Dst: netip.MustParseAddr("91.121.106.55"), Dport: 4444})
+	got, _ := l.Query(flowLogT0, FlowLogQuery{Dst: netip.MustParseAddr("93.184.216.34"), Dport: 4444})
 	if len(got) != 1 || got[0].Container != "box-x" || got[0].TenantID != "org" || got[0].Src.String() != "10.0.3.2" {
 		t.Fatalf("entries = %+v, want box-x of org", got)
 	}
@@ -64,14 +64,14 @@ func TestFlowLog_AttributesTheBox(t *testing.T) {
 		t.Error("a flow to port 4444 is box-initiated, not a likely reply")
 	}
 	// A different port, or a different destination, does not match.
-	if got, _ := l.Query(flowLogT0, FlowLogQuery{Dst: netip.MustParseAddr("91.121.106.55"), Dport: 5555}); len(got) != 0 {
+	if got, _ := l.Query(flowLogT0, FlowLogQuery{Dst: netip.MustParseAddr("93.184.216.34"), Dport: 5555}); len(got) != 0 {
 		t.Fatalf("wrong port matched: %+v", got)
 	}
-	if got, _ := l.Query(flowLogT0, FlowLogQuery{Dst: netip.MustParseAddr("91.121.106.56")}); len(got) != 0 {
+	if got, _ := l.Query(flowLogT0, FlowLogQuery{Dst: netip.MustParseAddr("93.184.216.35")}); len(got) != 0 {
 		t.Fatalf("wrong destination matched: %+v", got)
 	}
 	// Port 0 matches any port.
-	if got, _ := l.Query(flowLogT0, FlowLogQuery{Dst: netip.MustParseAddr("91.121.106.55")}); len(got) != 1 {
+	if got, _ := l.Query(flowLogT0, FlowLogQuery{Dst: netip.MustParseAddr("93.184.216.34")}); len(got) != 1 {
 		t.Fatalf("any-port query = %+v", got)
 	}
 }
@@ -214,5 +214,92 @@ func TestFlowLog_LikelyReply(t *testing.T) {
 	got, _ := l.Query(flowLogT0, FlowLogQuery{Dst: netip.MustParseAddr("93.184.1.1")})
 	if len(got) != 1 || !got[0].LikelyReply() {
 		t.Fatalf("entries = %+v, want one flagged as a likely reply", got)
+	}
+}
+
+// A public-facing box answers many clients, each from a different ephemeral
+// port. One entry per client address, not one per port: otherwise the log fills
+// with visitors and retention collapses.
+func TestFlowLog_RepliesCollapsePerClient(t *testing.T) {
+	l := NewFlowLog(time.Hour, flowLogT0)
+	var flows []netbpf.FlowRecord
+	for port := 40000; port < 40050; port++ {
+		flows = append(flows, flowLogFlow("10.0.3.2", "93.184.1.1", uint16(port), 100))
+	}
+	l.Record(flowLogT0, flows, flowLogTenants, flowLogBoxes)
+	if n := l.Len(); n != 1 {
+		t.Fatalf("log holds %d entries for one client on 50 ports, want 1", n)
+	}
+	got, _ := l.Query(flowLogT0, FlowLogQuery{Dst: netip.MustParseAddr("93.184.1.1")})
+	if len(got) != 1 || !got[0].LikelyReply() || got[0].Dport != 0 {
+		t.Fatalf("entries = %+v, want one reply entry with no port", got)
+	}
+	// A reply entry never matches a port query: the port was the client's.
+	if got, _ := l.Query(flowLogT0, FlowLogQuery{Dst: netip.MustParseAddr("93.184.1.1"), Dport: 40001}); len(got) != 0 {
+		t.Fatalf("a port query matched a reply entry: %+v", got)
+	}
+}
+
+// One box spraying destinations may use only its share of the log, and cannot
+// wash another box's history out of it.
+func TestFlowLog_PerSourceShare(t *testing.T) {
+	l := NewFlowLog(time.Hour, flowLogT0)
+	l.maxPerSource = 50
+	l.Record(flowLogT0, []netbpf.FlowRecord{flowLogFlow("10.0.3.3", "93.184.216.34", 4444, 1)}, flowLogTenants, flowLogBoxes)
+	for i := 0; i < 400; i++ {
+		l.Record(flowLogT0.Add(time.Duration(i+1)*time.Second),
+			[]netbpf.FlowRecord{flowLogFlow("10.0.3.2", fmt.Sprintf("93.184.%d.%d", i/250, 1+i%250), 22, 1)}, flowLogTenants, flowLogBoxes)
+	}
+	l.mu.Lock()
+	sprayer, victim := l.perSource[netip.MustParseAddr("10.0.3.2")], l.perSource[netip.MustParseAddr("10.0.3.3")]
+	l.mu.Unlock()
+	if sprayer > 50 {
+		t.Errorf("the spraying box holds %d entries, want at most its share of 50", sprayer)
+	}
+	if victim != 1 {
+		t.Errorf("the other box holds %d entries, want its 1 untouched", victim)
+	}
+	if got, _ := l.Query(flowLogT0.Add(time.Hour/2), FlowLogQuery{Dst: netip.MustParseAddr("93.184.216.34")}); len(got) != 1 {
+		t.Fatal("another box's history was washed out by a spraying box")
+	}
+	// The count and the map agree.
+	total := 0
+	l.mu.Lock()
+	for _, n := range l.perSource {
+		total += n
+	}
+	l.mu.Unlock()
+	if total != l.Len() {
+		t.Errorf("per-source counts sum to %d but the log holds %d entries", total, l.Len())
+	}
+}
+
+// Coverage starts at the first poll, not at construction: until something has
+// reported, the log can vouch for nothing.
+func TestFlowLog_CoverageStartsAtTheFirstPoll(t *testing.T) {
+	l := NewFlowLog(2*time.Hour, flowLogT0)
+	dst := netip.MustParseAddr("93.184.1.1")
+	if got, cs := l.Query(flowLogT0.Add(time.Hour), FlowLogQuery{Dst: dst}); got != nil || !cs.IsZero() {
+		t.Fatalf("before any poll: entries=%v covered=%v, want no coverage at all", got, cs)
+	}
+	// An empty poll still means the log was listening from then on.
+	l.Record(flowLogT0.Add(10*time.Minute), nil, flowLogTenants, flowLogBoxes)
+	if _, cs := l.Query(flowLogT0.Add(time.Hour), FlowLogQuery{Dst: dst}); !cs.Equal(flowLogT0.Add(10 * time.Minute)) {
+		t.Fatalf("covered = %v, want the first poll at T0+10m, not construction time", cs)
+	}
+}
+
+// Entries dropped for size mean the log can no longer vouch for the time
+// before them, even though the retention has not elapsed.
+func TestFlowLog_CoverageMovesPastSizeEviction(t *testing.T) {
+	l := NewFlowLog(24*time.Hour, flowLogT0)
+	l.maxEntries = 100
+	for i := 0; i < 150; i++ {
+		l.Record(flowLogT0.Add(time.Duration(i)*time.Second),
+			[]netbpf.FlowRecord{flowLogFlow("10.0.3.2", fmt.Sprintf("93.184.%d.1", i), 22, 1)}, flowLogTenants, flowLogBoxes)
+	}
+	_, cs := l.Query(flowLogT0.Add(time.Hour), FlowLogQuery{Dst: netip.MustParseAddr("93.184.149.1")})
+	if !cs.After(flowLogT0) {
+		t.Fatalf("covered = %v, want it moved past the start because older entries were evicted for size", cs)
 	}
 }

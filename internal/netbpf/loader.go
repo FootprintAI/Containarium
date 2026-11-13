@@ -51,6 +51,7 @@ type Loader struct {
 	// inboundReplies: the object validates a box's source against
 	// policy_cfg.box_ip and recognises replies to inbound flows (#2618).
 	inboundReplies bool
+	connCap        bool // the object applies the outbound connection-rate cap (#3709)
 }
 
 // Resolve loads the netpolicy BPF object from the operator-supplied source. The
@@ -92,7 +93,7 @@ func IsEmbeddedValue(value string) bool {
 // Load reads the compiled BPF object at objPath and loads the collection. Build
 // the object with:
 //
-//	clang -O2 -g -target bpfel -I/usr/include/$(uname -m)-linux-gnu \
+//	clang -O2 -g -target bpfel -mcpu=v3 -I/usr/include/$(uname -m)-linux-gnu \
 //	    -c experimental/ebpf-phaseA/netpolicy.bpf.c -o netpolicy.bpf.o
 func Load(objPath string) (*Loader, error) {
 	if _, err := os.Stat(objPath); err != nil {
@@ -145,6 +146,7 @@ func newLoaderFromSpec(spec *ebpf.CollectionSpec) (*Loader, error) {
 		egressLinks:    make(map[int]link.Link),
 		egressMode:     specSupportsEgressMode(spec),
 		inboundReplies: specSupportsInboundReplies(spec),
+		connCap:        specSupportsConnCap(spec),
 	}, nil
 }
 
@@ -190,6 +192,27 @@ func specVethPolicyHasMember(spec *ebpf.CollectionSpec, name string) bool {
 func specSupportsEgressMode(spec *ebpf.CollectionSpec) bool {
 	return specVethPolicyHasMember(spec, vethPolicyEgressModeField)
 }
+
+// vethPolicyConnCapField and mapConnRate are what an object declares when its
+// program applies the outbound connection-rate cap (#3709): the policy_cfg
+// member carrying the rate, and the per-veth window map.
+const (
+	vethPolicyConnCapField = "conn_cap_per_sec"
+	mapConnRate            = "conn_rate"
+)
+
+// specSupportsConnCap reports whether the object enforces the connection-rate
+// cap: its policy_cfg declares conn_cap_per_sec AND it carries the conn_rate
+// map. An object from before the cap (a stale embed, or an operator-supplied
+// path) loads fine and ignores the bytes the daemon writes there, so without
+// this check a cap the operator turned on would silently do nothing.
+func specSupportsConnCap(spec *ebpf.CollectionSpec) bool {
+	return specVethPolicyHasMember(spec, vethPolicyConnCapField) && spec.Maps[mapConnRate] != nil
+}
+
+// SupportsConnCap reports whether the loaded object applies the outbound
+// connection-rate cap (#3709). When false, the cap bytes are written to no effect.
+func (l *Loader) SupportsConnCap() bool { return l.connCap }
 
 // specSupportsInboundReplies reports whether the object validates the box's
 // source, marks frames and tracks inbound flows (#2618): its policy_cfg declares

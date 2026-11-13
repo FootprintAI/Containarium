@@ -131,8 +131,9 @@ type fanoutSource struct {
 //
 // Signals accumulate on OnFlows and Sweep evaluates, so a finding is
 // re-fired on every sweep while the condition holds and the finding store
-// dedupes it into one open finding per (tenant, subject). The rule is
-// record-only: it never acts on a container.
+// dedupes it into one open finding per (tenant, subject). The rule itself never
+// acts on a container: it is record-only at MEDIUM, and the operator can opt in
+// to a HIGH finding the process responder may act on (RespondWithHighSeverity).
 type OutboundFanoutRule struct {
 	th OutboundFanoutThresholds
 
@@ -260,7 +261,9 @@ func (r *OutboundFanoutRule) OnFlows(ctx RuleContext, flows []netbpf.FlowRecord)
 }
 
 // Sweep prunes addresses older than the window, forgets sources left empty,
-// and raises a MEDIUM finding for each class at or over its threshold.
+// and raises a finding (MEDIUM; HIGH only with the response opt-in and a named
+// box) for each class at or over its threshold that gained or refreshed an
+// address since the last sweep.
 func (r *OutboundFanoutRule) Sweep(ctx RuleContext, now time.Time) []RawFinding {
 	cutoff := now.Add(-r.th.Window)
 	r.mu.Lock()

@@ -370,3 +370,37 @@ func TestRespondable_OutboundFanout(t *testing.T) {
 		t.Error("a finding that names no box has nothing to act on")
 	}
 }
+
+// #3709: the opt-in is enforced where the response happens, not only where the
+// rule picks its severity. A finding raised to HIGH while the opt-in was on
+// stays HIGH in the store, so turning the opt-in off must still stop it.
+func TestProcessResponder_FanoutNeedsTheOptIn(t *testing.T) {
+	mk := func(rule pb.ThreatRuleId) *threatdetect.Finding {
+		return &threatdetect.Finding{
+			Rule: rule, Severity: pb.ThreatSeverity_THREAT_SEVERITY_HIGH,
+			Container: "box-x", State: threatdetect.FindingStateOpen,
+		}
+	}
+	r := &ProcessResponder{}
+	fanout := mk(pb.ThreatRuleId_THREAT_RULE_ID_OUTBOUND_FANOUT)
+	if r.canRespond(fanout) {
+		t.Error("a HIGH fan-out finding must not be respondable while the opt-in is off")
+	}
+	if got := r.onFinding(context.Background(), fanout, nil); got != nil {
+		t.Errorf("onFinding acted on a fan-out finding with the opt-in off: %+v", got)
+	}
+	// The mining rules never depend on it.
+	for _, rule := range []pb.ThreatRuleId{pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR, pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE} {
+		if !r.canRespond(mk(rule)) {
+			t.Errorf("%v must stay respondable regardless of the fan-out opt-in", rule)
+		}
+	}
+	r.SetFanoutRespond(true)
+	if !r.canRespond(fanout) {
+		t.Error("an opted-in HIGH fan-out finding naming its box must be respondable")
+	}
+	r.SetFanoutRespond(false)
+	if r.canRespond(fanout) {
+		t.Error("turning the opt-in back off must stop the response again")
+	}
+}

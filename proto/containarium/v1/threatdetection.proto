@@ -65,8 +65,11 @@ enum ThreatRuleId {
   // short window: either on open-proxy ports (3128, 1080, 8118, 8888, ...),
   // the shape of a DDoS / scraping tool rotating through a public proxy
   // list, or to a very wide spread of addresses on any non-web port, the
-  // shape of a scanner. MEDIUM, record-only. Subject is "proxy-fanout" or
-  // "wide-fanout"; evidence is a capped sample of the qualifying flows.
+  // shape of a scanner. MEDIUM and record-only by default; HIGH, and so
+  // eligible for the process responder, only when the operator opts in
+  // (CONTAINARIUM_THREAT_FANOUT_RESPOND) and the finding names its box. Subject
+  // is "proxy-fanout" or "wide-fanout", suffixed ":<box>" when the box is known;
+  // evidence is a capped sample of the qualifying flows.
   // Thresholds: OutboundFanoutThresholds in internal/threatdetect.
   THREAT_RULE_ID_OUTBOUND_FANOUT = 10;
   // A process exec in a box matched the abuse-tool baseline (#3709): a
@@ -647,6 +650,14 @@ message QueryFlowHistoryRequest {
   int32 limit = 6;
 }
 
+// FlowProtocol is the IP protocol of a recorded flow.
+enum FlowProtocol {
+  FLOW_PROTOCOL_UNSPECIFIED = 0;
+  FLOW_PROTOCOL_TCP = 1;
+  FLOW_PROTOCOL_UDP = 2;
+  FLOW_PROTOCOL_ICMP = 3;
+}
+
 // FlowHistoryEntry is one box's recorded contact with one destination: the
 // box, the destination, and when it was first and last seen.
 message FlowHistoryEntry {
@@ -656,9 +667,10 @@ message FlowHistoryEntry {
   string tenant_id = 2;
   string src_ip = 3;
   string dst_ip = 4;
+  // 0 on a likely_reply entry: the port was the client's, and replies to one
+  // client address share a single entry.
   uint32 dst_port = 5;
-  // "tcp", "udp" or "icmp".
-  string protocol = 6;
+  FlowProtocol protocol = 6;
   google.protobuf.Timestamp first_seen = 7;
   google.protobuf.Timestamp last_seen = 8;
   // The largest cumulative counters reported for any single flow to this

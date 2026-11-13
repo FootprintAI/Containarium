@@ -39,12 +39,12 @@ func TestFlowHistoryTime(t *testing.T) {
 
 func TestFlowHistoryQuery(t *testing.T) {
 	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
-	q, err := flowHistoryQuery(" 91.121.106.55 ", 4444, "1h", "", "org", 20, now)
+	q, err := flowHistoryQuery(" 203.0.113.9 ", 4444, "1h", "", "org", 20, now)
 	if err != nil {
 		t.Fatalf("flowHistoryQuery: %v", err)
 	}
 	for k, want := range map[string]string{
-		"dst_ip": "91.121.106.55", "dst_port": "4444", "since": "2026-11-14T11:00:00Z", "tenant_id": "org", "limit": "20",
+		"dst_ip": "203.0.113.9", "dst_port": "4444", "since": "2026-11-14T11:00:00Z", "tenant_id": "org", "limit": "20",
 	} {
 		if got := q.Get(k); got != want {
 			t.Errorf("%s = %q, want %q", k, got, want)
@@ -76,12 +76,12 @@ func TestRenderFlowHistory(t *testing.T) {
 	renderFlowHistory(&b, &pb.QueryFlowHistoryResponse{
 		CoveredSince: ts, RetentionSeconds: 7200,
 		Entries: []*pb.FlowHistoryEntry{
-			{Container: "box-a", TenantId: "org", SrcIp: "10.0.3.2", DstIp: "91.121.106.55", DstPort: 4444, Protocol: "tcp", FirstSeen: ts, LastSeen: ts},
-			{Container: "", TenantId: "evil\x1b[31morg", SrcIp: "10.0.3.9", DstIp: "91.121.106.55", DstPort: 51000, Protocol: "tcp", FirstSeen: ts, LastSeen: ts, LikelyReply: true},
+			{Container: "box-a", TenantId: "org", SrcIp: "10.0.3.2", DstIp: "203.0.113.9", DstPort: 4444, Protocol: pb.FlowProtocol_FLOW_PROTOCOL_TCP, FirstSeen: ts, LastSeen: ts},
+			{Container: "", TenantId: "evil\x1b[31morg", SrcIp: "10.0.3.9", DstIp: "203.0.113.9", DstPort: 51000, Protocol: pb.FlowProtocol_FLOW_PROTOCOL_TCP, FirstSeen: ts, LastSeen: ts, LikelyReply: true},
 		},
 	})
 	out := b.String()
-	for _, want := range []string{"covers 2026-11-13T16:35:00Z onward (retention 2h0m0s)", "box-a", "(unknown box)", "reply?"} {
+	for _, want := range []string{"covers 2026-11-13T16:35:00Z onward (retention 2h0m0s)", "box-a", "(unknown box)", "reply?", " tcp "} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}

@@ -28,6 +28,11 @@ import (
 // The tenant policy itself stays log_only throughout (an empty allow-list under
 // enforce would drop everything and prove nothing about the cap).
 const (
+	// A public-range peer: the cap deliberately ignores private destinations,
+	// so the shared 10.x unlisted peer other load tests use would never count.
+	connCapPeerAddr = "198.51.100.77"
+	connCapPeerPort = 8691
+
 	connCapBurst = 12
 	connCapRate  = 3
 	// The window is a fixed one second, so a burst that straddles a boundary may
@@ -45,7 +50,7 @@ import socket, sys
 ok = 0
 for _ in range(int(sys.argv[3])):
     s = socket.socket()
-    s.settimeout(0.4)
+    s.settimeout(0.15)
     try:
         s.connect((sys.argv[1], int(sys.argv[2])))
         ok += 1
@@ -56,7 +61,7 @@ for _ in range(int(sys.argv[3])):
 print(ok)
 `
 	out, err := exec.Command("ip", "netns", "exec", ebpfLoadNetns, // #nosec G204 -- fixed argv, constant script
-		"python3", "-c", script, ebpfLoadUnlistedAddr, fmt.Sprint(ebpfLoadUnlistedPort), strconv.Itoa(n)).CombinedOutput()
+		"python3", "-c", script, connCapPeerAddr, fmt.Sprint(connCapPeerPort), strconv.Itoa(n)).CombinedOutput()
 	if err != nil {
 		t.Fatalf("burst from the box: %v\n%s", err, out)
 	}
@@ -80,15 +85,15 @@ func TestAttachedProgram_ConnectionRateCap(t *testing.T) {
 			t.Fatalf("%v: %v\n%s", args, err, out)
 		}
 	}
-	run("ip", "addr", "add", ebpfLoadUnlistedAddr+"/32", "dev", ebpfLoadHostVeth)
-	run("ip", "netns", "exec", ebpfLoadNetns, "ip", "route", "add", ebpfLoadUnlistedAddr+"/32", "via", ebpfLoadHostAddr)
+	run("ip", "addr", "add", connCapPeerAddr+"/32", "dev", ebpfLoadHostVeth)
+	run("ip", "netns", "exec", ebpfLoadNetns, "ip", "route", "add", connCapPeerAddr+"/32", "via", ebpfLoadHostAddr)
 	t.Cleanup(func() {
-		_ = exec.Command("ip", "netns", "exec", ebpfLoadNetns, "ip", "route", "del", ebpfLoadUnlistedAddr+"/32").Run() // #nosec G204 -- fixed argv
-		_ = exec.Command("ip", "addr", "del", ebpfLoadUnlistedAddr+"/32", "dev", ebpfLoadHostVeth).Run()               // #nosec G204 -- fixed argv
+		_ = exec.Command("ip", "netns", "exec", ebpfLoadNetns, "ip", "route", "del", connCapPeerAddr+"/32").Run() // #nosec G204 -- fixed argv
+		_ = exec.Command("ip", "addr", "del", connCapPeerAddr+"/32", "dev", ebpfLoadHostVeth).Run()               // #nosec G204 -- fixed argv
 	})
-	ln, err := net.Listen("tcp4", net.JoinHostPort(ebpfLoadUnlistedAddr, fmt.Sprint(ebpfLoadUnlistedPort)))
+	ln, err := net.Listen("tcp4", net.JoinHostPort(connCapPeerAddr, fmt.Sprint(connCapPeerPort)))
 	if err != nil {
-		t.Fatalf("listen on %s: %v", ebpfLoadUnlistedAddr, err)
+		t.Fatalf("listen on %s: %v", connCapPeerAddr, err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 	go acceptAndClose(ln)

@@ -126,7 +126,7 @@ need curl
 [ "${BUILD:-0}" = 1 ] && {
   need clang
   info "compiling $SCRIPT_DIR/netpolicy.bpf.c → $BPF_OBJ"
-  clang -O2 -g -target bpfel -I"/usr/include/$(uname -m)-linux-gnu" \
+  clang -O2 -g -target bpfel -mcpu=v3 -I"/usr/include/$(uname -m)-linux-gnu" \
     -c "$SCRIPT_DIR/netpolicy.bpf.c" -o "$BPF_OBJ"
   info "built; point CONTAINARIUM_NETWORK_POLICY_BPF_OBJECT=$BPF_OBJ and restart the daemon, then re-run without BUILD=1"
 }

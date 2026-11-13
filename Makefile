@@ -114,7 +114,7 @@ proto-breaking: ## Check for breaking changes in protobuf definitions
 
 build-bpf: ## Compile both eBPF objects for embedding (Linux; needs clang, kernel UAPI headers, bpftool + kernel BTF)
 	@echo "==> Compiling eBPF object $(BPF_OBJ)..."
-	@clang -O2 -g -target bpfel \
+	@clang -O2 -g -target bpfel -mcpu=v3 \
 		-I/usr/include/$(shell uname -m)-linux-gnu \
 		-c $(BPF_SRC) -o $(BPF_OBJ)
 	@echo "==> eBPF object built: $(BPF_OBJ) ($$(wc -c < $(BPF_OBJ)) bytes)."

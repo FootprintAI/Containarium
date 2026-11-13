@@ -94,6 +94,7 @@ type NetworkPolicyEnforcer struct {
 	// cap (#3709): 0 is off. Set before Start via SetEgressConnCap.
 	connCapPerSec  uint16
 	connCapEnforce bool
+	connCapWarned  bool // the object cannot apply the cap; said once
 
 	// eventDebounce is the trailing debounce on the container-event path
 	// (#3050); the timer path (interval) is not debounced.
@@ -194,6 +195,7 @@ type NetworkPolicyEnforcer struct {
 	attached          map[int]string                      // ifindex -> container name currently attached
 	idName            map[uint32]string                   // tenant id -> name (for audit/log)
 	ipBox             map[[4]byte]string                  // container IP -> container name, from the last reconcile plan (read by ContainerForIP)
+	vethBoxIP         map[int][4]byte                     // veth ifindex -> the box's host-known address, from the last plan (read by pollFlows to drop forged sources)
 	enforced          map[uint32]bool                     // tenant ids whose effective mode is ENFORCE (deny == dropped)
 	egressInstalled   map[netbpf.EgressEntry]bool         // egress LPM entries currently in the map
 	denyInstalled     map[netbpf.DenyKey]netbpf.DenyEntry // virtual-patch deny entries currently in the map (#660)
@@ -736,10 +738,11 @@ func denyAuditEntry(ev netbpf.DenyEvent, tenant, sigName string, dropped bool) *
 	vpatch := ev.Reason == netbpf.DenyReasonVirtualPatch
 	signature := ev.Reason == netbpf.DenyReasonSignature
 	spoofed := ev.Reason == netbpf.DenyReasonSpoofedSource
+	connCap := ev.Reason == netbpf.DenyReasonConnCap
 	detail := `{"src":"` + ev.Src().String() + `","dst":"` + ev.Dst().String() +
 		`","proto":` + itoa(int(ev.Proto)) + `,"dport":` + itoa(int(ev.Dport)) +
 		`,"dropped":` + boolStr(dropped) + `,"virtual_patch":` + boolStr(vpatch) +
-		`,"spoofed_source":` + boolStr(spoofed) + `}`
+		`,"spoofed_source":` + boolStr(spoofed) + `,"conn_cap":` + boolStr(connCap) + `}`
 	if signature {
 		// A Tier 2 signature match (#661): record which signature, on the INBOUND
 		// (container-receive) path, so the audit names the blocked exploit.
@@ -756,6 +759,13 @@ func denyAuditEntry(ev netbpf.DenyEvent, tenant, sigName string, dropped bool) *
 	case spoofed:
 		// The src is the forged address; the tenant names the box that sent it.
 		action = "network_policy.spoofed_source"
+	case connCap:
+		// The box exceeded its outbound connection-rate cap (#3709). Its own
+		// action, not a deny_*: it is not an allow-list miss, and the egress plan
+		// that suggests allow-list entries from deny rows must not read it as one.
+		// dst is the connection that tipped the count; dropped says whether the
+		// cap was enforced or only counted.
+		action = "network_policy.conn_cap"
 	case dropped:
 		action = "network_policy.deny_dropped"
 	default:
@@ -789,6 +799,7 @@ func (e *NetworkPolicyEnforcer) pollFlows() {
 	for idx, name := range e.attached {
 		attached[idx] = name
 	}
+	boxIPs := e.vethBoxIP
 	e.mu.Unlock()
 
 	now := time.Now()
@@ -803,7 +814,7 @@ func (e *NetworkPolicyEnforcer) pollFlows() {
 	// (15s), well inside the engine's 60s budget. Runs in observation mode
 	// (no ENFORCE requirement); nil hook is the default (sentry disabled).
 	if e.flowHook != nil {
-		e.flowHook(active)
+		e.flowHook(dropForgedSources(active, boxIPs))
 	}
 
 	// Idle reaper (#632): a flow whose last packet is older than the idle
@@ -820,6 +831,38 @@ func (e *NetworkPolicyEnforcer) pollFlows() {
 			}
 		}
 	}
+}
+
+// boxIPByIfindex is each policed veth's host-known box address from the plan,
+// the one thing a box cannot choose. Entries with no known address are left
+// out: nothing can be checked against them.
+func boxIPByIfindex(plan reconcilePlan) map[int][4]byte {
+	out := make(map[int][4]byte, len(plan.vethPolicy))
+	for ifindex, cfg := range plan.vethPolicy {
+		if cfg.BoxIP != ([4]byte{}) {
+			out[ifindex] = cfg.BoxIP
+		}
+	}
+	return out
+}
+
+// dropForgedSources removes flow records whose source address is not the
+// address its veth is known to own. The BPF program tallies a flow under the
+// packet's source address before it decides on a spoofed one, so a box that
+// forges a neighbour's address would otherwise be recorded as the neighbour:
+// the sentry would raise findings against, and the flow log would attribute
+// traffic to, a box that never sent it. A record on a veth with no known
+// address cannot be checked and is kept (the program does not validate such a
+// veth either); the returned slice shares no storage with the input.
+func dropForgedSources(flows []netbpf.FlowRecord, boxIPs map[int][4]byte) []netbpf.FlowRecord {
+	out := make([]netbpf.FlowRecord, 0, len(flows))
+	for _, f := range flows {
+		if want, ok := boxIPs[int(f.Ifindex)]; ok && f.Src().As4() != want { // #nosec G115 -- an ifindex
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // splitIdleFlows partitions BPF flow records into still-active and idle by the
@@ -930,7 +973,16 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	plan := planReconcile(views, policies, e.enforceEnabled)
 	// The cap drops only when the operator chose enforce AND the daemon-wide
 	// guard is armed; otherwise it counts and reports, like any other policy.
-	applyConnCap(&plan, e.connCapPerSec, e.connCapEnforce && e.enforceEnabled)
+	if e.connCapPerSec > 0 && !e.loader.SupportsConnCap() {
+		// An object built before the cap loads fine and ignores the bytes written
+		// for it: say so, instead of logging a cap that does nothing.
+		if !e.connCapWarned {
+			e.connCapWarned = true
+			log.Printf("[netpolicy] the loaded BPF object predates the outbound connection cap; CONTAINARIUM_EGRESS_CONN_CAP_PER_SEC=%d has no effect until the object is rebuilt (make build-bpf)", e.connCapPerSec)
+		}
+	} else {
+		applyConnCap(&plan, e.connCapPerSec, e.connCapEnforce && e.enforceEnabled)
+	}
 	// Fail closed on a policy that does not compile (#3518): keep the tenant's
 	// last good egress and deny sets, and log the failure once per change.
 	holdLastGood(&plan, e.egressInstalled, e.denyInstalled)
@@ -1014,6 +1066,7 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 	}
 	e.idName = idName
 	e.ipBox = plan.ipBox
+	e.vethBoxIP = boxIPByIfindex(plan)
 	e.enforced = enforced
 	e.mu.Unlock()
 	// What GetNetworkPolicyStatus reports: built from the plan this pass

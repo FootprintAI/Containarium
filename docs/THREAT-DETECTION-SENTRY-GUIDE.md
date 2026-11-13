@@ -67,7 +67,7 @@ Prerequisites:
 | Miner signature | HIGH | A process exec in a box matches the miner-signature list (#2638): a known miner's binary name (basename or comm, exact or glob, case-insensitive), a command-line marker (`--donate-level`, `stratum+tcp://`, `-o <host>:<stratum port>`, …), or an operator-added SHA-256 of the executable. Fires on the exec itself, within one detection cycle. Subject is `<kind>:<pattern>` of the entry that hit; evidence is the exec (pid, ppid, uid, comm, path, argv, and the hash when computed). See [Miner signatures and kill-process](#miner-signatures-and-kill-process). Needs exec telemetry. |
 | Abuse tool | MEDIUM | A process exec in a box is a **reverse-tunnel client** (`frpc`, `frps`, `chisel`, `rathole`: a persistent way in for someone outside the box) or a known **DDoS / stress tool** (`slowloris`, `xerxes`, `torshammer`, `THC-SSL-DOS`, or a script such as `hulk.py`, `goldeneye.py`, `mhddos*.py`, `pyddos*.py`, `blankdisk*.py`). Matches a basename: the exec'd file or task comm, or the script an interpreter (`python`, `perl`, `ruby`, `node`, `php`, `bash`, `sh`) was asked to run, meaning its first non-option argument. Reading or editing a file with one of those names (`cat`, `vim`, `git add`) does not match. Subject is `container:<box>:name:<pattern>`; evidence is the exec. **Record-only, always:** unlike the miner-signature rule it is never acted on by the process responder and never kills, because a tunnel client has legitimate uses and a hit is a prompt to look, not a verdict. Baseline only: there is no operator add/remove yet, and a renamed binary or a tool launched from a generic entry point (`python3 start.py`) is not seen, which is what the outbound fan-out rule is for. Needs [exec telemetry](#exec-telemetry-process-guardrail). |
 | Deny burst | MEDIUM | A tenant accumulates ≥`CONTAINARIUM_THREAT_DENY_BURST_N` (default 20) policy denies within `CONTAINARIUM_THREAT_DENY_BURST_WINDOW_MINUTES` (default 5) minutes. Both tunable per operator, without a daemon rebuild — set the env var and restart. **Counts enforced drops only** by default: a would-deny from a tenant whose policy is only observed (`log_only`) is not counted, so enabling the sentry on an observation-only host does not raise "fence probing" findings for ordinary egress. Set `CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY=1` to count those too. |
-| Outbound fan-out | MEDIUM | One container reaches many distinct **public** addresses within a 5-minute window (counted from each flow's last packet): at least 15 on open-proxy ports (1080, 3128, 3129, 8000, 8080, 8081, 8118, 8888, 9050), the shape of a DDoS or scraping tool rotating through a public proxy list (subject `proxy-fanout`); or at least 200 on any other port below 32768, excluding web (80, 443), DNS and NTP, the shape of a scanner (subject `wide-fanout`). Private, loopback, link-local, multicast and reserved ranges (CGNAT, benchmarking, TEST-NETs) never count, and neither does a source IP the sentry cannot attribute to a tenant. Evidence is a capped sample of the newest qualifying flows; `matched` states how many distinct addresses qualified. It fires when a container gains or refreshes an address, so a finished burst is reported once, not on every sweep. **Record-only by default** (opt-in response below). It exists because this traffic is neither cross-tenant, CPU-heavy nor headed to a listed destination, so no other rule sees it. Thresholds are the defaults in `OutboundFanoutThresholds`; there is no operator knob yet. **Blind spots, by design:** IPv4 only (the flow hooks do not see IPv6); ICMP; anything on 80, 443, 53 or 123 (an HTTP flood or a proxy list filtered to port 80/443); a scanner that targets only ports at or above 32768 (that range is excluded so a public-facing server's replies to its clients are not read as scanning); and proxy ports not in the list need the 200-address threshold. The source address of a flow is attributed as the packet carried it, as the cross-tenant and bad-destination rules do, so a tenant able to spoof a neighbour's address could provoke a finding against that neighbour. It complements, and does not replace, the conntrack-based per-container fan-out metric in [EGRESS-FANOUT-DETECTION.md](EGRESS-FANOUT-DETECTION.md), which is an aggregate count and deliberately does not retain destinations; this rule's evidence does keep a capped sample of them. |
+| Outbound fan-out | MEDIUM | One container reaches many distinct **public** addresses within a 5-minute window (counted from each flow's last packet): at least 15 on open-proxy ports (1080, 3128, 3129, 8000, 8080, 8081, 8118, 8888, 9050), the shape of a DDoS or scraping tool rotating through a public proxy list (subject `proxy-fanout`, suffixed `:<box>` when the box is known); or at least 200 on any other port below 32768, excluding web (80, 443), DNS and NTP, the shape of a scanner (subject `wide-fanout`). Private, loopback, link-local, multicast and reserved ranges (CGNAT, benchmarking, TEST-NETs) never count, and neither does a source IP the sentry cannot attribute to a tenant. Evidence is a capped sample of the newest qualifying flows; `matched` states how many distinct addresses qualified. It fires when a container gains or refreshes an address, so a finished burst is reported once, not on every sweep. **Record-only by default** (opt-in response below). It exists because this traffic is neither cross-tenant, CPU-heavy nor headed to a listed destination, so no other rule sees it. Thresholds are the defaults in `OutboundFanoutThresholds`; there is no operator knob yet. **Blind spots, by design:** IPv4 only (the flow hooks do not see IPv6); ICMP; anything on 80, 443, 53 or 123 (an HTTP flood or a proxy list filtered to port 80/443); a scanner that targets only ports at or above 32768 (that range is excluded so a public-facing server's replies to its clients are not read as scanning); and proxy ports not in the list need the 200-address threshold. A flow whose source address is not the one its veth is known to own is dropped before any rule sees it (the BPF program tallies a forged packet before its spoof check), so a tenant cannot provoke a finding against a neighbour by forging its address; a veth with no known address cannot be checked. It complements, and does not replace, the conntrack-based per-container fan-out metric in [EGRESS-FANOUT-DETECTION.md](EGRESS-FANOUT-DETECTION.md), which is an aggregate count and deliberately does not retain destinations; this rule's evidence does keep a capped sample of them. |
 
 Two further finding types are not detection rules. They are raised by the
 daemon itself and appear in the same findings list:
@@ -114,6 +114,10 @@ override, with its TTL and operator release). Three things keep this safe:
   nothing to act on.
 - **It needs a box.** A finding the sentry could not attribute to a box stays
   MEDIUM and is never acted on.
+- **Turning it off stops it.** The responder checks the opt-in itself, not just
+  the finding's severity: a finding raised to HIGH while the opt-in was on stays
+  HIGH in the store, and is still not acted on once the variable is unset and the
+  daemon restarted.
 
 The action is the same one you set for mining. If you want fan-out to throttle
 but mining to freeze, set a per-container override; a per-rule action is not
@@ -478,8 +482,11 @@ the exec-to-decode window, at most one 50 ms ring drain, is not excluded.
 Detection tells you a box is acting like a DDoS or scraping tool; the connection
 cap limits how much damage one can do before anyone reads the finding. The eBPF
 network policy counts each box's **new outbound TCP connections** (a SYN with no
-ACK) to an address **outside the managed set** in a one-second window, and over
-the cap it either counts the excess or drops it.
+ACK) to a **public address** in a one-second window, and over the cap it either
+counts the excess or drops it. Connections to private, loopback and link-local
+addresses (the bridge, core services, other boxes) never count. A TCP packet the
+program cannot parse (an IP option, a first fragment) counts as a connection
+attempt, so those cannot be used to step around the cap.
 
 | Variable | Meaning |
 |----------|---------|
@@ -487,10 +494,17 @@ the cap it either counts the excess or drops it.
 | `CONTAINARIUM_EGRESS_CONN_CAP_MODE` | `log_only` (default) counts and reports, never drops. `enforce` drops connections over the cap, **and only when the daemon-wide network-policy enforce switch is armed**; otherwise the cap still only counts. |
 
 Set them on the daemon and restart; the daemon logs the effective cap and mode at
-startup. Off by default, so upgrading changes nothing until you opt in.
+startup, and warns when a set rate is unusable (not 1 to 65535) or when the
+loaded BPF object predates the cap (then it has no effect until the object is
+rebuilt). Off by default, so upgrading changes nothing until you opt in.
+
+The cap needs the BPF object built with `-mcpu=v3` (the Makefile does) and a
+kernel of at least 5.12, because the per-window counter uses a fetching atomic.
 
 - **Soak first.** Run `log_only` with a rate you think is generous, then read the
-  `conn-cap` deny events in the daemon log and the audit trail. The program emits
+  `conn-cap` deny events in the daemon log and the audit trail (action
+  `network_policy.conn_cap`; it is deliberately not a `deny_*` row, so the egress
+  plan never suggests allowing a capped destination). The program emits
   one event per box per second window, when the count first passes the cap, so a
   sustained burst does not flood the event buffer. A CI runner, a build that
   fetches many dependencies, or a crawler you do host legitimately will show up
@@ -500,8 +514,9 @@ startup. Off by default, so upgrading changes nothing until you opt in.
   first. Dropped events count toward the deny-burst rule like any other enforced
   drop, so a box hammering the cap raises a MEDIUM "fence probing" finding.
 - **What it does not see:** IPv4 only; TCP connection attempts only (UDP floods
-  and ICMP are not counted); a connection to another managed box is not counted
-  (that is the cross-tenant fence's job). The window is a fixed second and its
+  and ICMP are not counted); private destinations, including another managed box
+  (that is the cross-tenant fence's job). The cap runs before the policy verdict,
+  so a SYN the allow-list would drop still uses the box's budget. The window is a fixed second and its
   rollover is not atomic across CPUs, so the cap is a rate limiter, not an exact
   counter: a burst straddling two windows can pass up to twice the cap, and two
   CPUs racing at a boundary can let a few extra through.
@@ -518,12 +533,12 @@ contacted which **public** address, and when.
 It is off by default, because it retains destination addresses (which the
 conntrack fan-out design in [EGRESS-FANOUT-DETECTION.md](EGRESS-FANOUT-DETECTION.md)
 deliberately does not). Set `CONTAINARIUM_THREAT_FLOWLOG_HOURS` on the daemon
-(1 to 72, anything else is off) and restart. It needs the network-policy
+(positive whole hours; values above 72 are clamped to 72; zero, negative or non-numeric is off) and restart. It needs the network-policy
 enforcer, not the sentry. History is **in memory only** and bounded in size: a
 restart empties it, and a very busy host keeps less than the configured hours.
 
 ```
-containarium --server <url> security flow-history 91.121.106.55 --port 4444 --since 24h
+containarium --server <url> security flow-history 203.0.113.9 --port 4444 --since 24h
 ```
 
 It prints each box that contacted the destination (box, tenant, source address,
@@ -536,9 +551,21 @@ non-admin caller only sees their own tenant, and the call needs the
 Limits to read the output against:
 
 - The flow records also hold a box's **replies to clients that connected to it**.
-  Those carry the client's ephemeral port, so an entry whose port is 32768 or
-  higher is marked `reply?`: it may be the box answering, not dialing out. A flow
-  to a fixed service port (a stratum pool's 4444, a proxy's 3128) is box-initiated.
+  Those carry the client's ephemeral port, so such an entry is marked `reply?`:
+  it may be the box answering, not dialing out. It is kept as one entry per
+  client address with no port (a public-facing box would otherwise fill the log
+  with one entry per client port), so a `--port` query never matches it. A flow
+  to a fixed service port (a stratum pool's 4444, a proxy's 3128) is
+  box-initiated.
+- A flow whose source address is not the one its veth is known to own is dropped
+  before it is recorded (a box forging a neighbour's address is otherwise logged
+  as the neighbour). This also protects the sentry rules that read flows. A veth
+  with no known address cannot be checked and is kept.
+- The log keeps at most 100,000 entries, and one box at most 10,000 of them, so a
+  box spraying destinations cannot wash another box's history out. Dropping
+  entries for size moves the "covers ... onward" time forward past them, and the
+  call fails with a clear error until the first flow poll has arrived, so an
+  empty answer never overstates what the log saw.
 - Timestamps come from the 15-second flow poll. A flow that started before the
   log did is first seen at the first poll after the log began.
 - Counters are the largest reported for any one flow to that destination, not a

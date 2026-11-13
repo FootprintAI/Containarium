@@ -1915,7 +1915,11 @@ skipAppHosting:
 		networkPolicyEnforcer.SetIncusDataDir(networkIncusClient.DataDir()) // DHCP leases live under it (#2618)
 		// Outbound connection-rate cap (#3709): off unless a rate is set, and it
 		// only counts unless the operator chose enforce AND the daemon is armed.
-		if cc := appconfig.LoadEgressConnCap(); cc.PerSec > 0 {
+		cc := appconfig.LoadEgressConnCap()
+		if cc.Ignored != "" {
+			log.Printf("Warning: %s=%s; the outbound connection cap stays off", appconfig.EnvEgressConnCapPerSec, cc.Ignored)
+		}
+		if cc.PerSec > 0 {
 			networkPolicyEnforcer.SetEgressConnCap(cc.PerSec, cc.Enforce)
 			log.Printf("NetworkPolicy: outbound connection cap %d/s per box (%s)", cc.PerSec, connCapModeLabel(cc.Enforce, enforceArmed))
 		}
@@ -2224,6 +2228,8 @@ skipAppHosting:
 				// kill_process (#2638): SIGKILL a miner-signature match
 				// after re-checking its cgroup against the container's.
 				processResponder.SetProcessKiller(newHostProcessKiller(responderIncus.InitPID))
+				// Outbound fan-out (#3709) is acted on only with the operator's opt-in.
+				processResponder.SetFanoutRespond(threatCfg.FanoutRespond)
 				// Async: the responder's Incus calls run on its own worker,
 				// never on the exec ring consumer that writes signature
 				// findings (#2638 review).
@@ -2351,19 +2357,20 @@ skipAppHosting:
 		threatDetectServer.SetMiningThresholdsConfig(miningCfg)
 		threatDetectEngine.Register(threatdetect.NewMiningBehaviorRule(listedDestinations))
 	}
-	// Outbound fan-out rule (#3709): many distinct external addresses in a
-	// short window, on open-proxy ports (a DDoS or scraping tool rotating a
-	// public proxy list) or spread across non-web ports (a scanner).
-	// Record-only; default thresholds. Independent of the mining thresholds.
+	// Rules that do not depend on the mining thresholds (#3709).
 	if threatDetectEngine != nil {
-		// Abuse-tool rule (#3709): a reverse-tunnel client or a known DDoS / stress
-		// tool on an exec. Record-only (never on the responder's list), baseline
-		// only, and it needs exec telemetry like the miner-signature rule.
+		// Abuse-tool rule: a reverse-tunnel client or a known DDoS / stress tool on
+		// an exec. Record-only (never on the responder's list), baseline only, and
+		// it needs exec telemetry like the miner-signature rule.
 		if toolRule, tErr := threatdetect.NewAbuseToolRule(); tErr != nil {
 			log.Printf("Warning: threat-detection abuse-tool rule init failed (%v); it will not run", tErr)
 		} else {
 			threatDetectEngine.Register(toolRule)
 		}
+		// Outbound fan-out rule: many distinct external addresses in a short
+		// window, on open-proxy ports (a DDoS or scraping tool rotating a public
+		// proxy list) or spread across non-web ports (a scanner). MEDIUM and
+		// record-only unless the operator opts in to a response.
 		threatDetectEngine.Register(threatdetect.NewOutboundFanoutRule(threatdetect.OutboundFanoutThresholds{}).RespondWithHighSeverity(threatCfg.FanoutRespond))
 	}
 	// Miner-signature rule (#2638): a known miner's name, argv marker or

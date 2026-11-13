@@ -417,6 +417,13 @@ func (s *ThreatDetectionServer) QueryFlowHistory(ctx context.Context, req *pb.Qu
 		q.Until = req.GetUntil().AsTime()
 	}
 	entries, covered := fl.Query(time.Now(), q)
+	if covered.IsZero() {
+		// The log is on but has not received a single flow poll (the enforcer
+		// failed to start, or no flow source is wired), so it can vouch for
+		// nothing. An empty answer here would read as "no box did it".
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"the flow log is enabled but has not received any flow data yet; check that the network-policy enforcer is running")
+	}
 	out := &pb.QueryFlowHistoryResponse{
 		CoveredSince:     timestamppb.New(covered),
 		RetentionSeconds: int64(fl.Retention() / time.Second),
@@ -429,7 +436,7 @@ func (s *ThreatDetectionServer) QueryFlowHistory(ctx context.Context, req *pb.Qu
 			SrcIp:       e.Src.String(),
 			DstIp:       e.Dst.String(),
 			DstPort:     uint32(e.Dport),
-			Protocol:    flowLogProtoName(e.Proto),
+			Protocol:    flowLogProtocol(e.Proto),
 			FirstSeen:   timestamppb.New(e.FirstSeen),
 			LastSeen:    timestamppb.New(e.LastSeen),
 			Bytes:       int64(e.Bytes),   // #nosec G115 -- one flow's counters
@@ -440,18 +447,18 @@ func (s *ThreatDetectionServer) QueryFlowHistory(ctx context.Context, req *pb.Qu
 	return out, nil
 }
 
-// flowLogProtoName is the IP protocol's short name, "" for one the log never
-// records.
-func flowLogProtoName(p uint8) string {
+// flowLogProtocol maps an IP protocol number to the wire enum;
+// FLOW_PROTOCOL_UNSPECIFIED for one that is not TCP, UDP or ICMP.
+func flowLogProtocol(p uint8) pb.FlowProtocol {
 	switch p {
 	case 1:
-		return "icmp"
+		return pb.FlowProtocol_FLOW_PROTOCOL_ICMP
 	case 6:
-		return "tcp"
+		return pb.FlowProtocol_FLOW_PROTOCOL_TCP
 	case 17:
-		return "udp"
+		return pb.FlowProtocol_FLOW_PROTOCOL_UDP
 	}
-	return ""
+	return pb.FlowProtocol_FLOW_PROTOCOL_UNSPECIFIED
 }
 
 // ResolveFinding transitions an open finding to resolved. Any authenticated

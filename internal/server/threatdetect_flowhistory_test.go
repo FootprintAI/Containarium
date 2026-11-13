@@ -18,7 +18,7 @@ import (
 )
 
 // flowHistoryServer returns a server whose flow log holds: box-a (tenant
-// alice) and box-b (tenant bob) both having dialed 91.121.106.55:4444.
+// alice) and box-b (tenant bob) both having dialed 93.184.216.34:4444.
 func flowHistoryServer(t *testing.T) *ThreatDetectionServer {
 	t.Helper()
 	now := time.Now()
@@ -28,7 +28,7 @@ func flowHistoryServer(t *testing.T) *ThreatDetectionServer {
 	look := func(m map[string]string) func(netip.Addr) (string, bool) {
 		return func(ip netip.Addr) (string, bool) { v, ok := m[ip.String()]; return v, ok }
 	}
-	pool := netip.MustParseAddr("91.121.106.55").As4()
+	pool := netip.MustParseAddr("93.184.216.34").As4()
 	for _, src := range []string{"10.0.3.2", "10.0.3.3"} {
 		s := netip.MustParseAddr(src).As4()
 		rec := netbpf.FlowRecord{
@@ -47,7 +47,7 @@ func flowHistoryServer(t *testing.T) *ThreatDetectionServer {
 func TestQueryFlowHistory_NotEnabled(t *testing.T) {
 	s := NewThreatDetectionServer(nil, false, false, "")
 	ctx := auth.ContextWithTestSubject(context.Background(), "alice", auth.RoleAdmin)
-	_, err := s.QueryFlowHistory(ctx, &pb.QueryFlowHistoryRequest{DstIp: "91.121.106.55"})
+	_, err := s.QueryFlowHistory(ctx, &pb.QueryFlowHistoryRequest{DstIp: "93.184.216.34"})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("code = %v, want FailedPrecondition: a disabled log must not read as an empty answer", status.Code(err))
 	}
@@ -55,7 +55,7 @@ func TestQueryFlowHistory_NotEnabled(t *testing.T) {
 
 func TestQueryFlowHistory_Unauthenticated(t *testing.T) {
 	s := flowHistoryServer(t)
-	if _, err := s.QueryFlowHistory(context.Background(), &pb.QueryFlowHistoryRequest{DstIp: "91.121.106.55"}); err == nil {
+	if _, err := s.QueryFlowHistory(context.Background(), &pb.QueryFlowHistoryRequest{DstIp: "93.184.216.34"}); err == nil {
 		t.Fatal("a call with no authenticated subject must fail")
 	}
 }
@@ -63,7 +63,7 @@ func TestQueryFlowHistory_Unauthenticated(t *testing.T) {
 func TestQueryFlowHistory_AdminSeesTheBoxes(t *testing.T) {
 	s := flowHistoryServer(t)
 	ctx := auth.ContextWithTestSubject(context.Background(), "root", auth.RoleAdmin)
-	resp, err := s.QueryFlowHistory(ctx, &pb.QueryFlowHistoryRequest{DstIp: "91.121.106.55", DstPort: 4444})
+	resp, err := s.QueryFlowHistory(ctx, &pb.QueryFlowHistoryRequest{DstIp: "93.184.216.34", DstPort: 4444})
 	if err != nil {
 		t.Fatalf("QueryFlowHistory: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestQueryFlowHistory_AdminSeesTheBoxes(t *testing.T) {
 		got[e.GetContainer()] = e
 	}
 	a := got["box-a"]
-	if a == nil || a.GetTenantId() != "alice" || a.GetSrcIp() != "10.0.3.2" || a.GetDstPort() != 4444 || a.GetProtocol() != "tcp" || a.GetLikelyReply() {
+	if a == nil || a.GetTenantId() != "alice" || a.GetSrcIp() != "10.0.3.2" || a.GetDstPort() != 4444 || a.GetProtocol() != pb.FlowProtocol_FLOW_PROTOCOL_TCP || a.GetLikelyReply() {
 		t.Fatalf("box-a entry = %v", a)
 	}
 	if resp.GetRetentionSeconds() != int64((2*time.Hour)/time.Second) {
@@ -91,14 +91,14 @@ func TestQueryFlowHistory_AdminSeesTheBoxes(t *testing.T) {
 func TestQueryFlowHistory_TenantIsolation(t *testing.T) {
 	s := flowHistoryServer(t)
 	ctx := auth.ContextWithTestSubject(context.Background(), "alice", "member")
-	resp, err := s.QueryFlowHistory(ctx, &pb.QueryFlowHistoryRequest{DstIp: "91.121.106.55"})
+	resp, err := s.QueryFlowHistory(ctx, &pb.QueryFlowHistoryRequest{DstIp: "93.184.216.34"})
 	if err != nil {
 		t.Fatalf("QueryFlowHistory: %v", err)
 	}
 	if len(resp.GetEntries()) != 1 || resp.GetEntries()[0].GetContainer() != "box-a" {
 		t.Fatalf("entries = %v, want only alice's box", resp.GetEntries())
 	}
-	_, err = s.QueryFlowHistory(ctx, &pb.QueryFlowHistoryRequest{DstIp: "91.121.106.55", TenantId: "bob"})
+	_, err = s.QueryFlowHistory(ctx, &pb.QueryFlowHistoryRequest{DstIp: "93.184.216.34", TenantId: "bob"})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("code = %v, want PermissionDenied for another tenant", status.Code(err))
 	}
@@ -111,7 +111,7 @@ func TestQueryFlowHistory_BadInput(t *testing.T) {
 		"missing dst": {},
 		"not an ip":   {DstIp: "mining.pool.example"},
 		"ipv6":        {DstIp: "2001:db8::1"},
-		"port range":  {DstIp: "91.121.106.55", DstPort: 70000},
+		"port range":  {DstIp: "93.184.216.34", DstPort: 70000},
 	} {
 		if _, err := s.QueryFlowHistory(ctx, req); status.Code(err) != codes.InvalidArgument {
 			t.Errorf("%s: code = %v, want InvalidArgument", name, status.Code(err))
@@ -125,9 +125,9 @@ func TestQueryFlowHistory_TimeWindowAndMisses(t *testing.T) {
 	// Entries were last seen 30 minutes ago: a since in the last 5 minutes
 	// excludes them; a wrong port or address finds nothing.
 	for name, req := range map[string]*pb.QueryFlowHistoryRequest{
-		"since too recent": {DstIp: "91.121.106.55", Since: timestamppb.New(time.Now().Add(-5 * time.Minute))},
-		"wrong port":       {DstIp: "91.121.106.55", DstPort: 5555},
-		"other address":    {DstIp: "91.121.106.56"},
+		"since too recent": {DstIp: "93.184.216.34", Since: timestamppb.New(time.Now().Add(-5 * time.Minute))},
+		"wrong port":       {DstIp: "93.184.216.34", DstPort: 5555},
+		"other address":    {DstIp: "93.184.216.35"},
 	} {
 		resp, err := s.QueryFlowHistory(ctx, req)
 		if err != nil {
@@ -137,8 +137,20 @@ func TestQueryFlowHistory_TimeWindowAndMisses(t *testing.T) {
 			t.Errorf("%s: entries = %v, want none", name, resp.GetEntries())
 		}
 	}
-	resp, err := s.QueryFlowHistory(ctx, &pb.QueryFlowHistoryRequest{DstIp: "91.121.106.55", Limit: 1})
+	resp, err := s.QueryFlowHistory(ctx, &pb.QueryFlowHistoryRequest{DstIp: "93.184.216.34", Limit: 1})
 	if err != nil || len(resp.GetEntries()) != 1 {
 		t.Fatalf("limit 1: entries=%v err=%v", resp.GetEntries(), err)
+	}
+}
+
+// An enabled log that has never received a flow poll can vouch for nothing; an
+// empty answer would read as "no box did it", so it is an error.
+func TestQueryFlowHistory_NoDataYetIsAnError(t *testing.T) {
+	s := NewThreatDetectionServer(nil, false, false, "")
+	s.SetFlowLog(threatdetect.NewFlowLog(time.Hour, time.Now()))
+	ctx := auth.ContextWithTestSubject(context.Background(), "root", auth.RoleAdmin)
+	_, err := s.QueryFlowHistory(ctx, &pb.QueryFlowHistoryRequest{DstIp: "93.184.216.34"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition when the log has received no data", status.Code(err))
 	}
 }
