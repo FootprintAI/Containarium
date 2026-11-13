@@ -353,6 +353,9 @@ enum BoxRunStopSignal {
 }
 
 // WriteBoxFileRequest writes one file into a box user's home directory (#3548).
+// "The box user" is the user platform runs execute as: the box's owner, or, on
+// a box with a recorded tool-access level, the unprivileged run user (#3678).
+// The file is owned by that user, in that user's home.
 message WriteBoxFileRequest {
   // The box owner's username (the box is <username>-container).
   string username = 1;
@@ -371,7 +374,8 @@ message WriteBoxFileRequest {
 }
 
 message WriteBoxFileResponse {
-  // Absolute path of the file on the box.
+  // Absolute path of the file on the box: under the run user's home on a box
+  // with a recorded tool-access level, under the owner's home otherwise.
   string path = 1;
   // Bytes written.
   int64 size = 2;

@@ -432,6 +432,29 @@ access as `StartBoxRun`.
   the rename. A mismatch leaves no file and is `DATA_LOSS`. The response carries
   the absolute path, the size and the checksum of what is on the box.
 
+**On a box with a recorded tool-access level** (#3678), platform runs execute
+as the unprivileged run user (`ctn-run`), which cannot read the owner's home.
+There "the box user" above is the run user: the file goes into the run user's
+home, is handed to the run user, and the run user's own script places it.
+
+- The run user is created first if the box has not had a run yet (the same
+  idempotent root step a run takes), so a file can be written before the first
+  run. Its home is `0700`, so the file is readable by the run user and by no
+  other non-root user on the box.
+- `path` is relative to the run user's home, the same home a run's `workdir`
+  is relative to on such a box. The response's `path` is the absolute path in
+  that home, so name the file to the run from there rather than assuming the
+  owner's home.
+- The level is read before the box is touched. A level that cannot be read, or
+  a run user that cannot be created, is `UNAVAILABLE` and writes nothing; the
+  file is never placed in the owner's home as a fallback.
+- `WriteBoxFileStream` behaves the same way. A box with no recorded level is
+  unchanged: the owner's home, owned by the owner.
+
+A daemon that does this lists `box_files_run_user` in `SystemInfo.capabilities`.
+An older daemon writes into the owner's home whatever the level, where the run
+user cannot read the file.
+
 **Limits.** The 2 MiB cap applies to each call; there is no daemon-side quota
 across calls (#3559). The total a caller can write is bounded by the box's own
 disk limit, the same limit every write inside the box is under, and a write that
@@ -538,7 +561,7 @@ send `run_name`, `structured_output`, `model` or `command` to a daemon that
 predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the optional
 features a daemon supports: `box_run_name`, `box_run_structured_output`,
 `box_run_model`, `box_run_token`, `box_run_command`, `box_run_command_policy`,
-`box_files` and `box_files_stream`. An older daemon does
+`box_files`, `box_files_stream` and `box_files_run_user`. An older daemon does
 not send the field at all; treat a missing name as unsupported. Names are only
 added. `GetSystemInfo` requires an admin principal. A caller that cannot read it
 can gate on the daemon version instead: the first release that contains these

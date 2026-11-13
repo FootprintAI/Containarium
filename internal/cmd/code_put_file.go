@@ -28,6 +28,11 @@ inside it: no absolute path, no "..", and nothing under .ssh or .containarium.
 Parent directories are created with mode 0700; the file is written whole or
 not at all, owned by the box user with mode 0600, and replaces an existing file.
 
+On a box with a recorded tool-access level, platform runs execute as the
+unprivileged run user, so the file goes into the run user's home instead,
+owned by the run user (a daemon with the box_files_run_user capability). The
+path printed is where the file is.
+
 The file's SHA-256 is sent and checked against the bytes that land on the box.
 A file above %d bytes is streamed (WriteBoxFileStream, a daemon with the
 box_files_stream capability), up to %d bytes per file.

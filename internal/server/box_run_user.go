@@ -86,6 +86,22 @@ printf '%s\n' "$h"
 `
 }
 
+// provisionBoxRunUser runs boxRunProvisionScript as root and returns the run
+// user's home. It creates nothing else: the sudo grant, the run directory and
+// the staged home are prepareUnprivilegedRun's.
+func provisionBoxRunUser(rootExec func(box, script string) (string, error), box string) (string, error) {
+	out, err := rootExec(box, boxRunProvisionScript())
+	if err != nil {
+		return "", fmt.Errorf("provision %s: %w", boxRunUnprivilegedUser, err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	runHome := strings.TrimSpace(lines[len(lines)-1])
+	if !validHomePath(runHome) {
+		return "", fmt.Errorf("unexpected home %q for %s", runHome, boxRunUnprivilegedUser)
+	}
+	return runHome, nil
+}
+
 // boxRunDirScript is run as root: the run directory must exist and be writable
 // by the run user as well as the owner. Sticky and world-writable like /tmp: the
 // files in it are created 0600, and only their creator (or root) may rename or

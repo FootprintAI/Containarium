@@ -56,7 +56,9 @@ func putFileTool() Tool {
 			"or 'content_base64' for anything else, exactly one of them, at most %d bytes decoded. 'path' "+
 			"is relative to the home directory and must stay inside it (no absolute path, no '..', nothing "+
 			"under .ssh or .containarium). Parent directories are created 0700; the file appears whole or "+
-			"not at all, owned by the box user, mode 0600 (or 0400), replacing an existing file. The SHA-256 "+
+			"not at all, owned by the box user, mode 0600 (or 0400), replacing an existing file. On a box with a "+
+			"recorded tool-access level the box user is the unprivileged run user platform runs execute as, so "+
+			"the file goes into that user's home; the path in the result is where the file is. The SHA-256 "+
 			"of the content (or 'sha256' when given) is checked against the bytes on the box; a mismatch "+
 			"leaves no file. Refusals are shown as 'refused (REASON)': INVALID_ARGUMENT (path, mode or size), "+
 			"DATA_LOSS (checksum mismatch, nothing written), FAILED_PRECONDITION (a directory at the path), "+

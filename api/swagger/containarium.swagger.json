@@ -4153,7 +4153,7 @@
     "/v1/containers/{username}/files": {
       "put": {
         "summary": "Write a file into a box",
-        "description": "Writes one file under the box user's home directory. The path is relative to the home directory and must stay inside it (no absolute path, no `..`, nothing under .ssh or .containarium). Parent directories are created with mode 0700. The file is written to a temporary name and renamed into place, so a reader never sees a partial file, and it is owned by the box user with mode 0600 (or 0400). When sha256 is set it is checked against the bytes on the box before the rename; a mismatch leaves no file and is DATA_LOSS. Content is capped at 2 MiB per file. An existing regular file is replaced; a directory at the path is FAILED_PRECONDITION. Box owner or collaborator, ssh:write scope.",
+        "description": "Writes one file under the box user's home directory, or, on a box with a recorded tool-access level, under the unprivileged run user's home, the user platform runs execute as. The path is relative to that home directory and must stay inside it (no absolute path, no `..`, nothing under .ssh or .containarium). Parent directories are created with mode 0700. The file is written to a temporary name and renamed into place, so a reader never sees a partial file, and it is owned by that user with mode 0600 (or 0400). The response's path is where the file is. When sha256 is set it is checked against the bytes on the box before the rename; a mismatch leaves no file and is DATA_LOSS. Content is capped at 2 MiB per file. An existing regular file is replaced; a directory at the path is FAILED_PRECONDITION. Box owner or collaborator, ssh:write scope.",
         "operationId": "ContainerService_WriteBoxFile",
         "responses": {
           "200": {
@@ -23448,7 +23448,7 @@
           "items": {
             "type": "string"
           },
-          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model),\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds),\n\"box_run_workdir\" (StartBoxRunRequest.workdir, BoxRun.workdir, #3551),\n\"box_skill_sets\" (the ApplyBoxSkillSets RPC, #3374), \"box_files\" (the\nWriteBoxFile RPC, #3548), \"box_files_stream\" (the WriteBoxFileStream\nRPC, files up to 64 MiB, #3548) and \"box_bootstrap\" (the\nApplyBoxBootstrap RPC, #3694).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
+          "description": "capabilities lists the optional API features this daemon supports, as\nthe stable names in internal/server's DaemonCap* constants. A client\nchecks for a name BEFORE sending a request field an older daemon would\nreject (the REST mux rejects unknown JSON fields). Absent from an older\ndaemon: an empty list means \"none of the optional features\", so a\nclient must treat a missing name as unsupported. Names are only ever\nadded. Currently: \"box_run_name\" (StartBoxRunRequest.run_name),\n\"box_run_structured_output\" (StartBoxRunRequest.structured_output),\n\"box_run_model\" (StartBoxRunRequest.model, BoxRun.model),\n\"box_run_command\" (StartBoxRunRequest.command, timeout_seconds),\n\"box_run_workdir\" (StartBoxRunRequest.workdir, BoxRun.workdir, #3551),\n\"box_skill_sets\" (the ApplyBoxSkillSets RPC, #3374), \"box_files\" (the\nWriteBoxFile RPC, #3548), \"box_files_stream\" (the WriteBoxFileStream\nRPC, files up to 64 MiB, #3548), \"box_files_run_user\" (on a box with a\nrecorded tool-access level, WriteBoxFile and WriteBoxFileStream place the\nfile in the run user's home, owned by the run user, #3678) and\n\"box_bootstrap\" (the ApplyBoxBootstrap RPC, #3694).\nAn open string set rather than an enum so a newer daemon's extra names\nnever fail to decode in an older client."
         },
         "storagePools": {
           "type": "array",
@@ -25061,14 +25061,14 @@
           "description": "Lowercase hex SHA-256 of content. Optional; when set, the bytes that land\non the box are checked against it before the file appears."
         }
       },
-      "description": "WriteBoxFileRequest writes one file into a box user's home directory (#3548)."
+      "description": "WriteBoxFileRequest writes one file into a box user's home directory (#3548).\n\"The box user\" is the user platform runs execute as: the box's owner, or, on\na box with a recorded tool-access level, the unprivileged run user (#3678).\nThe file is owned by that user, in that user's home."
     },
     "WriteBoxFileResponse": {
       "type": "object",
       "properties": {
         "path": {
           "type": "string",
-          "description": "Absolute path of the file on the box."
+          "description": "Absolute path of the file on the box: under the run user's home on a box\nwith a recorded tool-access level, under the owner's home otherwise."
         },
         "size": {
           "type": "string",

@@ -1769,6 +1769,9 @@ func (x *TailBoxRunLogResponse) GetStderrDropped() bool {
 }
 
 // WriteBoxFileRequest writes one file into a box user's home directory (#3548).
+// "The box user" is the user platform runs execute as: the box's owner, or, on
+// a box with a recorded tool-access level, the unprivileged run user (#3678).
+// The file is owned by that user, in that user's home.
 type WriteBoxFileRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The box owner's username (the box is <username>-container).
@@ -1856,7 +1859,8 @@ func (x *WriteBoxFileRequest) GetSha256() string {
 
 type WriteBoxFileResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Absolute path of the file on the box.
+	// Absolute path of the file on the box: under the run user's home on a box
+	// with a recorded tool-access level, under the owner's home otherwise.
 	Path string `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
 	// Bytes written.
 	Size int64 `protobuf:"varint,2,opt,name=size,proto3" json:"size,omitempty"`

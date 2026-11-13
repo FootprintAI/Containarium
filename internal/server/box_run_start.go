@@ -957,12 +957,13 @@ const (
 	// DaemonCapBoxRunWorkdir: StartBoxRunRequest.workdir and BoxRun.workdir (#3551).
 	DaemonCapBoxRunWorkdir = "box_run_workdir"
 	// DaemonCapBoxFiles (the WriteBoxFile RPC, #3548) is declared in box_file_write.go,
-	// DaemonCapBoxFilesStream (WriteBoxFileStream) in box_file_stream.go.
+	// DaemonCapBoxFilesStream (WriteBoxFileStream) in box_file_stream.go,
+	// DaemonCapBoxFilesRunUser (#3678) in box_file_write.go.
 )
 
 // daemonCapabilities is the list GetSystemInfo reports.
 func daemonCapabilities() []string {
-	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunToken, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxRunCommandPolicy, DaemonCapBoxRunWorkdir, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream, DaemonCapBoxBootstrap}
+	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunToken, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxRunCommandPolicy, DaemonCapBoxRunWorkdir, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream, DaemonCapBoxFilesRunUser, DaemonCapBoxBootstrap}
 }
 
 // boxRunNameCollidesWithDerivedFile reports whether name would alias a file or
@@ -990,14 +991,9 @@ func boxRunNameCollidesWithDerivedFile(name string) bool {
 // it, and its home holds a fresh staged copy of what the run reads. Returns the
 // run user's home.
 func prepareUnprivilegedRun(rootExec func(box, script string) (string, error), box, dir, ownerHome, level string) (string, error) {
-	out, err := rootExec(box, boxRunProvisionScript())
+	runHome, err := provisionBoxRunUser(rootExec, box)
 	if err != nil {
-		return "", fmt.Errorf("provision %s: %w", boxRunUnprivilegedUser, err)
-	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	runHome := strings.TrimSpace(lines[len(lines)-1])
-	if !validHomePath(runHome) {
-		return "", fmt.Errorf("unexpected home %q for %s", runHome, boxRunUnprivilegedUser)
+		return "", err
 	}
 	if _, err := rootExec(box, boxRunSudoersScript(level)); err != nil {
 		return "", fmt.Errorf("apply the sudo grant for level %q: %w", level, err)
