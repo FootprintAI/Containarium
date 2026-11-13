@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/footprintai/containarium/internal/limitio"
 	"io"
 	"net/http"
 	"net/url"
@@ -773,7 +774,7 @@ func createSession(ctx context.Context, hc *http.Client, server, device string) 
 		return nil, err
 	}
 	defer resp.Body.Close()
-	rb, _ := io.ReadAll(resp.Body)
+	rb, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(rb)))
 	}
@@ -876,7 +877,7 @@ func fetchSessionStatus(ctx context.Context, hc *http.Client, url string) (*sess
 		return nil, err
 	}
 	defer resp.Body.Close()
-	rb, _ := io.ReadAll(resp.Body)
+	rb, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode == http.StatusNotFound {
 		// Terminal: the session row is gone (expired / swept / unknown
 		// id). Re-polling can't bring it back.

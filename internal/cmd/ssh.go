@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/footprintai/containarium/internal/limitio"
 	"io"
 	"net/http"
 	"os"
@@ -283,7 +284,7 @@ func (c *sshHTTPClient) doJSON(ctx context.Context, method, path string, body, o
 		return err
 	}
 	defer resp.Body.Close()
-	rb, _ := io.ReadAll(resp.Body)
+	rb, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 
 	if resp.StatusCode == http.StatusNotImplemented {
 		return status.Errorf(codes.Unimplemented, "%s %s: server returned 501 Not Implemented", method, path)

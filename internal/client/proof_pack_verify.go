@@ -3,7 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
-	"io"
+	"github.com/footprintai/containarium/internal/limitio"
 	"net/http"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -27,7 +27,7 @@ func (c *HTTPClient) VerifyProofPack(ctx context.Context, sealed *pb.SealedProof
 		return nil, fmt.Errorf("verify proof pack: %w", err)
 	}
 	defer drainClose(resp)
-	b, err := io.ReadAll(resp.Body)
+	b, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("verify proof pack: read response: %w", err)
 	}

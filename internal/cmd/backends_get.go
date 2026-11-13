@@ -3,7 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"io"
+	"github.com/footprintai/containarium/internal/limitio"
 	"net/http"
 	"strings"
 	"time"
@@ -59,7 +59,7 @@ func runBackendsGet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("request %s: %w", url, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return fmt.Errorf("read response: %w", err)
 	}

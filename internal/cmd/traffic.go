@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/footprintai/containarium/internal/limitio"
 	"io"
 	"net/http"
 	"net/url"
@@ -211,7 +212,7 @@ func trafficGet(ctx context.Context, path string, query url.Values, out any) err
 		return fmt.Errorf("request %s: %w", u, err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("api error (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}

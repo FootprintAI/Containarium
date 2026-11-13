@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/footprintai/containarium/internal/limitio"
 	"io"
 	"net/http"
 	"net/url"
@@ -134,7 +135,7 @@ func (c *connectAPI) do(ctx context.Context, method, path string, body, out any)
 		return 0, err
 	}
 	defer resp.Body.Close()
-	rb, _ := io.ReadAll(resp.Body)
+	rb, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		if out != nil && len(rb) > 0 {
 			if err := json.Unmarshal(rb, out); err != nil {
