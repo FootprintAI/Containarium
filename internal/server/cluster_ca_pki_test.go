@@ -67,7 +67,7 @@ func TestCAMTLS_CertCNIsTheIdentity(t *testing.T) {
 	pki, addr, srv, _ := mtlsRig(t)
 	mustCreate(t, srv, tenantCtx("alice"), "demo")
 
-	cert, key, err := pki.MintClientCert("alice", "demo")
+	cert, key, err := pki.MintClientCert("alice", "demo", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestCAMTLS_WrongClusterCertIsRefused(t *testing.T) {
 
 	// A valid cert for a DIFFERENT cluster passes the handshake but
 	// cannot touch demo's node groups.
-	cert, key, err := pki.MintClientCert("alice", "other")
+	cert, key, err := pki.MintClientCert("alice", "other", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestCAMTLS_ForeignCAFailsTheHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cert, key, err := foreign.MintClientCert("alice", "demo")
+	cert, key, err := foreign.MintClientCert("alice", "demo", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestCAMTLS_PKIPersistsAcrossLoads(t *testing.T) {
 
 func TestReconciler_DeploysAutoscalerOntoCP(t *testing.T) {
 	srv, rec, host := testReconcilerRig(t)
-	rec.SetCADeployer("10.0.0.1:36442", func(owner, name string) (clustercore.CACredentials, error) {
+	rec.SetCADeployer("10.0.0.1:36442", func(owner, name, id string) (clustercore.CACredentials, error) {
 		return clustercore.CACredentials{
 			ClientCertPEM: []byte("CERT"), ClientKeyPEM: []byte("KEY"), CACertPEM: []byte("CA"),
 		}, nil
@@ -183,7 +183,7 @@ func TestReconciler_CAScaleDownTimersReachTheUnit(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, rec, host := testReconcilerRig(t)
-			rec.SetCADeployer("10.0.0.1:36442", func(owner, name string) (clustercore.CACredentials, error) {
+			rec.SetCADeployer("10.0.0.1:36442", func(owner, name, id string) (clustercore.CACredentials, error) {
 				return clustercore.CACredentials{ClientCertPEM: []byte("C"), ClientKeyPEM: []byte("K"), CACertPEM: []byte("A")}, nil
 			})
 			rec.SetCAScaleDown(tc.delay, tc.unneeded)
