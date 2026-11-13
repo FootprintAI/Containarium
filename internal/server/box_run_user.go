@@ -75,7 +75,10 @@ func boxRunProvisionScript() string {
 	return `set -e
 u=` + u + `
 if ! id -u "$u" >/dev/null 2>&1; then
-  useradd --create-home --shell /bin/bash --user-group "$u"
+  # Another write or run may create the user between the check and useradd.
+  # That makes useradd fail with the name already in use; the user existing
+  # is what matters, so accept it. Anything else is a real failure (#3702).
+  useradd --create-home --shell /bin/bash --user-group "$u" || id -u "$u" >/dev/null 2>&1 || { echo "useradd $u failed" >&2; exit 1; }
 fi
 passwd -l "$u" >/dev/null 2>&1 || true
 h=$(getent passwd "$u" | cut -d: -f6)
