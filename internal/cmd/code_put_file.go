@@ -28,6 +28,12 @@ inside it: no absolute path, no "..", and nothing under .ssh or .containarium.
 Parent directories are created with mode 0700; the file is written whole or
 not at all, owned by the box user with mode 0600, and replaces an existing file.
 
+With --for-run, on a box with a recorded tool-access level, the file goes into
+the unprivileged run user's home instead, owned by the run user: platform runs
+execute as that user, so only then can a run read the file (a daemon with the
+box_files_run_user capability). Without it the file stays in the owner's home,
+where an SSH session reads it. The path printed is where the file is.
+
 The file's SHA-256 is sent and checked against the bytes that land on the box.
 A file above %d bytes is streamed (WriteBoxFileStream, a daemon with the
 box_files_stream capability), up to %d bytes per file.
@@ -39,8 +45,12 @@ Examples:
 	RunE: runCodePutFile,
 }
 
+var codePutFileForRun bool
+
 func init() {
 	codeCmd.AddCommand(codePutFileCmd)
+	codePutFileCmd.Flags().BoolVar(&codePutFileForRun, "for-run", false,
+		"Place the file for a platform run: in the run user's home on a box with a recorded tool-access level")
 }
 
 // boxFileWriter is what the command needs from a daemon client: the unary
@@ -75,10 +85,10 @@ func runCodePutFile(cmd *cobra.Command, args []string) error {
 	if len(args) == 3 {
 		remote = args[2]
 	}
-	return codePutFile(c, args[0], args[1], remote, os.Stdout)
+	return codePutFile(c, args[0], args[1], remote, codePutFileForRun, os.Stdout)
 }
 
-func codePutFile(c boxFileWriter, box, local, remote string, w io.Writer) error {
+func codePutFile(c boxFileWriter, box, local, remote string, forRun bool, w io.Writer) error {
 	st, err := os.Stat(local)
 	if err != nil {
 		return err
@@ -93,14 +103,14 @@ func codePutFile(c boxFileWriter, box, local, remote string, w io.Writer) error 
 		remote = filepath.Base(local)
 	}
 	if st.Size() > coderun.MaxBoxFileBytes {
-		return codePutFileStream(c, box, local, remote, w)
+		return codePutFileStream(c, box, local, remote, forRun, w)
 	}
 	content, err := os.ReadFile(local)
 	if err != nil {
 		return err
 	}
 	// client.PutBoxFile is the function the MCP tool put_file calls too.
-	resp, err := client.PutBoxFile(c, client.BoxFileParams{Box: box, Path: remote, Content: content})
+	resp, err := client.PutBoxFile(c, client.BoxFileParams{Box: box, Path: remote, Content: content, ForRun: forRun})
 	if isUnimplemented(err) {
 		return fmt.Errorf("%s", client.BoxFilesUnsupportedMessage)
 	}
@@ -115,7 +125,7 @@ func codePutFile(c boxFileWriter, box, local, remote string, w io.Writer) error 
 // WriteBoxFileStream (#3548): one pass to hash it, a second to stream it. The
 // size and checksum are those of the bytes hashed, so a file that changes in
 // between fails the daemon's check and leaves nothing on the box.
-func codePutFileStream(c boxFileWriter, box, local, remote string, w io.Writer) error {
+func codePutFileStream(c boxFileWriter, box, local, remote string, forRun bool, w io.Writer) error {
 	f, err := os.Open(local) // #nosec G304 -- the operator named this file
 	if err != nil {
 		return err
@@ -130,7 +140,7 @@ func codePutFileStream(c boxFileWriter, box, local, remote string, w io.Writer) 
 		return err
 	}
 	resp, err := client.PutBoxFileStream(c, client.BoxFileStreamParams{
-		Box: box, Path: remote, Content: io.LimitReader(f, n), Size: n, SHA256: hex.EncodeToString(h.Sum(nil)),
+		Box: box, Path: remote, Content: io.LimitReader(f, n), Size: n, SHA256: hex.EncodeToString(h.Sum(nil)), ForRun: forRun,
 	})
 	if isUnimplemented(err) {
 		return errors.New(client.BoxFilesStreamUnsupportedMessage)

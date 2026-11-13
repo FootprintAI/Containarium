@@ -51,6 +51,7 @@ type BoxFileStreamParams struct {
 	Size    int64
 	Mode    string
 	SHA256  string
+	ForRun  bool // as BoxFileParams.ForRun
 }
 
 // PutBoxFileStream writes p through c. Errors are sorted as PutBoxFile sorts
@@ -66,7 +67,7 @@ func PutBoxFileStream(c BoxFileStreamWriter, p BoxFileStreamParams) (*pb.WriteBo
 		return nil, fmt.Errorf("size must be between 0 and %d bytes, got %d", coderun.MaxBoxFileStreamBytes, p.Size)
 	}
 	resp, err := c.WriteBoxFileStream(&pb.WriteBoxFileStreamHeader{
-		Username: p.Box, Path: p.Path, Mode: p.Mode, Sha256: p.SHA256, Size: p.Size,
+		Username: p.Box, Path: p.Path, Mode: p.Mode, Sha256: p.SHA256, Size: p.Size, ForRun: p.ForRun,
 	}, p.Content)
 	if err != nil {
 		var local *boxFileLocalReadError

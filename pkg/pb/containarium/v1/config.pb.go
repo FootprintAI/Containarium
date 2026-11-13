@@ -1459,8 +1459,11 @@ type SystemInfo struct {
 	// "box_run_workdir" (StartBoxRunRequest.workdir, BoxRun.workdir, #3551),
 	// "box_skill_sets" (the ApplyBoxSkillSets RPC, #3374), "box_files" (the
 	// WriteBoxFile RPC, #3548), "box_files_stream" (the WriteBoxFileStream
-	// RPC, files up to 64 MiB, #3548) and "box_bootstrap" (the
-	// ApplyBoxBootstrap RPC, #3694).
+	// RPC, files up to 64 MiB, #3548), "box_files_run_user" (with for_run set, on
+	// a box with a recorded tool-access level, WriteBoxFile and
+	// WriteBoxFileStream place the file in the run user's home, owned by the run
+	// user, #3678) and
+	// "box_bootstrap" (the ApplyBoxBootstrap RPC, #3694).
 	// An open string set rather than an enum so a newer daemon's extra names
 	// never fail to decode in an older client.
 	Capabilities []string `protobuf:"bytes,30,rep,name=capabilities,proto3" json:"capabilities,omitempty"`

@@ -89,6 +89,22 @@ printf '%s\n' "$h"
 `
 }
 
+// provisionBoxRunUser runs boxRunProvisionScript as root and returns the run
+// user's home. It creates nothing else: the sudo grant, the run directory and
+// the staged home are prepareUnprivilegedRun's.
+func provisionBoxRunUser(rootExec func(box, script string) (string, error), box string) (string, error) {
+	out, err := rootExec(box, boxRunProvisionScript())
+	if err != nil {
+		return "", fmt.Errorf("provision %s: %w", boxRunUnprivilegedUser, err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	runHome := strings.TrimSpace(lines[len(lines)-1])
+	if !validHomePath(runHome) {
+		return "", fmt.Errorf("unexpected home %q for %s", runHome, boxRunUnprivilegedUser)
+	}
+	return runHome, nil
+}
+
 // boxRunDirScript is run as root: the run directory must exist and be writable
 // by the run user as well as the owner. Sticky and world-writable like /tmp: the
 // files in it are created 0600, and only their creator (or root) may rename or
@@ -123,6 +139,20 @@ var boxRunStagedBinaries = []string{
 	".local/bin/claude",
 	".local/bin/box-credential-helper",
 	".local/bin/skill-mcp-server",
+}
+
+// boxRunManagedPath reports whether rel is a path the run staging step writes,
+// rewrites, or removes at each run start. A caller's file there would be lost at
+// the next run, so a write placed in the run user's home refuses it (#3701).
+func boxRunManagedPath(rel string) bool {
+	for _, list := range [][]string{boxRunStagedConfig, boxRunStagedBinaries, boxRunStaleCredentials, boxRunStagedPlatformCredentials} {
+		for _, m := range list {
+			if rel == m || rel == m+".new" {
+				return true
+			}
+		}
+	}
+	return rel == ".claude/skills" || strings.HasPrefix(rel, ".claude/skills/")
 }
 
 // boxRunStagedConfig are text files that name the owner's home in absolute

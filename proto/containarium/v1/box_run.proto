@@ -353,6 +353,9 @@ enum BoxRunStopSignal {
 }
 
 // WriteBoxFileRequest writes one file into a box user's home directory (#3548).
+// By default the file is placed as the box's owner, in the owner's home. With
+// for_run set, on a box with a recorded tool-access level, it is placed as the
+// unprivileged run user platform runs execute as, in that user's home (#3678).
 message WriteBoxFileRequest {
   // The box owner's username (the box is <username>-container).
   string username = 1;
@@ -368,10 +371,20 @@ message WriteBoxFileRequest {
   // Lowercase hex SHA-256 of content. Optional; when set, the bytes that land
   // on the box are checked against it before the file appears.
   string sha256 = 5;
+  // The file is an input for a platform run (a StartBoxRun turn). On a box
+  // with a recorded tool-access level the run executes as the unprivileged
+  // run user, so the file is placed in that user's home, owned by it, where the
+  // run can read it and no other non-root user can; path is then relative to
+  // that home, and the run user is created if the box has not had a run yet.
+  // On a box with no recorded level this changes nothing. Unset (the default),
+  // the file goes into the box owner's home, where an SSH session reads it.
+  // Needs the "box_files_run_user" capability; an older daemon ignores it.
+  bool for_run = 6;
 }
 
 message WriteBoxFileResponse {
-  // Absolute path of the file on the box.
+  // Absolute path of the file on the box: under the run user's home when
+  // for_run placed it there, under the owner's home otherwise.
   string path = 1;
   // Bytes written.
   int64 size = 2;
@@ -407,6 +420,8 @@ message WriteBoxFileStreamHeader {
   // Total bytes the stream carries, at most 64 MiB. A stream that ends short
   // of it, or carries more, is INVALID_ARGUMENT and leaves no file.
   int64 size = 5;
+  // Same as WriteBoxFileRequest.for_run.
+  bool for_run = 6;
 }
 
 // WriteBoxFileStreamResponse is WriteBoxFileResponse for the streamed form.

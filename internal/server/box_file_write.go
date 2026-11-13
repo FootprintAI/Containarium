@@ -19,6 +19,12 @@ import (
 // WriteBoxFile (#3548): put one file in a box user's home so a run can read it,
 // with no SSH client and no bytes embedded in a `command` run.
 //
+// "The box user" is the box's owner by default. A write made for a platform
+// run (for_run, #3678) on a box with a recorded tool-access level goes to the
+// unprivileged run user instead, whose home is private to it: the run executes
+// as that user, so it can read the file and no other non-root user on the box
+// can. A plain write stays in the owner's home, where an SSH session reads it.
+//
 // The bytes travel through the container file API, never through a shell, so
 // content can never be read as a command. That API writes as root, though, and
 // follows symlinks in the path, so it is never aimed at a path the box user
@@ -34,6 +40,10 @@ const (
 	MaxBoxFileBytes = coderun.MaxBoxFileBytes
 	// DaemonCapBoxFiles: the WriteBoxFile RPC (#3548).
 	DaemonCapBoxFiles = "box_files"
+	// DaemonCapBoxFilesRunUser: with for_run set, on a box with a recorded
+	// tool-access level, WriteBoxFile and WriteBoxFileStream place the file in
+	// the unprivileged run user's home, owned by the run user (#3678).
+	DaemonCapBoxFilesRunUser = "box_files_run_user"
 
 	boxFileDefaultMode     = "0600"
 	boxFileStageDefaultDir = "/tmp"
@@ -64,7 +74,7 @@ func cleanBoxFilePath(p string) (string, error) { return coderun.CleanHomeRelPat
 
 // WriteBoxFile implements pb.ContainerServiceServer.
 func (s *ContainerServer) WriteBoxFile(ctx context.Context, req *pb.WriteBoxFileRequest) (*pb.WriteBoxFileResponse, error) {
-	f, err := validateBoxFileTarget(req.GetUsername(), req.GetPath(), req.GetMode(), req.GetSha256())
+	f, err := validateBoxFileTarget(req.GetUsername(), req.GetPath(), req.GetMode(), req.GetSha256(), req.GetForRun())
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +88,7 @@ func (s *ContainerServer) WriteBoxFile(ctx context.Context, req *pb.WriteBoxFile
 	if write == nil {
 		return nil, status.Error(codes.Unavailable, "no container backend to write a file on")
 	}
-	got, err := s.placeBoxFile(f, func(box, stage string) error {
+	got, err := s.placeBoxFile(ctx, f, func(box, stage string) error {
 		if err := write(box, stage, req.GetContent(), "0600"); err != nil {
 			return status.Errorf(codes.Unavailable, "write %s: %v", req.GetPath(), err)
 		}
@@ -90,16 +100,19 @@ func (s *ContainerServer) WriteBoxFile(ctx context.Context, req *pb.WriteBoxFile
 	return &pb.WriteBoxFileResponse{Path: f.dst, Size: int64(len(req.GetContent())), Sha256: got}, nil
 }
 
-// boxFileTarget is a validated write request: who, where, how. dst is set by
-// placeBoxFile once the home directory is known.
+// boxFileTarget is a validated write request: who, where, how. forRun marks a
+// file for a platform run. user (the OS user the file is placed as, see
+// boxFileUser) and dst are set by placeBoxFile once the home directory is
+// known.
 type boxFileTarget struct {
 	username, rel, mode, want string
-	dst                       string
+	forRun                    bool
+	user, dst                 string
 }
 
 // validateBoxFileTarget checks what WriteBoxFile and WriteBoxFileStream share,
 // before the box is touched: the owner, the path, the mode and the checksum.
-func validateBoxFileTarget(username, p, mode, want string) (*boxFileTarget, error) {
+func validateBoxFileTarget(username, p, mode, want string, forRun bool) (*boxFileTarget, error) {
 	if err := validateBoxRunOwner(username); err != nil {
 		return nil, err
 	}
@@ -116,29 +129,33 @@ func validateBoxFileTarget(username, p, mode, want string) (*boxFileTarget, erro
 	if want != "" && !boxFileSHA256Pattern.MatchString(want) {
 		return nil, status.Error(codes.InvalidArgument, "sha256 must be 64 lowercase hex characters")
 	}
-	return &boxFileTarget{username: username, rel: rel, mode: mode, want: want}, nil
+	return &boxFileTarget{username: username, rel: rel, mode: mode, want: want, forRun: forRun}, nil
 }
 
-// placeBoxFile resolves the home, has writeStage fill a root-made staging file
-// with an unguessable name, hands it to the box user and runs the box user's
-// placement script; it returns the checksum of the bytes on the box. Every
-// failure removes the staging file, so nothing is left at or beside f.dst.
-// writeStage returns a status error.
-func (s *ContainerServer) placeBoxFile(f *boxFileTarget, writeStage func(box, stage string) error) (string, error) {
+// placeBoxFile resolves the user and home the file is placed as (see
+// boxFileUser), has writeStage fill a root-made staging file with an
+// unguessable name, hands it to that user and runs that user's placement
+// script; it returns the checksum of the bytes on the box. Every failure
+// removes the staging file, so nothing is left at or beside f.dst. writeStage
+// returns a status error.
+func (s *ContainerServer) placeBoxFile(ctx context.Context, f *boxFileTarget, writeStage func(box, stage string) error) (string, error) {
 	rootExec, userExec := s.boxRunExecFn(), s.boxRunStartExecFn()
 	if rootExec == nil || userExec == nil {
 		return "", status.Error(codes.Unavailable, "no container backend to write a file on")
 	}
 	box := f.username + "-container"
-	home, err := resolveBoxRunHome(userExec, box, f.username)
+	user, home, err := s.boxFileUser(ctx, rootExec, userExec, box, f.username, f.forRun)
 	if err != nil {
 		return "", err
 	}
 	home = strings.TrimSpace(home)
 	if !path.IsAbs(home) || path.Clean(home) != home || strings.ContainsAny(home, "\n\x00") {
-		return "", status.Errorf(codes.FailedPrecondition, "the box user's home directory %q is not a plain absolute path", home)
+		return "", status.Errorf(codes.FailedPrecondition, "the home directory of %s %q is not a plain absolute path", user, home)
 	}
-	f.dst = path.Join(home, f.rel)
+	if user == boxRunUnprivilegedUser && boxRunManagedPath(f.rel) {
+		return "", status.Errorf(codes.InvalidArgument, "%s is managed by the platform: each run start rewrites it, so a file written there would be lost; choose another path (#3701)", f.rel)
+	}
+	f.user, f.dst = user, path.Join(home, f.rel)
 
 	stage, err := s.newBoxFileStagePath()
 	if err != nil {
@@ -149,11 +166,11 @@ func (s *ContainerServer) placeBoxFile(f *boxFileTarget, writeStage func(box, st
 		removeStage()
 		return "", err
 	}
-	if _, err := rootExec(box, "chown -- "+shellSingleQuote(f.username)+" "+shellSingleQuote(stage)); err != nil {
+	if _, err := rootExec(box, "chown -- "+shellSingleQuote(f.user)+" "+shellSingleQuote(stage)); err != nil {
 		removeStage()
-		return "", status.Errorf(codes.Unavailable, "hand the staged file to %s: %v", f.username, err)
+		return "", status.Errorf(codes.Unavailable, "hand the staged file to %s: %v", f.user, err)
 	}
-	out, err := userExec(box, f.username, boxFilePlaceScript(f.dst, stage, f.want, f.mode))
+	out, err := userExec(box, f.user, boxFilePlaceScript(f.dst, stage, f.want, f.mode))
 	if err != nil {
 		removeStage()
 		switch {
@@ -169,6 +186,34 @@ func (s *ContainerServer) placeBoxFile(f *boxFileTarget, writeStage func(box, st
 		return "", status.Errorf(codes.Internal, "the box reported no checksum for %s", f.rel)
 	}
 	return got, nil
+}
+
+// boxFileUser returns the OS user a file is placed as and that user's home
+// (#3678): the box's owner, or, for a write made for a platform run (forRun) on
+// a box with a recorded tool-access level, the unprivileged run user the run
+// executes as. A write not made for a run is the owner's and reads no level.
+// The run user's home is 0700 and the file is placed by the run user itself, so
+// the run can read the file and no other non-root user on the box can. The run
+// user is created if it does not exist yet (the same idempotent root step a run
+// takes), so a file can be written before the box's first run. The level is read
+// before anything on the box is changed, and a read error refuses the write
+// rather than placing the file where the run cannot read it.
+func (s *ContainerServer) boxFileUser(ctx context.Context, rootExec boxScriptFunc, userExec boxRunStartFunc, box, username string, forRun bool) (user, home string, err error) {
+	level := ""
+	if forRun {
+		if level, err = s.boxRunRecordedToolAccess(ctx, username); err != nil {
+			return "", "", status.Errorf(codes.Unavailable, "read the tool-access level of %q: %v", username, err)
+		}
+	}
+	if level == "" {
+		home, err := resolveBoxRunHome(userExec, box, username)
+		return username, home, err
+	}
+	runHome, err := provisionBoxRunUser(rootExec, box)
+	if err != nil {
+		return "", "", status.Errorf(codes.Unavailable, "prepare the unprivileged run user on %q: %v", username, err)
+	}
+	return boxRunUnprivilegedUser, runHome, nil
 }
 
 func (s *ContainerServer) newBoxFileStagePath() (string, error) {

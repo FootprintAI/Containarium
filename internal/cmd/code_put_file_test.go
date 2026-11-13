@@ -54,7 +54,7 @@ func TestCodePutFile_SendsContentAndChecksum(t *testing.T) {
 	}
 	f := &fakeBoxFileWriter{resp: &pb.WriteBoxFileResponse{Path: "/home/alice/in/brief.md", Size: 5, Sha256: "deadbeef"}}
 	var out bytes.Buffer
-	if err := codePutFile(f, "alice", local, "in/brief.md", &out); err != nil {
+	if err := codePutFile(f, "alice", local, "in/brief.md", false, &out); err != nil {
 		t.Fatalf("codePutFile: %v", err)
 	}
 	// sha256("hello")
@@ -67,13 +67,39 @@ func TestCodePutFile_SendsContentAndChecksum(t *testing.T) {
 	}
 }
 
+func TestCodePutFile_ForRunReachesBothForms(t *testing.T) {
+	dir := t.TempDir()
+	small, big := filepath.Join(dir, "small"), filepath.Join(dir, "big")
+	if err := os.WriteFile(small, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(big, bytes.Repeat([]byte("a"), coderun.MaxBoxFileBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, forRun := range []bool{false, true} {
+		f := &fakeBoxFileWriter{resp: &pb.WriteBoxFileResponse{}}
+		if err := codePutFile(f, "alice", small, "a", forRun, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		if f.got.GetForRun() != forRun {
+			t.Errorf("unary: for_run = %v, want %v", f.got.GetForRun(), forRun)
+		}
+		if err := codePutFile(f, "alice", big, "b", forRun, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+		if f.gotHeader.GetForRun() != forRun {
+			t.Errorf("stream: for_run = %v, want %v", f.gotHeader.GetForRun(), forRun)
+		}
+	}
+}
+
 func TestCodePutFile_DefaultsTheRemotePathToTheBaseName(t *testing.T) {
 	local := filepath.Join(t.TempDir(), "data.csv")
 	if err := os.WriteFile(local, []byte("a,b"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	f := &fakeBoxFileWriter{resp: &pb.WriteBoxFileResponse{}}
-	if err := codePutFile(f, "alice", local, "", &bytes.Buffer{}); err != nil {
+	if err := codePutFile(f, "alice", local, "", false, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if f.got.GetPath() != "data.csv" {
@@ -92,7 +118,7 @@ func TestCodePutFile_RefusesAnOversizedFileBeforeTheCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := &fakeBoxFileWriter{}
-	if err := codePutFile(f, "alice", local, "big.bin", &bytes.Buffer{}); err == nil {
+	if err := codePutFile(f, "alice", local, "big.bin", false, &bytes.Buffer{}); err == nil {
 		t.Fatal("want an error for a file over the limit")
 	}
 	if f.got != nil || f.gotHeader != nil {
@@ -108,7 +134,7 @@ func TestCodePutFile_StreamsAFileAboveTheUnaryCap(t *testing.T) {
 	}
 	f := &fakeBoxFileWriter{streamResp: &pb.WriteBoxFileStreamResponse{Path: "/home/alice/in/big.bin", Size: int64(len(body)), Sha256: "s"}}
 	var out bytes.Buffer
-	if err := codePutFile(f, "alice", local, "in/big.bin", &out); err != nil {
+	if err := codePutFile(f, "alice", local, "in/big.bin", false, &out); err != nil {
 		t.Fatalf("codePutFile: %v", err)
 	}
 	if f.got != nil {
@@ -133,7 +159,7 @@ func TestCodePutFile_AtTheUnaryCapStaysUnary(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := &fakeBoxFileWriter{resp: &pb.WriteBoxFileResponse{}}
-	if err := codePutFile(f, "alice", local, "edge.bin", &bytes.Buffer{}); err != nil {
+	if err := codePutFile(f, "alice", local, "edge.bin", false, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if f.got == nil || f.gotHeader != nil {
@@ -147,7 +173,7 @@ func TestCodePutFile_OldDaemonWithoutTheStreamSaysSo(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := &fakeBoxFileWriter{streamErr: status.Error(codes.Unimplemented, "unknown method")}
-	err := codePutFile(f, "alice", local, "big.bin", &bytes.Buffer{})
+	err := codePutFile(f, "alice", local, "big.bin", false, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "box_files_stream") || !strings.Contains(err.Error(), "upgrade") {
 		t.Fatalf("err = %v, want the old-daemon message naming box_files_stream", err)
 	}
@@ -157,7 +183,7 @@ func TestCodePutFile_OldDaemonSaysSo(t *testing.T) {
 	local := filepath.Join(t.TempDir(), "a.txt")
 	_ = os.WriteFile(local, []byte("x"), 0o600)
 	f := &fakeBoxFileWriter{err: status.Error(codes.Unimplemented, "nope")}
-	err := codePutFile(f, "alice", local, "a.txt", &bytes.Buffer{})
+	err := codePutFile(f, "alice", local, "a.txt", false, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "WriteBoxFile") {
 		t.Fatalf("err = %v, want a message naming WriteBoxFile", err)
 	}

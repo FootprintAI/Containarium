@@ -55,7 +55,7 @@ func (s *ContainerServer) WriteBoxFileStream(stream pb.ContainerService_WriteBox
 	if h == nil {
 		return status.Error(codes.InvalidArgument, "the first message must be the header")
 	}
-	f, err := validateBoxFileTarget(h.GetUsername(), h.GetPath(), h.GetMode(), h.GetSha256())
+	f, err := validateBoxFileTarget(h.GetUsername(), h.GetPath(), h.GetMode(), h.GetSha256(), h.GetForRun())
 	if err != nil {
 		return err
 	}
@@ -70,7 +70,7 @@ func (s *ContainerServer) WriteBoxFileStream(stream pb.ContainerService_WriteBox
 		return status.Error(codes.Unavailable, "no container backend to write a file on")
 	}
 	r := &boxFileStreamReader{stream: stream, size: h.GetSize()}
-	got, err := s.placeBoxFile(f, func(box, stage string) error {
+	got, err := s.placeBoxFile(stream.Context(), f, func(box, stage string) error {
 		werr := write(box, stage, r, "0600")
 		switch {
 		case r.err != nil && !errors.Is(r.err, io.EOF):
