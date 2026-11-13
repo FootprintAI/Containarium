@@ -219,6 +219,7 @@ security exec-events
 security findings
 security findings list
 security findings resolve
+security flow-history
 security miner-signatures add
 security miner-signatures list
 security miner-signatures remove

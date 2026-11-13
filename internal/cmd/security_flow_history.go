@@ -156,7 +156,7 @@ func renderFlowHistory(w io.Writer, out *pb.QueryFlowHistoryResponse) {
 	fmt.Fprintf(w, "%-24s %-14s %-15s %-15s %-6s %-5s %-20s %-20s %s\n",
 		"BOX", "TENANT", "SOURCE", "DESTINATION", "PORT", "PROTO", "FIRST SEEN", "LAST SEEN", "NOTE")
 	for _, e := range out.GetEntries() {
-		box := escapeControl(e.GetContainer())
+		box := e.GetContainer()
 		if box == "" {
 			box = "(unknown box)"
 		}
@@ -165,7 +165,7 @@ func renderFlowHistory(w io.Writer, out *pb.QueryFlowHistoryResponse) {
 			note = "reply?"
 		}
 		fmt.Fprintf(w, "%-24s %-14s %-15s %-15s %-6d %-5s %-20s %-20s %s\n",
-			box, escapeControl(e.GetTenantId()), e.GetSrcIp(), e.GetDstIp(), e.GetDstPort(),
+			escapeControl(box), escapeControl(e.GetTenantId()), e.GetSrcIp(), e.GetDstIp(), e.GetDstPort(),
 			strings.ToLower(enumLabel(e.GetProtocol().String(), "FLOW_PROTOCOL_")),
 			timestampText(e.GetFirstSeen()), timestampText(e.GetLastSeen()), note)
 	}

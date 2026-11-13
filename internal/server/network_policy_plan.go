@@ -481,3 +481,16 @@ func noteCompileFailures(seen, failed map[uint32]compileFailure) []string {
 	}
 	return lines
 }
+
+// connCapModeLabel names what the outbound connection cap will do, for the
+// startup log: a cap configured to enforce on an unarmed daemon only counts.
+func connCapModeLabel(enforce, armed bool) string {
+	switch {
+	case enforce && armed:
+		return "enforce: connections over the cap are dropped"
+	case enforce:
+		return "log-only: enforce was requested but the network policy is not armed, so connections over the cap are only counted"
+	default:
+		return "log-only: connections over the cap are counted, not dropped"
+	}
+}
