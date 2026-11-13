@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/footprintai/containarium/internal/limitio"
 	"io"
 	"log"
 	"math"
@@ -340,7 +341,7 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 	// report an empty model for it. Read-only: no body rewriting, since
 	// ensureStreamUsage and extractSystemPrompt are OpenAI shapes.
 	if provName == "anthropic" {
-		if raw, rerr := io.ReadAll(r.Body); rerr == nil {
+		if raw, rerr := limitio.ReadAll(r.Body, limitio.MaxHTTPResponseBytes); rerr == nil {
 			_ = r.Body.Close()
 			reqModel = requestModel(raw)
 			r.Body = io.NopCloser(bytes.NewReader(raw))
@@ -353,7 +354,7 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 	// than a list of names, so a new OpenAI-compatible upstream is metered on
 	// the streaming path from the moment it is registered.
 	if prov.openAIShaped {
-		if raw, rerr := io.ReadAll(r.Body); rerr == nil {
+		if raw, rerr := limitio.ReadAll(r.Body, limitio.MaxHTTPResponseBytes); rerr == nil {
 			_ = r.Body.Close()
 			sysPrompt = extractSystemPrompt(raw)
 			reqModel = requestModel(raw)
@@ -557,7 +558,7 @@ func (g *Gateway) handleModel(w http.ResponseWriter, r *http.Request) {
 			if !strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
 				return nil
 			}
-			body, err := io.ReadAll(resp.Body)
+			body, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 			_ = resp.Body.Close()
 			if err != nil {
 				return err

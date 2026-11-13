@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
+	"github.com/footprintai/containarium/internal/limitio"
 	"net/http"
 	"net/url"
 	"time"
@@ -47,7 +47,7 @@ func (c *Client) Authenticate(username, password string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return "", fmt.Errorf("guacamole auth failed (status %d): %s", resp.StatusCode, body)
 	}
 
@@ -127,7 +127,7 @@ func (c *Client) CreateConnection(authToken string, config ConnectionConfig) (st
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return "", fmt.Errorf("guacamole create connection failed (status %d): %s", resp.StatusCode, respBody)
 	}
 
@@ -154,7 +154,7 @@ func (c *Client) DeleteConnection(authToken, connectionID string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("guacamole delete connection failed (status %d): %s", resp.StatusCode, body)
 	}
 
