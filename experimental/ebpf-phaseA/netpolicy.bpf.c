@@ -18,10 +18,13 @@
 // a box may only send with its own address (source validation, same issue).
 //
 // Build (the multiarch -I lets clang's bpf target find <asm/types.h>):
-//   clang -O2 -g -target bpf -I/usr/include/$(uname -m)-linux-gnu \
+//   clang -O2 -g -target bpf -mcpu=v3 -I/usr/include/$(uname -m)-linux-gnu \
 //       -c netpolicy.bpf.c -o netpolicy.bpf.o
 //
-// Requires kernel ≥ 5.4 (LPM_TRIE + perf_event_output). Ubuntu 24.04 is fine.
+// Requires kernel ≥ 5.12 (LPM_TRIE + perf_event_output, and the BPF_ATOMIC_FETCH
+// the connection-rate cap uses: a __sync_fetch_and_add whose result is read
+// compiles only with -mcpu=v3, which every build line below passes). Ubuntu 24.04
+// is fine.
 
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
@@ -45,6 +48,7 @@
 #define DENY_REASON_VIRTUAL_PATCH 1  // matched an explicit virtual-patch deny rule (#660)
 #define DENY_REASON_SIGNATURE     2  // matched a cleartext exploit signature (#661, Tier 2)
 #define DENY_REASON_SPOOFED_SOURCE 3 // the box sent with a source address that is not its own (#2618)
+#define DENY_REASON_CONN_CAP      4  // the box exceeded its outbound connection-rate cap (#3709)
 
 // Verdict carried in deny_event.verdict — mirror netbpf.DenyVerdict* in Go. The
 // verdict the program actually applied: with a separate egress_mode an
@@ -75,7 +79,13 @@ struct policy_cfg {
                          // this veth validates nothing, so frames from it never seed
                          // an inbound flow (they are SEEN but not VALIDATED).
     __u8  flags;         // POLICY_FLAG_* (#2618). APPENDED after box_ip.
-    __u8  pad[3];
+    __u8  conn_cap_mode; // mode of the connection-rate cap ONLY (#3709);
+                         // MODE_LOG_ONLY | MODE_ENFORCE. Former pad byte: a loader
+                         // that writes 0 here (and in conn_cap_per_sec) leaves the
+                         // cap off, and the struct stays 16 bytes.
+    __u16 conn_cap_per_sec; // max new outbound TCP connections per second this box
+                         // may open to a public address (private ones never count); 0 = no
+                         // cap. Former pad bytes (offset 14, naturally aligned).
 };
 
 // POLICY_FLAG_VALIDATE_ONLY: the veth belongs to an instance the daemon does not
@@ -201,6 +211,64 @@ static __always_inline void bump(__u32 idx) {
 //
 // LRU_HASH so a burst of short-lived flows self-evicts under pressure rather than
 // filling the map; the daemon reads it on a poll and ages out idle entries.
+// Outbound connection-rate cap (#3709). One fixed one-second window per box,
+// keyed by the veth's host ifindex. A DDoS or scraping tool shows up as a burst
+// of new connections to many outside addresses, which no allow-list sees. The
+// count is bumped with an atomic add, but the window rollover is a plain store,
+// so two CPUs racing at the boundary can let a few extra connections through:
+// the cap is a rate limiter, not an exact counter. LRU, so a deleted veth's
+// slot ages out on its own.
+struct conn_bucket {
+    __u64 window_ns;
+    __u32 count;
+    __u32 pad;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, __u32);                 // veth ifindex
+    __type(value, struct conn_bucket);
+    __uint(max_entries, 4096);
+} conn_rate SEC(".maps");
+
+#define CONN_CAP_WINDOW_NS 1000000000ULL
+
+// conn_bucket_bump counts one more new connection from ifindex in the current
+// window and returns the window's count including this one.
+static __always_inline __u32 conn_bucket_bump(__u32 ifindex) {
+    struct conn_bucket *b = bpf_map_lookup_elem(&conn_rate, &ifindex);
+    if (!b) {
+        struct conn_bucket nb = {};
+        nb.window_ns = bpf_ktime_get_ns();
+        nb.count = 1;
+        bpf_map_update_elem(&conn_rate, &ifindex, &nb, BPF_ANY);
+        return 1;
+    }
+    // Read the window stamp BEFORE the clock: another CPU may roll the window
+    // between the two reads, which would make the stamp newer than `now`; the
+    // `now > start` guard keeps that from underflowing into a spurious reset.
+    __u64 start = b->window_ns;
+    __u64 now = bpf_ktime_get_ns();
+    if (now > start && now - start >= CONN_CAP_WINDOW_NS) {
+        b->window_ns = now;
+        b->count = 1;
+        return 1;
+    }
+    return __sync_fetch_and_add(&b->count, 1) + 1;
+}
+
+// dst_is_private: RFC 1918, loopback and link-local destinations. A connection
+// to the bridge gateway, a core service or another private host is not outside
+// traffic and never counts toward the cap.
+static __always_inline int dst_is_private(__u32 daddr_be) {
+    __u32 a = bpf_ntohl(daddr_be);
+    return (a >> 24) == 10 ||          // 10.0.0.0/8
+           (a >> 20) == 0xAC1 ||       // 172.16.0.0/12
+           (a >> 16) == 0xC0A8 ||      // 192.168.0.0/16
+           (a >> 24) == 127 ||         // 127.0.0.0/8
+           (a >> 16) == 0xA9FE;        // 169.254.0.0/16
+}
+
 struct flow_key {
     __u32 ifindex;   // host veth — attribution handle (1:1 with a container)
     __u32 saddr;     // source IPv4, network byte order
@@ -811,6 +879,40 @@ int netpolicy_ingress(struct __sk_buff *skb) {
             (dv->proto == 0 || dv->proto == ip->protocol)) {
             vpatch_deny = 1;
             deny_reason = DENY_REASON_VIRTUAL_PATCH;
+        }
+    }
+
+    // Outbound connection-rate cap (#3709). Counts a box's NEW TCP connections
+    // (SYN without ACK) to a PUBLIC address outside the managed set; a spoofed
+    // packet is left to the spoofing check below so a forged source cannot burn
+    // the real box's budget. A TCP packet whose header could not be parsed (IP
+    // options, a first fragment, a truncated header) counts as a connection
+    // attempt too: otherwise an IP option or a fragmented SYN would walk around
+    // the cap, the same fail-closed stance the virtual-patch deny takes (#3166).
+    // Over the cap: ENFORCE drops the SYN, LOG_ONLY counts and passes. One event
+    // per window (when the count first passes the cap), so a sustained burst
+    // cannot flood the perf buffer; ENFORCE keeps dropping every SYN over the cap
+    // without emitting more.
+    int cap_attempt = l4.ok ? (l4.tcp_syn && !l4.tcp_ack)
+                            : (ip->protocol == IPPROTO_TCP && (bpf_ntohs(ip->frag_off) & 0x1FFF) == 0);
+    if (cfg->conn_cap_per_sec && !spoofed && cap_attempt && !dst_is_private(daddr) &&
+        !bpf_map_lookup_elem(&ip_tenant, &daddr)) {
+        __u32 n = conn_bucket_bump(ifindex);
+        if (n > cfg->conn_cap_per_sec) {
+            if (n == (__u32)cfg->conn_cap_per_sec + 1) {
+                struct deny_event cev = {};
+                cev.ifindex = ifindex;
+                cev.tenant_id = cfg->tenant_id;
+                cev.saddr = saddr;
+                cev.daddr = daddr;
+                cev.proto = ip->protocol;
+                cev.dport = dport;
+                cev.reason = DENY_REASON_CONN_CAP;
+                cev.verdict = (cfg->conn_cap_mode == MODE_ENFORCE) ? DENY_VERDICT_DROPPED : DENY_VERDICT_LOGGED;
+                bpf_perf_event_output(skb, &events, BPF_F_CURRENT_CPU, &cev, sizeof(cev));
+            }
+            if (cfg->conn_cap_mode == MODE_ENFORCE)
+                return TC_ACT_SHOT;
         }
     }
 

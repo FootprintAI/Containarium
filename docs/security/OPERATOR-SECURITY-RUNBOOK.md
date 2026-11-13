@@ -1125,7 +1125,7 @@ iterating on the program or running a binary without the embedded object
 (kernel ≥ 6.6 for TCX), from `experimental/ebpf-phaseA/netpolicy.bpf.c`:
 
 ```bash
-clang -O2 -g -target bpfel -I/usr/include/$(uname -m)-linux-gnu \
+clang -O2 -g -target bpfel -mcpu=v3 -I/usr/include/$(uname -m)-linux-gnu \
     -c netpolicy.bpf.c -o /etc/containarium/netpolicy.bpf.o
 ```
 

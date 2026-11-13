@@ -40,10 +40,37 @@ type containerView struct {
 	ValidateOnly bool
 }
 
+// applyConnCap stamps the outbound connection-rate cap (#3709) onto every
+// tenant veth's config in the plan. It is a separate pure step, not a
+// planReconcile parameter, because the cap is a daemon-wide switch, not part of
+// any tenant's policy. A validate-only veth (the control plane, an untenanted
+// instance) is never capped: it is not policed at all. perSec 0 leaves the
+// cap off everywhere. enforce is the effective decision: the caller has already
+// folded in the daemon-wide arm, so a cap configured to enforce on a daemon
+// that is not armed only counts.
+func applyConnCap(plan *reconcilePlan, perSec uint16, enforce bool) {
+	if perSec == 0 {
+		return
+	}
+	mode := netbpf.ModeLogOnly
+	if enforce {
+		mode = netbpf.ModeEnforce
+	}
+	for ifindex, cfg := range plan.vethPolicy {
+		if cfg.Flags&netbpf.PolicyFlagValidateOnly != 0 {
+			continue
+		}
+		cfg.ConnCapPerSec = perSec
+		cfg.ConnCapMode = mode
+		plan.vethPolicy[ifindex] = cfg
+	}
+}
+
 // reconcilePlan is the desired BPF map state for one reconcile pass — pure data
 // so planReconcile is unit-testable without a kernel.
 type reconcilePlan struct {
 	ipTenant   map[[4]byte]uint32          // container IP -> tenant id
+	ipBox      map[[4]byte]string          // container IP -> container name (same precedence as ipTenant; never written to the kernel)
 	vethPolicy map[int]netbpf.PolicyConfig // running container veth ifindex -> policy config
 	ifName     map[int]string              // ifindex -> container name (for bookkeeping)
 	egress     []netbpf.EgressEntry        // per-tenant egress allow-list entries
@@ -75,6 +102,7 @@ type compileFailure struct {
 func planReconcile(views []containerView, policies map[string]netpolicy.CompiledPolicy, enforceEnabled bool) reconcilePlan {
 	plan := reconcilePlan{
 		ipTenant:   make(map[[4]byte]uint32),
+		ipBox:      make(map[[4]byte]string),
 		vethPolicy: make(map[int]netbpf.PolicyConfig),
 		ifName:     make(map[int]string),
 
@@ -93,6 +121,7 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 	for _, v := range views {
 		if !v.ValidateOnly && v.HasHostIP {
 			plan.ipTenant[v.HostIP] = v.TenantID
+			plan.ipBox[v.HostIP] = v.Name
 		}
 	}
 	for _, v := range views {
@@ -101,6 +130,7 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 		}
 		if _, taken := plan.ipTenant[v.IP]; !taken {
 			plan.ipTenant[v.IP] = v.TenantID
+			plan.ipBox[v.IP] = v.Name
 		}
 	}
 
@@ -450,4 +480,17 @@ func noteCompileFailures(seen, failed map[uint32]compileFailure) []string {
 		}
 	}
 	return lines
+}
+
+// connCapModeLabel names what the outbound connection cap will do, for the
+// startup log: a cap configured to enforce on an unarmed daemon only counts.
+func connCapModeLabel(enforce, armed bool) string {
+	switch {
+	case enforce && armed:
+		return "enforce: connections over the cap are dropped"
+	case enforce:
+		return "log-only: enforce was requested but the network policy is not armed, so connections over the cap are only counted"
+	default:
+		return "log-only: connections over the cap are counted, not dropped"
+	}
 }

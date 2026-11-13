@@ -23,6 +23,12 @@ type RuleContext struct {
 	// reconcile — see NetworkPolicyEnforcer.TenantForIP). ok is false for an
 	// unrecognized IP; a rule must never guess at an unknown IP's tenant.
 	TenantForIP func(ip netip.Addr) (tenantID string, ok bool)
+	// ContainerForIP resolves a container IP to the container's name. A
+	// tenant is an org and can own several boxes, so a flow-based rule uses
+	// this to name the box and to keep two boxes' findings apart. Optional:
+	// nil, or ok == false, means the box is unknown and the rule falls back to
+	// tenant-level attribution. Never guess a name for an unknown IP.
+	ContainerForIP func(ip netip.Addr) (name string, ok bool)
 	// Now is injected so time-window rules (deny-burst) are testable with a
 	// fake clock instead of wall time.
 	Now func() time.Time
@@ -227,6 +233,14 @@ func (e *Engine) Register(r Rule) {
 		e.execRules = append(e.execRules, c)
 	}
 	e.health[r.ID()] = &ruleHealth{healthy: true}
+}
+
+// SetContainerForIP wires RuleContext.ContainerForIP. Like Register, call it
+// before wiring hooks.
+func (e *Engine) SetContainerForIP(fn func(ip netip.Addr) (string, bool)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ruleCtx.ContainerForIP = fn
 }
 
 // SetMiningThresholds wires the source of the mining-behavior thresholds

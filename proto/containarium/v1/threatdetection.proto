@@ -61,6 +61,24 @@ enum ThreatRuleId {
   // unattended containment never silently becomes permanent. Subject is the
   // container name; the response on the original HIGH finding is EXPIRED.
   THREAT_RULE_ID_PROCESS_ACTION_EXPIRED = 9;
+  // A box opened connections to many distinct external addresses inside a
+  // short window: either on open-proxy ports (3128, 1080, 8118, 8888, ...),
+  // the shape of a DDoS / scraping tool rotating through a public proxy
+  // list, or to a very wide spread of addresses on any non-web port, the
+  // shape of a scanner. MEDIUM and record-only by default; HIGH, and so
+  // eligible for the process responder, only when the operator opts in
+  // (CONTAINARIUM_THREAT_FANOUT_RESPOND) and the finding names its box. Subject
+  // is "proxy-fanout" or "wide-fanout", suffixed ":<box>" when the box is known;
+  // evidence is a capped sample of the qualifying flows.
+  // Thresholds: OutboundFanoutThresholds in internal/threatdetect.
+  THREAT_RULE_ID_OUTBOUND_FANOUT = 10;
+  // A process exec in a box matched the abuse-tool baseline (#3709): a
+  // reverse-tunnel client (a persistent way in for someone outside the box) or
+  // a known DDoS / stress tool. MEDIUM and record-only: unlike the miner
+  // signature rule it is never acted on, because a tunnel client in particular
+  // has legitimate uses. Subject is "container:<box>:<kind>:<pattern>" of the
+  // entry that hit; evidence is the ExecEvidence of the exec, with `matched` set.
+  THREAT_RULE_ID_ABUSE_TOOL = 11;
 }
 
 // FindingState is the lifecycle state of a security finding.
@@ -615,6 +633,70 @@ message ListFindingsResponse {
   repeated Finding findings = 1;
 }
 
+// QueryFlowHistoryRequest asks which boxes contacted a destination. The log is
+// opt-in and in-memory (see FlowHistoryEntry); tenant_id is enforced like
+// ListFindingsRequest.tenant_id: a non-admin caller only ever sees their own.
+message QueryFlowHistoryRequest {
+  // Destination address to look up (IPv4, exact). Required.
+  string dst_ip = 1;
+  // Destination port. 0 (default) matches any port.
+  uint32 dst_port = 2;
+  // Only flows last seen at or after / first seen at or before these times.
+  // Unset matches everything the log holds.
+  google.protobuf.Timestamp since = 3;
+  google.protobuf.Timestamp until = 4;
+  string tenant_id = 5;
+  // <= 0 or > 500 is treated as the server default (100).
+  int32 limit = 6;
+}
+
+// FlowProtocol is the IP protocol of a recorded flow.
+enum FlowProtocol {
+  FLOW_PROTOCOL_UNSPECIFIED = 0;
+  FLOW_PROTOCOL_TCP = 1;
+  FLOW_PROTOCOL_UDP = 2;
+  FLOW_PROTOCOL_ICMP = 3;
+}
+
+// FlowHistoryEntry is one box's recorded contact with one destination: the
+// box, the destination, and when it was first and last seen.
+message FlowHistoryEntry {
+  // The box that opened the flow, when its address resolved to one; empty when
+  // only the tenant is known.
+  string container = 1;
+  string tenant_id = 2;
+  string src_ip = 3;
+  string dst_ip = 4;
+  // 0 on a likely_reply entry: the port was the client's, and replies to one
+  // client address share a single entry.
+  uint32 dst_port = 5;
+  FlowProtocol protocol = 6;
+  google.protobuf.Timestamp first_seen = 7;
+  google.protobuf.Timestamp last_seen = 8;
+  // The largest cumulative counters reported for any single flow to this
+  // destination, not a sum: several connections share one entry.
+  int64 bytes = 9;
+  int64 packets = 10;
+  // True when dst_port is in the ephemeral range (32768 and up). The flow
+  // records also hold a box's replies to clients that connected to it, which
+  // carry the client's ephemeral port, so such an entry may be the box
+  // answering rather than dialing out. A flow to a fixed service port is a
+  // box-initiated one.
+  bool likely_reply = 11;
+}
+
+message QueryFlowHistoryResponse {
+  // Most recently seen first.
+  repeated FlowHistoryEntry entries = 1;
+  // How far back the log can answer: the oldest moment it has covered since the
+  // daemon started recording, capped by the retention. An empty result for a
+  // time before this proves nothing; after it, it means the box did not open the
+  // flow (within the 15 s flow-poll granularity).
+  google.protobuf.Timestamp covered_since = 2;
+  // The configured retention, in seconds.
+  int64 retention_seconds = 3;
+}
+
 message ResolveFindingRequest {
   int64 id = 1;
 }
@@ -694,6 +776,21 @@ service ThreatDetectionService {
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "List security findings";
       description: "Lists security findings with optional severity/tenant/since/state filters, most recently seen first. Non-admin callers only see their own tenant.";
+      tags: "Security";
+    };
+  }
+
+  // QueryFlowHistory answers "which box contacted this destination, and when",
+  // from the opt-in in-memory flow log. Fails with FAILED_PRECONDITION when the
+  // log is not enabled. Tenant-scoped: a non-admin caller only sees their own
+  // tenant_id.
+  rpc QueryFlowHistory(QueryFlowHistoryRequest) returns (QueryFlowHistoryResponse) {
+    option (google.api.http) = {
+      get: "/v1/security/flow-history"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Query recorded flows to a destination";
+      description: "Returns the boxes that contacted a destination address (and optional port) within the flow log's retention, most recently seen first, so an egress alert from the provider can be attributed to a box after the fact. The log is opt-in (CONTAINARIUM_THREAT_FLOWLOG_HOURS) and held in memory only. Non-admin callers only see their own tenant.";
       tags: "Security";
     };
   }

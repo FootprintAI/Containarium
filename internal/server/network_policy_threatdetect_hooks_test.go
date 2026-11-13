@@ -96,3 +96,27 @@ func TestTenantForIP(t *testing.T) {
 		t.Fatalf("TenantForIP(::1) = ok, want !ok for a non-IPv4 address")
 	}
 }
+
+// ContainerForIP names the box from the last reconcile plan, so a flow-based
+// finding can say which of an org's boxes it was.
+func TestContainerForIP(t *testing.T) {
+	e := NewNetworkPolicyEnforcer("", nil, NewMemTenantRegistry(), nil, nil, nil, false)
+	e.mu.Lock()
+	e.ipBox = map[[4]byte]string{{10, 0, 0, 5}: "box-a"}
+	e.mu.Unlock()
+
+	if name, ok := e.ContainerForIP(netip.MustParseAddr("10.0.0.5")); !ok || name != "box-a" {
+		t.Fatalf("ContainerForIP(10.0.0.5) = (%q, %v), want (box-a, true)", name, ok)
+	}
+	if _, ok := e.ContainerForIP(netip.MustParseAddr("10.0.0.6")); ok {
+		t.Fatal("ContainerForIP(10.0.0.6) = ok, want !ok for an unrecognized IP")
+	}
+	if _, ok := e.ContainerForIP(netip.MustParseAddr("::1")); ok {
+		t.Fatal("ContainerForIP(::1) = ok, want !ok for a non-IPv4 address")
+	}
+	// Before the first reconcile the map is nil: a lookup must not panic.
+	fresh := NewNetworkPolicyEnforcer("", nil, NewMemTenantRegistry(), nil, nil, nil, false)
+	if _, ok := fresh.ContainerForIP(netip.MustParseAddr("10.0.0.5")); ok {
+		t.Fatal("ContainerForIP before any reconcile = ok, want !ok")
+	}
+}

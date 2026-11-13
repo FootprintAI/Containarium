@@ -1,0 +1,39 @@
+# Baseline abuse-tool list for the abuse-tool rule (#3709). Embedded into the
+# daemon binary via go:embed and parsed with the miner-signature list's format
+# (see rule_minersig_list.yaml), but only `name` entries are used here: each is
+# a case-insensitive exact name or glob on a BASENAME, matched against
+#   - the exec'd file and the task comm (a native binary, or a script run
+#     directly through its shebang), and
+#   - the script an interpreter was asked to run: the first non-option argument
+#     of python, perl, ruby, node, php, bash or sh. Merely reading or editing a
+#     file with one of these names (cat, vim, git add) does not match.
+#
+# Deliberately conservative: names with no everyday legitimate use, plus
+# reverse-tunnel clients, which do have one (so a hit is MEDIUM and
+# record-only: it tells an operator a box has a way in for someone outside, or
+# is running a stress tool; nothing is killed or throttled on it).
+#
+# What it cannot see: a renamed binary or script, or a tool launched from a
+# generic entry point (python3 start.py inside a tool's own directory). The
+# outbound fan-out rule catches such a tool by its traffic instead.
+version: 1
+entries:
+  # Reverse-tunnel clients and servers: a persistent path into the box that does
+  # not go through the platform's own ingress.
+  - {kind: name, pattern: "frpc", label: "frp reverse-tunnel client"}
+  - {kind: name, pattern: "frps", label: "frp reverse-tunnel server"}
+  - {kind: name, pattern: "chisel", label: "chisel tunnel"}
+  - {kind: name, pattern: "rathole", label: "rathole reverse-tunnel"}
+  # DDoS and stress tools: binaries.
+  - {kind: name, pattern: "slowloris", label: "slowloris (slow HTTP DoS)"}
+  - {kind: name, pattern: "xerxes", label: "xerxes (DoS)"}
+  - {kind: name, pattern: "torshammer", label: "torshammer (slow POST DoS)"}
+  - {kind: name, pattern: "thc-ssl-dos", label: "THC-SSL-DOS"}
+  # DDoS and stress tools: scripts.
+  - {kind: name, pattern: "slowloris.py", label: "slowloris script"}
+  - {kind: name, pattern: "hulk.py", label: "HULK (HTTP flood) script"}
+  - {kind: name, pattern: "goldeneye.py", label: "GoldenEye (HTTP DoS) script"}
+  - {kind: name, pattern: "torshammer.py", label: "torshammer script"}
+  - {kind: name, pattern: "mhddos*.py", label: "MHDDoS (multi-method DDoS) script"}
+  - {kind: name, pattern: "pyddos*.py", label: "pyddos script"}
+  - {kind: name, pattern: "blankdisk*.py", label: "BLANK DISK stress-test control panel (proxy-rotating DDoS)"}

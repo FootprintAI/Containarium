@@ -45,6 +45,7 @@ import (
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/internal/notify"
 	"github.com/footprintai/containarium/internal/policyreadiness"
@@ -1912,6 +1913,16 @@ skipAppHosting:
 		enforceArmed := netCfg.PolicyEnforce
 		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, fullListInspector{networkIncusClient}, auditStore, events.GetBus(), enforceArmed)
 		networkPolicyEnforcer.SetIncusDataDir(networkIncusClient.DataDir()) // DHCP leases live under it (#2618)
+		// Outbound connection-rate cap (#3709): off unless a rate is set, and it
+		// only counts unless the operator chose enforce AND the daemon is armed.
+		cc := appconfig.LoadEgressConnCap()
+		if cc.Ignored != "" {
+			log.Printf("Warning: %s=%s; the outbound connection cap stays off", appconfig.EnvEgressConnCapPerSec, cc.Ignored)
+		}
+		if cc.PerSec > 0 {
+			networkPolicyEnforcer.SetEgressConnCap(cc.PerSec, cc.Enforce)
+			log.Printf("NetworkPolicy: outbound connection cap %d/s per box (%s)", cc.PerSec, connCapModeLabel(cc.Enforce, enforceArmed))
+		}
 		// Status reads what the enforcer loaded; it reports "not running" on its
 		// own until Start succeeds, so a failed start needs no unwiring.
 		npServer.SetAppliedStateSource(networkPolicyEnforcer)
@@ -2217,6 +2228,8 @@ skipAppHosting:
 				// kill_process (#2638): SIGKILL a miner-signature match
 				// after re-checking its cgroup against the container's.
 				processResponder.SetProcessKiller(newHostProcessKiller(responderIncus.InitPID))
+				// Outbound fan-out (#3709) is acted on only with the operator's opt-in.
+				processResponder.SetFanoutRespond(threatCfg.FanoutRespond)
 				// Async: the responder's Incus calls run on its own worker,
 				// never on the exec ring consumer that writes signature
 				// findings (#2638 review).
@@ -2235,6 +2248,7 @@ skipAppHosting:
 		if sink != nil && networkPolicyEnforcer != nil {
 			findingSink = sink
 			threatDetectEngine = threatdetect.NewEngine(sink, "", degraded, networkPolicyEnforcer.TenantForIP, nil)
+			threatDetectEngine.SetContainerForIP(networkPolicyEnforcer.ContainerForIP)
 			// Fence-probe rules (#1642): a breached fence (cross-tenant
 			// flow) and a probed fence (deny-burst) are both continuous
 			// forms of checks that previously only ran one-shot or landed
@@ -2259,6 +2273,26 @@ skipAppHosting:
 	}
 	threatDetectServer := NewThreatDetectionServer(threatDetectEngine, threatCfg.SentryEnabled, sentryAvailable, sentryUnavailableReason)
 	threatDetectServer.SetFindingStore(threatDetectStore)
+	// Flow log (#3709): opt-in, in memory. It rides the enforcer's flow poll, so
+	// it needs the network-policy enforcer but not the sentry. The enforcer has
+	// one flow hook, so this composes with the engine's rather than replacing it.
+	if flowLog := threatdetect.NewFlowLog(threatCfg.FlowLogRetention, time.Now()); flowLog != nil {
+		if networkPolicyEnforcer == nil {
+			log.Printf("Warning: %s is set but the network-policy enforcer is not running; the flow log has no source and stays empty", appconfig.EnvThreatFlowLogHours)
+		} else {
+			enf := networkPolicyEnforcer
+			engineHook := func([]netbpf.FlowRecord) {}
+			if threatDetectEngine != nil {
+				engineHook = threatDetectEngine.OnFlows
+			}
+			enf.SetFlowHook(func(flows []netbpf.FlowRecord) {
+				engineHook(flows)
+				flowLog.Record(time.Now(), flows, enf.TenantForIP, enf.ContainerForIP)
+			})
+			log.Printf("Threat detection: flow log on, keeping %s of box-to-destination history in memory", flowLog.Retention())
+		}
+		threatDetectServer.SetFlowLog(flowLog)
+	}
 	if execWatcher != nil {
 		threatDetectServer.SetExecTelemetry(execWatcher)
 		// The watcher loads the exec-watch object from the network-policy
@@ -2322,6 +2356,22 @@ skipAppHosting:
 		threatDetectEngine.SetMiningThresholds(miningCfg.Effective)
 		threatDetectServer.SetMiningThresholdsConfig(miningCfg)
 		threatDetectEngine.Register(threatdetect.NewMiningBehaviorRule(listedDestinations))
+	}
+	// Rules that do not depend on the mining thresholds (#3709).
+	if threatDetectEngine != nil {
+		// Abuse-tool rule: a reverse-tunnel client or a known DDoS / stress tool on
+		// an exec. Record-only (never on the responder's list), baseline only, and
+		// it needs exec telemetry like the miner-signature rule.
+		if toolRule, tErr := threatdetect.NewAbuseToolRule(); tErr != nil {
+			log.Printf("Warning: threat-detection abuse-tool rule init failed (%v); it will not run", tErr)
+		} else {
+			threatDetectEngine.Register(toolRule)
+		}
+		// Outbound fan-out rule: many distinct external addresses in a short
+		// window, on open-proxy ports (a DDoS or scraping tool rotating a public
+		// proxy list) or spread across non-web ports (a scanner). MEDIUM and
+		// record-only unless the operator opts in to a response.
+		threatDetectEngine.Register(threatdetect.NewOutboundFanoutRule(threatdetect.OutboundFanoutThresholds{}).RespondWithHighSeverity(threatCfg.FanoutRespond))
 	}
 	// Miner-signature rule (#2638): a known miner's name, argv marker or
 	// executable hash on an exec. Like the bad-destination list, the list is

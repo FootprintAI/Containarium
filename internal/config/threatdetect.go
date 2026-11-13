@@ -23,6 +23,23 @@ const (
 // Off by default: the rule counts enforced drops only.
 const EnvThreatDenyBurstCountLogOnly = "CONTAINARIUM_THREAT_DENY_BURST_COUNT_LOG_ONLY"
 
+// EnvThreatFanoutRespond lets the outbound fan-out rule hand its findings to
+// the process responder (#3709). Off by default: the rule is then record-only
+// at MEDIUM. When on, a fan-out finding that names its box is raised at HIGH,
+// which makes it eligible for the response policy (`containarium security
+// process-policy`). The policy's default action is ALERT, so nothing is
+// throttled or frozen until the operator also sets one of those actions.
+const EnvThreatFanoutRespond = "CONTAINARIUM_THREAT_FANOUT_RESPOND"
+
+// EnvThreatFlowLogHours turns on the in-memory flow log (#3709) and sets how
+// many hours of box-to-destination history it keeps. The log records which box
+// contacted which public address so a provider egress alert can be attributed
+// to a box after the fact. Off by default: it retains destination addresses,
+// which the conntrack fan-out design deliberately does not. Unset, zero,
+// negative or non-numeric means off; values above 72 are clamped to 72. It is
+// held in memory only, so a restart empties it.
+const EnvThreatFlowLogHours = "CONTAINARIUM_THREAT_FLOWLOG_HOURS"
+
 // EnvThreatWebhookRenotifyMinutes sets how long an open finding stays quiet
 // on the webhook after a delivery before the same condition is delivered
 // again (#2643). Unset or non-positive keeps the 1h default.
@@ -44,6 +61,12 @@ type ThreatDetect struct {
 	// DenyBurstCountLogOnly counts observation-only would-deny events too
 	// (EnvThreatDenyBurstCountLogOnly). Default false: enforced drops only.
 	DenyBurstCountLogOnly bool
+	// FlowLogRetention is how long the flow log keeps an entry after it was last
+	// seen (EnvThreatFlowLogHours). Zero means the log is off.
+	FlowLogRetention time.Duration
+	// FanoutRespond raises a box-attributed outbound fan-out finding to HIGH
+	// so the process responder may act on it (EnvThreatFanoutRespond).
+	FanoutRespond bool
 	// WebhookRenotify is the re-delivery interval for a finding that stays
 	// open (EnvThreatWebhookRenotifyMinutes). Zero means the default.
 	WebhookRenotify time.Duration
@@ -58,6 +81,17 @@ func LoadThreatDetect() ThreatDetect {
 		DenyBurstWindow: time.Duration(getInt(EnvThreatDenyBurstWindowMinutes, 0)) * time.Minute,
 
 		DenyBurstCountLogOnly: getBool(EnvThreatDenyBurstCountLogOnly),
+		FanoutRespond:         getBool(EnvThreatFanoutRespond),
+		FlowLogRetention:      flowLogRetention(getInt(EnvThreatFlowLogHours, 0)),
 		WebhookRenotify:       time.Duration(getInt(EnvThreatWebhookRenotifyMinutes, 0)) * time.Minute,
 	}
+}
+
+// flowLogRetention turns the configured hours into a retention: off for a
+// non-positive value, otherwise clamped to the 72-hour maximum.
+func flowLogRetention(hours int) time.Duration {
+	if hours <= 0 {
+		return 0
+	}
+	return time.Duration(min(hours, 72)) * time.Hour
 }

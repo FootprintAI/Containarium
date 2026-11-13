@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/footprintai/containarium/internal/netbpf"
@@ -367,5 +369,141 @@ func TestPlanIPTenantIgnoresGuestClaimedAddress(t *testing.T) {
 	}
 	if got := plan.ipTenant[[4]byte{10, 100, 0, 99}]; got != 9 {
 		t.Errorf("mallory's host-known 10.100.0.99 maps to %d, want 9", got)
+	}
+}
+
+// ipBox follows ip_tenant's precedence (#3690): a host-known address names the
+// box, a guest-reported one is only a fallback and never overrides a host-known
+// row, and a validate-only instance is never named.
+func TestPlanReconcile_IPBox(t *testing.T) {
+	views := []containerView{
+		{Name: "a-container", Tenant: "org", TenantID: 1, IP: [4]byte{10, 0, 0, 10}, HasIP: true, HostIP: [4]byte{10, 0, 0, 10}, HasHostIP: true, Ifindex: 11, HasVeth: true, Running: true},
+		{Name: "b-container", Tenant: "org", TenantID: 1, IP: [4]byte{10, 0, 0, 20}, HasIP: true, HostIP: [4]byte{10, 0, 0, 21}, HasHostIP: true, Ifindex: 12, HasVeth: true, Running: true},
+		// A box that reports a host-known box's address as its own must not
+		// take the name over.
+		{Name: "liar-container", Tenant: "other", TenantID: 2, IP: [4]byte{10, 0, 0, 10}, HasIP: true, Running: false},
+		// No host-known address: the guest-reported one is the fallback.
+		{Name: "stopped-container", Tenant: "org", TenantID: 1, IP: [4]byte{10, 0, 0, 30}, HasIP: true, Running: false},
+		{Name: "infra", ValidateOnly: true, HostIP: [4]byte{10, 0, 0, 99}, HasHostIP: true, Ifindex: 30, HasVeth: true, Running: true},
+	}
+	plan := planReconcile(views, nil, true)
+	want := map[[4]byte]string{
+		{10, 0, 0, 10}: "a-container",
+		{10, 0, 0, 21}: "b-container", // host-leased, not the guest-reported .20
+		{10, 0, 0, 30}: "stopped-container",
+	}
+	if len(plan.ipBox) != len(want) {
+		t.Fatalf("ipBox = %v, want %v", plan.ipBox, want)
+	}
+	for ip, name := range want {
+		if plan.ipBox[ip] != name {
+			t.Errorf("ipBox[%v] = %q, want %q", ip, plan.ipBox[ip], name)
+		}
+	}
+	// Same keys as ip_tenant: the two maps never disagree on which IPs exist.
+	for ip := range plan.ipTenant {
+		if _, ok := plan.ipBox[ip]; !ok {
+			t.Errorf("ip %v is in ipTenant but has no box name", ip)
+		}
+	}
+}
+
+// #3709: the cap is stamped on every policed veth, never on a validate-only
+// one, and perSec 0 leaves the plan untouched.
+func TestApplyConnCap(t *testing.T) {
+	mk := func() reconcilePlan {
+		return reconcilePlan{vethPolicy: map[int]netbpf.PolicyConfig{
+			11: {TenantID: 1, Mode: netbpf.ModeEnforce},
+			12: {TenantID: 2, Mode: netbpf.ModeLogOnly},
+			30: netbpf.ValidateOnlyConfig([4]byte{10, 0, 0, 99}),
+		}}
+	}
+
+	off := mk()
+	applyConnCap(&off, 0, true)
+	for i, c := range off.vethPolicy {
+		if c.ConnCapPerSec != 0 || c.ConnCapMode != 0 {
+			t.Errorf("perSec 0 must leave veth %d alone, got %+v", i, c)
+		}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		enforce bool
+		want    uint8
+	}{{"log-only", false, netbpf.ModeLogOnly}, {"enforce", true, netbpf.ModeEnforce}} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := mk()
+			applyConnCap(&p, 150, tc.enforce)
+			for _, i := range []int{11, 12} {
+				c := p.vethPolicy[i]
+				if c.ConnCapPerSec != 150 || c.ConnCapMode != tc.want {
+					t.Errorf("veth %d cap = %d/%d, want 150/%d", i, c.ConnCapPerSec, c.ConnCapMode, tc.want)
+				}
+				// The cap must not disturb the tenant's own policy.
+				if c.TenantID != mk().vethPolicy[i].TenantID || c.Mode != mk().vethPolicy[i].Mode {
+					t.Errorf("veth %d policy changed: %+v", i, c)
+				}
+			}
+			if c := p.vethPolicy[30]; c.ConnCapPerSec != 0 || c.ConnCapMode != 0 {
+				t.Errorf("a validate-only veth must never be capped, got %+v", c)
+			}
+		})
+	}
+}
+
+func TestConnCapModeLabel(t *testing.T) {
+	if got := connCapModeLabel(true, true); !strings.HasPrefix(got, "enforce") {
+		t.Errorf("enforce+armed = %q", got)
+	}
+	if got := connCapModeLabel(true, false); !strings.Contains(got, "not armed") {
+		t.Errorf("enforce but unarmed must say it only counts, got %q", got)
+	}
+	if got := connCapModeLabel(false, true); !strings.HasPrefix(got, "log-only") {
+		t.Errorf("log-only = %q", got)
+	}
+}
+
+func flowFrom(ifindex uint32, src string) netbpf.FlowRecord {
+	a := netip.MustParseAddr(src).As4()
+	return netbpf.FlowRecord{Ifindex: ifindex, Saddr: binary.NativeEndian.Uint32(a[:]), Dport: 4444, Proto: 6}
+}
+
+// A box forging a neighbour's address must not be recorded as the neighbour:
+// the sentry and the flow log would attribute its traffic to the wrong box.
+func TestDropForgedSources(t *testing.T) {
+	boxIPs := map[int][4]byte{11: {10, 0, 0, 10}, 12: {10, 0, 0, 11}}
+	in := []netbpf.FlowRecord{
+		flowFrom(11, "10.0.0.10"), // honest
+		flowFrom(11, "10.0.0.11"), // veth 11 forging veth 12's address
+		flowFrom(12, "10.0.0.11"), // honest
+		flowFrom(12, "8.8.8.8"),   // forging an outside address
+		flowFrom(99, "10.0.0.77"), // a veth with no known address: cannot be checked
+	}
+	got := dropForgedSources(in, boxIPs)
+	if len(got) != 3 {
+		t.Fatalf("kept %d records, want 3: %+v", len(got), got)
+	}
+	for _, f := range got {
+		if want, ok := boxIPs[int(f.Ifindex)]; ok && f.Src().As4() != want {
+			t.Errorf("a forged record survived: veth %d src %v", f.Ifindex, f.Src())
+		}
+	}
+	if len(in) != 5 {
+		t.Error("the input slice must not be modified")
+	}
+	if got := dropForgedSources(in, nil); len(got) != 5 {
+		t.Errorf("with no known addresses nothing can be checked, got %d records, want 5", len(got))
+	}
+}
+
+func TestBoxIPByIfindex(t *testing.T) {
+	plan := reconcilePlan{vethPolicy: map[int]netbpf.PolicyConfig{
+		11: {BoxIP: [4]byte{10, 0, 0, 10}},
+		12: {}, // unknown address: left out, never compared against zero
+	}}
+	got := boxIPByIfindex(plan)
+	if len(got) != 1 || got[11] != ([4]byte{10, 0, 0, 10}) {
+		t.Fatalf("boxIPByIfindex = %v", got)
 	}
 }

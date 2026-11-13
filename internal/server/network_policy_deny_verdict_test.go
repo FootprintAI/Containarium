@@ -142,3 +142,24 @@ func TestDenyAuditEntry_SpoofedSourceHasOwnAction(t *testing.T) {
 		t.Errorf("plain deny = %q %s, want deny_dropped with spoofed_source=false", plain.Action, plain.Detail)
 	}
 }
+
+// #3709: a connection-cap event has its own audit action, so an operator can
+// tell it from an allow-list miss, and the egress plan (which reads only
+// deny_logged / deny_dropped rows to suggest allow-list entries) never reads it
+// as one. dropped says whether the cap was enforced or only counted.
+func TestDenyAuditEntry_ConnCap(t *testing.T) {
+	ev := netbpf.DenyEvent{Reason: netbpf.DenyReasonConnCap, Dport: 8080, Proto: 6}
+	for _, dropped := range []bool{true, false} {
+		e := denyAuditEntry(ev, "tenant-a", "", dropped)
+		if e.Action != "network_policy.conn_cap" {
+			t.Errorf("dropped=%v: action = %q, want network_policy.conn_cap", dropped, e.Action)
+		}
+		if !strings.Contains(e.Detail, `"conn_cap":true`) || !strings.Contains(e.Detail, `"dropped":`+boolStr(dropped)) {
+			t.Errorf("dropped=%v: detail = %s", dropped, e.Detail)
+		}
+	}
+	plain := denyAuditEntry(netbpf.DenyEvent{Dport: 22, Proto: 6}, "tenant-a", "", true)
+	if plain.Action != "network_policy.deny_dropped" || !strings.Contains(plain.Detail, `"conn_cap":false`) {
+		t.Errorf("an ordinary deny must be unchanged apart from conn_cap:false, got %s / %s", plain.Action, plain.Detail)
+	}
+}

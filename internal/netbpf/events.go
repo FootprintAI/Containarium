@@ -42,6 +42,11 @@ const (
 	// DenyReasonSpoofedSource: the box sent with a source address that is not
 	// its own (#2618). Decided by the tenant's mode; never allowed by anything.
 	DenyReasonSpoofedSource uint8 = 3
+	// DenyReasonConnCap: the box exceeded its outbound connection-rate cap
+	// (#3709). Emitted once per one-second window, when the count first passes
+	// the cap; in ENFORCE every SYN over the cap is dropped, only the first
+	// reports.
+	DenyReasonConnCap uint8 = 4
 )
 
 // Verdicts carried in DenyEvent.Verdict — mirror the DENY_VERDICT_* #defines in

@@ -41,6 +41,15 @@ type PolicyConfig struct {
 	BoxIP [4]byte
 	// Flags is the `flags` byte appended after box_ip (PolicyFlag*).
 	Flags PolicyFlags
+	// ConnCapMode is the mode of the outbound connection-rate cap alone
+	// (ModeLogOnly | ModeEnforce), the `conn_cap_mode` byte (#3709). Meaningful
+	// only when ConnCapPerSec is non-zero.
+	ConnCapMode uint8
+	// ConnCapPerSec is the most new outbound TCP connections per second a box
+	// may open to an address outside the managed set (`conn_cap_per_sec`,
+	// #3709). 0 means no cap: an older loader, or an object built before the
+	// cap, leaves these bytes zero and the cap off.
+	ConnCapPerSec uint16
 }
 
 // PolicyFlags mirrors the POLICY_FLAG_* bits of `struct policy_cfg`.

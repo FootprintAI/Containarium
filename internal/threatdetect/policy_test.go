@@ -283,6 +283,7 @@ func TestRespondsTo(t *testing.T) {
 	}{
 		{pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR, true},
 		{pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE, true},
+		{pb.ThreatRuleId_THREAT_RULE_ID_OUTBOUND_FANOUT, true},
 		{pb.ThreatRuleId_THREAT_RULE_ID_BAD_DESTINATION, false},
 		{pb.ThreatRuleId_THREAT_RULE_ID_DENY_BURST, false},
 		{pb.ThreatRuleId_THREAT_RULE_ID_PROCESS_ACTION_EXPIRED, false},
@@ -294,6 +295,10 @@ func TestRespondsTo(t *testing.T) {
 	}
 	if !KillsProcess(pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE) || KillsProcess(pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR) {
 		t.Error("only the miner-signature rule may kill a process")
+	}
+	// A fan-out finding names no process, so it can never be killed.
+	if KillsProcess(pb.ThreatRuleId_THREAT_RULE_ID_OUTBOUND_FANOUT) {
+		t.Error("outbound fan-out names no process and must never kill one")
 	}
 }
 

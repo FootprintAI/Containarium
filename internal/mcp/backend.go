@@ -140,6 +140,10 @@ type API interface {
 	ListSecuritySentryFindings(severity, tenant, since, state string, limit int) (*ListSentryFindingsResponse, error)
 	ResolveSecuritySentryFinding(id int64) (*ResolveSentryFindingResponse, error)
 
+	// Flow history (#3709): which box contacted a destination. The response is
+	// the daemon's own typed message, decoded with protojson.
+	QueryFlowHistory(dstIP string, dstPort int, since, until, tenant string, limit int) (*pb.QueryFlowHistoryResponse, error)
+
 	// Tokens.
 	RevokeToken(jti, reason, expiresAt string) (string, error)
 

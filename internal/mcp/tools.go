@@ -1006,7 +1006,7 @@ func (s *Server) registerTools() {
 		{
 			Name: "list_security_sentry_findings",
 			Description: "List security findings raised by the background threat-detection sentry " +
-				"(#1639-#1642) — mining-abuse egress, cross-tenant flow, and deny-burst detections — " +
+				"(#1639-#1642) — mining-abuse egress, cross-tenant flow, deny-burst, and outbound fan-out (DDoS / proxy-rotation / scanner) detections — " +
 				"with evidence (triggering flow 5-tuples / deny counts). Distinct from " +
 				"`security_findings`, which is the unrelated ClamAV/pentest/ZAP scanner surface.\n\n" +
 				"Every filter is optional. Non-admin callers only ever see their own tenant, " +
@@ -1037,6 +1037,46 @@ func (s *Server) registerTools() {
 				},
 			},
 			Handler: handleListSecuritySentryFindings,
+		},
+		{
+			Name: "query_flow_history",
+			Description: "Find which box contacted a destination address, and when — the way to attribute a provider " +
+				"egress alert (a firewall deny names a VM and a destination, not a box) after the fact. Reads the " +
+				"daemon's opt-in, in-memory flow log; the call fails with a clear error when the log is not enabled " +
+				"(CONTAINARIUM_THREAT_FLOWLOG_HOURS), and every answer states `coveredSince`: an empty result is only " +
+				"meaningful from that time on. Entries with `likelyReply` have an ephemeral destination port and may " +
+				"be the box answering a client rather than dialing out. Non-admin callers only see their own tenant.",
+			InputSchema: map[string]interface{}{
+				"type":     "object",
+				"required": []string{"dst_ip"},
+				"properties": map[string]interface{}{
+					"dst_ip": map[string]interface{}{
+						"type":        "string",
+						"description": "Destination IPv4 address to look up (exact).",
+					},
+					"dst_port": map[string]interface{}{
+						"type":        "integer",
+						"description": "Only flows to this destination port. Omit or 0 for any port.",
+					},
+					"since": map[string]interface{}{
+						"type":        "string",
+						"description": "RFC3339 timestamp; only flows last seen at or after this time.",
+					},
+					"until": map[string]interface{}{
+						"type":        "string",
+						"description": "RFC3339 timestamp; only flows first seen at or before this time.",
+					},
+					"tenant": map[string]interface{}{
+						"type":        "string",
+						"description": "Filter by tenant id (admin only — a non-admin caller's own tenant is used regardless).",
+					},
+					"limit": map[string]interface{}{
+						"type":        "integer",
+						"description": "Max entries. 0 (default) means the server default (100, capped at 500).",
+					},
+				},
+			},
+			Handler: handleQueryFlowHistory,
 		},
 		{
 			Name:        "resolve_security_sentry_finding",
@@ -2125,7 +2165,10 @@ func toolScopeAssignments() map[string]string {
 		// findings delivery + triage (#1643): listing is a read,
 		// resolving mutates a finding's lifecycle state — same split as
 		// the bad-destination list above.
-		"list_security_sentry_findings":   auth.ScopeSecurityRead,
+		"list_security_sentry_findings": auth.ScopeSecurityRead,
+		// flow history (#3709): a read of the opt-in flow log, tenant-scoped
+		// on the daemon like the findings list.
+		"query_flow_history":              auth.ScopeSecurityRead,
 		"resolve_security_sentry_finding": auth.ScopeSecurityWrite,
 		// install_zap is admin-only (the daemon also enforces
 		// RoleAdmin server-side); scope-gated the same as the other

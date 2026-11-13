@@ -141,10 +141,14 @@ func ValidateProcessPolicy(p *pb.ProcessPolicy) error {
 }
 
 // RespondsTo reports whether a HIGH finding from rule is one the process
-// responder acts on: the two mining rules.
+// responder acts on: the two mining rules, and outbound fan-out. Fan-out only
+// ever reaches HIGH when the operator opted in (CONTAINARIUM_THREAT_FANOUT_
+// RESPOND) and the finding names its box; otherwise it is MEDIUM and never
+// responded to.
 func RespondsTo(rule pb.ThreatRuleId) bool {
 	return rule == pb.ThreatRuleId_THREAT_RULE_ID_MINING_BEHAVIOR ||
-		rule == pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE
+		rule == pb.ThreatRuleId_THREAT_RULE_ID_MINER_SIGNATURE ||
+		rule == pb.ThreatRuleId_THREAT_RULE_ID_OUTBOUND_FANOUT
 }
 
 // KillsProcess reports whether a HIGH finding from rule may SIGKILL its

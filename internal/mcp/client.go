@@ -940,6 +940,38 @@ func (c *Client) ListSecuritySentryFindings(severity, tenant, since, state strin
 	return &resp, nil
 }
 
+// QueryFlowHistory asks the daemon which boxes contacted a destination, from
+// its opt-in flow log (#3709). since/until are RFC3339 timestamps; "" / 0 skip a
+// filter. A daemon with the log off answers with an error saying so, which is
+// returned as is: it must never read as an empty result.
+func (c *Client) QueryFlowHistory(dstIP string, dstPort int, since, until, tenant string, limit int) (*pb.QueryFlowHistoryResponse, error) {
+	q := url.Values{"dst_ip": {dstIP}}
+	if dstPort > 0 {
+		q.Set("dst_port", strconv.Itoa(dstPort))
+	}
+	if since != "" {
+		q.Set("since", since)
+	}
+	if until != "" {
+		q.Set("until", until)
+	}
+	if tenant != "" {
+		q.Set("tenant_id", tenant)
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	respBody, err := c.doRequest("GET", "/v1/security/flow-history?"+q.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp pb.QueryFlowHistoryResponse
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &resp, nil
+}
+
 // ResolveSecuritySentryFinding marks an open finding as resolved.
 func (c *Client) ResolveSecuritySentryFinding(id int64) (*ResolveSentryFindingResponse, error) {
 	path := "/v1/security/findings/" + strconv.FormatInt(id, 10) + "/resolve"
