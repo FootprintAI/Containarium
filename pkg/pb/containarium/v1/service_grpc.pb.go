@@ -310,10 +310,10 @@ type ContainerServiceClient interface {
 	// WriteBoxFile writes one file into a box user's home directory through the
 	// container file API, never through a shell (#3548): the way a caller puts
 	// input on a box for a run to read, without SSH and without embedding the
-	// bytes in a `command` run. On a box with a recorded tool-access level the
-	// file goes into the unprivileged run user's home instead, owned by the run
-	// user, because platform runs execute as that user (#3678, capability
-	// "box_files_run_user"). Same access as StartBoxRun: ssh:write, and the
+	// bytes in a `command` run. With for_run set, on a box with a recorded
+	// tool-access level, the file goes into the unprivileged run user's home
+	// instead, owned by the run user, because platform runs execute as that user
+	// (#3678, capability "box_files_run_user"). Same access as StartBoxRun: ssh:write, and the
 	// box owner or one of its collaborators. Advertised as the "box_files"
 	// capability.
 	WriteBoxFile(ctx context.Context, in *WriteBoxFileRequest, opts ...grpc.CallOption) (*WriteBoxFileResponse, error)
@@ -1552,10 +1552,10 @@ type ContainerServiceServer interface {
 	// WriteBoxFile writes one file into a box user's home directory through the
 	// container file API, never through a shell (#3548): the way a caller puts
 	// input on a box for a run to read, without SSH and without embedding the
-	// bytes in a `command` run. On a box with a recorded tool-access level the
-	// file goes into the unprivileged run user's home instead, owned by the run
-	// user, because platform runs execute as that user (#3678, capability
-	// "box_files_run_user"). Same access as StartBoxRun: ssh:write, and the
+	// bytes in a `command` run. With for_run set, on a box with a recorded
+	// tool-access level, the file goes into the unprivileged run user's home
+	// instead, owned by the run user, because platform runs execute as that user
+	// (#3678, capability "box_files_run_user"). Same access as StartBoxRun: ssh:write, and the
 	// box owner or one of its collaborators. Advertised as the "box_files"
 	// capability.
 	WriteBoxFile(context.Context, *WriteBoxFileRequest) (*WriteBoxFileResponse, error)

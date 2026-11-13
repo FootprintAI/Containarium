@@ -141,6 +141,20 @@ var boxRunStagedBinaries = []string{
 	".local/bin/skill-mcp-server",
 }
 
+// boxRunManagedPath reports whether rel is a path the run staging step writes,
+// rewrites, or removes at each run start. A caller's file there would be lost at
+// the next run, so a write placed in the run user's home refuses it (#3701).
+func boxRunManagedPath(rel string) bool {
+	for _, list := range [][]string{boxRunStagedConfig, boxRunStagedBinaries, boxRunStaleCredentials, boxRunStagedPlatformCredentials} {
+		for _, m := range list {
+			if rel == m || rel == m+".new" {
+				return true
+			}
+		}
+	}
+	return rel == ".claude/skills" || strings.HasPrefix(rel, ".claude/skills/")
+}
+
 // boxRunStagedConfig are text files that name the owner's home in absolute
 // paths, so they are copied with that prefix rewritten to the run user's home.
 // They hold no secret.

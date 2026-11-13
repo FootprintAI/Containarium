@@ -55,7 +55,7 @@ func (s *ContainerServer) WriteBoxFileStream(stream pb.ContainerService_WriteBox
 	if h == nil {
 		return status.Error(codes.InvalidArgument, "the first message must be the header")
 	}
-	f, err := validateBoxFileTarget(h.GetUsername(), h.GetPath(), h.GetMode(), h.GetSha256())
+	f, err := validateBoxFileTarget(h.GetUsername(), h.GetPath(), h.GetMode(), h.GetSha256(), h.GetForRun())
 	if err != nil {
 		return err
 	}

@@ -432,10 +432,13 @@ access as `StartBoxRun`.
   the rename. A mismatch leaves no file and is `DATA_LOSS`. The response carries
   the absolute path, the size and the checksum of what is on the box.
 
-**On a box with a recorded tool-access level** (#3678), platform runs execute
-as the unprivileged run user (`ctn-run`), which cannot read the owner's home.
-There "the box user" above is the run user: the file goes into the run user's
-home, is handed to the run user, and the run user's own script places it.
+**For a platform run on a box with a recorded tool-access level** (#3678),
+platform runs execute as the unprivileged run user (`ctn-run`), which cannot
+read the owner's home. Set `for_run` (CLI `--for-run`, MCP `for_run`) on a
+write that is an input for a run, and "the box user" above is the run user: the
+file goes into the run user's home, is handed to the run user, and the run
+user's own script places it. Without `for_run` the file stays in the owner's
+home, where an SSH session (which runs as the owner) reads it.
 
 - The run user is created first if the box has not had a run yet (the same
   idempotent root step a run takes), so a file can be written before the first
@@ -445,15 +448,20 @@ home, is handed to the run user, and the run user's own script places it.
   is relative to on such a box. The response's `path` is the absolute path in
   that home, so name the file to the run from there rather than assuming the
   owner's home.
-- The level is read before the box is touched. A level that cannot be read, or
+- The level is read before the box is touched. With `for_run`, a level that cannot be read, or
   a run user that cannot be created, is `UNAVAILABLE` and writes nothing; the
   file is never placed in the owner's home as a fallback.
-- `WriteBoxFileStream` behaves the same way. A box with no recorded level is
-  unchanged: the owner's home, owned by the owner.
+- A path the run staging step rewrites at each run start (`.claude/settings.json`,
+  `.claude/containarium-mcp.json`, `.gitconfig`, the manifest, the staged binaries
+  and anything under `.claude/skills`) is `INVALID_ARGUMENT` in the run user's
+  home, since the file would be lost at the next run (#3701).
+- `WriteBoxFileStream` takes the same `for_run` header field and behaves the
+  same way. `for_run` on a box with no recorded level changes nothing: the
+  owner's home, owned by the owner.
 
 A daemon that does this lists `box_files_run_user` in `SystemInfo.capabilities`.
-An older daemon writes into the owner's home whatever the level, where the run
-user cannot read the file.
+An older daemon ignores `for_run` and writes into the owner's home, where the
+run user cannot read the file.
 
 **Limits.** The 2 MiB cap applies to each call; there is no daemon-side quota
 across calls (#3559). The total a caller can write is bounded by the box's own

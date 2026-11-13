@@ -1769,9 +1769,9 @@ func (x *TailBoxRunLogResponse) GetStderrDropped() bool {
 }
 
 // WriteBoxFileRequest writes one file into a box user's home directory (#3548).
-// "The box user" is the user platform runs execute as: the box's owner, or, on
-// a box with a recorded tool-access level, the unprivileged run user (#3678).
-// The file is owned by that user, in that user's home.
+// By default the file is placed as the box's owner, in the owner's home. With
+// for_run set, on a box with a recorded tool-access level, it is placed as the
+// unprivileged run user platform runs execute as, in that user's home (#3678).
 type WriteBoxFileRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The box owner's username (the box is <username>-container).
@@ -1787,7 +1787,16 @@ type WriteBoxFileRequest struct {
 	Mode string `protobuf:"bytes,4,opt,name=mode,proto3" json:"mode,omitempty"`
 	// Lowercase hex SHA-256 of content. Optional; when set, the bytes that land
 	// on the box are checked against it before the file appears.
-	Sha256        string `protobuf:"bytes,5,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	Sha256 string `protobuf:"bytes,5,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	// The file is an input for a platform run (a StartBoxRun turn). On a box
+	// with a recorded tool-access level the run executes as the unprivileged
+	// run user, so the file is placed in that user's home, owned by it, where the
+	// run can read it and no other non-root user can; path is then relative to
+	// that home, and the run user is created if the box has not had a run yet.
+	// On a box with no recorded level this changes nothing. Unset (the default),
+	// the file goes into the box owner's home, where an SSH session reads it.
+	// Needs the "box_files_run_user" capability; an older daemon ignores it.
+	ForRun        bool `protobuf:"varint,6,opt,name=for_run,json=forRun,proto3" json:"for_run,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1857,10 +1866,17 @@ func (x *WriteBoxFileRequest) GetSha256() string {
 	return ""
 }
 
+func (x *WriteBoxFileRequest) GetForRun() bool {
+	if x != nil {
+		return x.ForRun
+	}
+	return false
+}
+
 type WriteBoxFileResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Absolute path of the file on the box: under the run user's home on a box
-	// with a recorded tool-access level, under the owner's home otherwise.
+	// Absolute path of the file on the box: under the run user's home when
+	// for_run placed it there, under the owner's home otherwise.
 	Path string `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
 	// Bytes written.
 	Size int64 `protobuf:"varint,2,opt,name=size,proto3" json:"size,omitempty"`
@@ -2024,7 +2040,9 @@ type WriteBoxFileStreamHeader struct {
 	Sha256 string `protobuf:"bytes,4,opt,name=sha256,proto3" json:"sha256,omitempty"`
 	// Total bytes the stream carries, at most 64 MiB. A stream that ends short
 	// of it, or carries more, is INVALID_ARGUMENT and leaves no file.
-	Size          int64 `protobuf:"varint,5,opt,name=size,proto3" json:"size,omitempty"`
+	Size int64 `protobuf:"varint,5,opt,name=size,proto3" json:"size,omitempty"`
+	// Same as WriteBoxFileRequest.for_run.
+	ForRun        bool `protobuf:"varint,6,opt,name=for_run,json=forRun,proto3" json:"for_run,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2092,6 +2110,13 @@ func (x *WriteBoxFileStreamHeader) GetSize() int64 {
 		return x.Size
 	}
 	return 0
+}
+
+func (x *WriteBoxFileStreamHeader) GetForRun() bool {
+	if x != nil {
+		return x.ForRun
+	}
+	return false
 }
 
 // WriteBoxFileStreamResponse is WriteBoxFileResponse for the streamed form.
@@ -3608,13 +3633,14 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"end_offset\x18\x02 \x01(\x03R\tendOffset\x12\x1c\n" +
 	"\ttruncated\x18\x03 \x01(\bR\ttruncated\x12\x14\n" +
 	"\x05ended\x18\x04 \x01(\bR\x05ended\x12%\n" +
-	"\x0estderr_dropped\x18\x06 \x01(\bR\rstderrDroppedJ\x04\b\x05\x10\x06\"\x8b\x01\n" +
+	"\x0estderr_dropped\x18\x06 \x01(\bR\rstderrDroppedJ\x04\b\x05\x10\x06\"\xa4\x01\n" +
 	"\x13WriteBoxFileRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x18\n" +
 	"\acontent\x18\x03 \x01(\fR\acontent\x12\x12\n" +
 	"\x04mode\x18\x04 \x01(\tR\x04mode\x12\x16\n" +
-	"\x06sha256\x18\x05 \x01(\tR\x06sha256\"V\n" +
+	"\x06sha256\x18\x05 \x01(\tR\x06sha256\x12\x17\n" +
+	"\afor_run\x18\x06 \x01(\bR\x06forRun\"V\n" +
 	"\x14WriteBoxFileResponse\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n" +
 	"\x04size\x18\x02 \x01(\x03R\x04size\x12\x16\n" +
@@ -3622,13 +3648,14 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\x19WriteBoxFileStreamRequest\x12C\n" +
 	"\x06header\x18\x01 \x01(\v2).containarium.v1.WriteBoxFileStreamHeaderH\x00R\x06header\x12\x14\n" +
 	"\x04data\x18\x02 \x01(\fH\x00R\x04dataB\x06\n" +
-	"\x04part\"\x8a\x01\n" +
+	"\x04part\"\xa3\x01\n" +
 	"\x18WriteBoxFileStreamHeader\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x12\n" +
 	"\x04mode\x18\x03 \x01(\tR\x04mode\x12\x16\n" +
 	"\x06sha256\x18\x04 \x01(\tR\x06sha256\x12\x12\n" +
-	"\x04size\x18\x05 \x01(\x03R\x04size\"\\\n" +
+	"\x04size\x18\x05 \x01(\x03R\x04size\x12\x17\n" +
+	"\afor_run\x18\x06 \x01(\bR\x06forRun\"\\\n" +
 	"\x1aWriteBoxFileStreamResponse\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n" +
 	"\x04size\x18\x02 \x01(\x03R\x04size\x12\x16\n" +

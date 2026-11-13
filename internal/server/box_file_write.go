@@ -19,11 +19,11 @@ import (
 // WriteBoxFile (#3548): put one file in a box user's home so a run can read it,
 // with no SSH client and no bytes embedded in a `command` run.
 //
-// "The box user" is whoever platform-started runs execute as (#3678): the
-// box's owner, or, on a box with a recorded tool-access level, the
-// unprivileged run user, whose home is private to it. The file goes into that
-// user's home, owned by that user, so a run can read it and no other non-root
-// user on the box can.
+// "The box user" is the box's owner by default. A write made for a platform
+// run (for_run, #3678) on a box with a recorded tool-access level goes to the
+// unprivileged run user instead, whose home is private to it: the run executes
+// as that user, so it can read the file and no other non-root user on the box
+// can. A plain write stays in the owner's home, where an SSH session reads it.
 //
 // The bytes travel through the container file API, never through a shell, so
 // content can never be read as a command. That API writes as root, though, and
@@ -40,9 +40,9 @@ const (
 	MaxBoxFileBytes = coderun.MaxBoxFileBytes
 	// DaemonCapBoxFiles: the WriteBoxFile RPC (#3548).
 	DaemonCapBoxFiles = "box_files"
-	// DaemonCapBoxFilesRunUser: on a box with a recorded tool-access level,
-	// WriteBoxFile and WriteBoxFileStream place the file in the unprivileged run
-	// user's home, owned by the run user (#3678).
+	// DaemonCapBoxFilesRunUser: with for_run set, on a box with a recorded
+	// tool-access level, WriteBoxFile and WriteBoxFileStream place the file in
+	// the unprivileged run user's home, owned by the run user (#3678).
 	DaemonCapBoxFilesRunUser = "box_files_run_user"
 
 	boxFileDefaultMode     = "0600"
@@ -74,7 +74,7 @@ func cleanBoxFilePath(p string) (string, error) { return coderun.CleanHomeRelPat
 
 // WriteBoxFile implements pb.ContainerServiceServer.
 func (s *ContainerServer) WriteBoxFile(ctx context.Context, req *pb.WriteBoxFileRequest) (*pb.WriteBoxFileResponse, error) {
-	f, err := validateBoxFileTarget(req.GetUsername(), req.GetPath(), req.GetMode(), req.GetSha256())
+	f, err := validateBoxFileTarget(req.GetUsername(), req.GetPath(), req.GetMode(), req.GetSha256(), req.GetForRun())
 	if err != nil {
 		return nil, err
 	}
@@ -100,17 +100,19 @@ func (s *ContainerServer) WriteBoxFile(ctx context.Context, req *pb.WriteBoxFile
 	return &pb.WriteBoxFileResponse{Path: f.dst, Size: int64(len(req.GetContent())), Sha256: got}, nil
 }
 
-// boxFileTarget is a validated write request: who, where, how. user (the OS
-// user the file is placed as, see boxFileUser) and dst are set by placeBoxFile
-// once the home directory is known.
+// boxFileTarget is a validated write request: who, where, how. forRun marks a
+// file for a platform run. user (the OS user the file is placed as, see
+// boxFileUser) and dst are set by placeBoxFile once the home directory is
+// known.
 type boxFileTarget struct {
 	username, rel, mode, want string
+	forRun                    bool
 	user, dst                 string
 }
 
 // validateBoxFileTarget checks what WriteBoxFile and WriteBoxFileStream share,
 // before the box is touched: the owner, the path, the mode and the checksum.
-func validateBoxFileTarget(username, p, mode, want string) (*boxFileTarget, error) {
+func validateBoxFileTarget(username, p, mode, want string, forRun bool) (*boxFileTarget, error) {
 	if err := validateBoxRunOwner(username); err != nil {
 		return nil, err
 	}
@@ -127,7 +129,7 @@ func validateBoxFileTarget(username, p, mode, want string) (*boxFileTarget, erro
 	if want != "" && !boxFileSHA256Pattern.MatchString(want) {
 		return nil, status.Error(codes.InvalidArgument, "sha256 must be 64 lowercase hex characters")
 	}
-	return &boxFileTarget{username: username, rel: rel, mode: mode, want: want}, nil
+	return &boxFileTarget{username: username, rel: rel, mode: mode, want: want, forRun: forRun}, nil
 }
 
 // placeBoxFile resolves the user and home the file is placed as (see
@@ -142,13 +144,16 @@ func (s *ContainerServer) placeBoxFile(ctx context.Context, f *boxFileTarget, wr
 		return "", status.Error(codes.Unavailable, "no container backend to write a file on")
 	}
 	box := f.username + "-container"
-	user, home, err := s.boxFileUser(ctx, rootExec, userExec, box, f.username)
+	user, home, err := s.boxFileUser(ctx, rootExec, userExec, box, f.username, f.forRun)
 	if err != nil {
 		return "", err
 	}
 	home = strings.TrimSpace(home)
 	if !path.IsAbs(home) || path.Clean(home) != home || strings.ContainsAny(home, "\n\x00") {
 		return "", status.Errorf(codes.FailedPrecondition, "the home directory of %s %q is not a plain absolute path", user, home)
+	}
+	if user == boxRunUnprivilegedUser && boxRunManagedPath(f.rel) {
+		return "", status.Errorf(codes.InvalidArgument, "%s is managed by the platform: each run start rewrites it, so a file written there would be lost; choose another path (#3701)", f.rel)
 	}
 	f.user, f.dst = user, path.Join(home, f.rel)
 
@@ -184,18 +189,21 @@ func (s *ContainerServer) placeBoxFile(ctx context.Context, f *boxFileTarget, wr
 }
 
 // boxFileUser returns the OS user a file is placed as and that user's home
-// (#3678): the box's owner, or, on a box with a recorded tool-access level, the
-// unprivileged run user its platform runs execute as. The run user's home is
-// 0700 and the file is placed by the run user itself, so the run can read the
-// file and no other non-root user on the box can. The run user is created if
-// it does not exist yet (the same idempotent root step a run takes), so a file
-// can be written before the box's first run. The level is read before anything
-// on the box is changed, and a read error refuses the write rather than
-// placing the file where the run cannot read it.
-func (s *ContainerServer) boxFileUser(ctx context.Context, rootExec boxScriptFunc, userExec boxRunStartFunc, box, username string) (user, home string, err error) {
-	level, err := s.boxRunRecordedToolAccess(ctx, username)
-	if err != nil {
-		return "", "", status.Errorf(codes.Unavailable, "read the tool-access level of %q: %v", username, err)
+// (#3678): the box's owner, or, for a write made for a platform run (forRun) on
+// a box with a recorded tool-access level, the unprivileged run user the run
+// executes as. A write not made for a run is the owner's and reads no level.
+// The run user's home is 0700 and the file is placed by the run user itself, so
+// the run can read the file and no other non-root user on the box can. The run
+// user is created if it does not exist yet (the same idempotent root step a run
+// takes), so a file can be written before the box's first run. The level is read
+// before anything on the box is changed, and a read error refuses the write
+// rather than placing the file where the run cannot read it.
+func (s *ContainerServer) boxFileUser(ctx context.Context, rootExec boxScriptFunc, userExec boxRunStartFunc, box, username string, forRun bool) (user, home string, err error) {
+	level := ""
+	if forRun {
+		if level, err = s.boxRunRecordedToolAccess(ctx, username); err != nil {
+			return "", "", status.Errorf(codes.Unavailable, "read the tool-access level of %q: %v", username, err)
+		}
 	}
 	if level == "" {
 		home, err := resolveBoxRunHome(userExec, box, username)

@@ -83,6 +83,21 @@ func TestPutFileTool_ModeAndChecksumArePassedThrough(t *testing.T) {
 	}
 }
 
+func TestPutFileTool_ForRunIsPassedThrough(t *testing.T) {
+	for _, forRun := range []bool{false, true} {
+		var got pb.WriteBoxFileRequest
+		srv := putFileServer(t, http.StatusOK, `{}`, &got, nil, nil)
+		if _, err := handlePutFile(NewClient(srv.URL, "tok"), map[string]interface{}{
+			"box": "alice", "path": "a", "content": "hello", "for_run": forRun,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got.GetForRun() != forRun {
+			t.Errorf("for_run %v: sent %v", forRun, &got)
+		}
+	}
+}
+
 func TestPutFileTool_EmptyTextIsAnEmptyFile(t *testing.T) {
 	var got pb.WriteBoxFileRequest
 	srv := putFileServer(t, http.StatusOK, `{}`, &got, nil, nil)

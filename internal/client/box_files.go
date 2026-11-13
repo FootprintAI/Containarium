@@ -34,6 +34,7 @@ type BoxFileParams struct {
 	Content []byte
 	Mode    string // "" (0600), "0600" or "0400"
 	SHA256  string // lowercase hex; optional
+	ForRun  bool   // an input for a platform run: the run user's home on a box with a tool-access level (#3678)
 }
 
 // BoxFilesUnsupportedMessage is what both surfaces say to a daemon without
@@ -89,7 +90,7 @@ func PutBoxFile(c BoxFileWriter, p BoxFileParams) (*pb.WriteBoxFileResponse, err
 		want = hex.EncodeToString(sum[:])
 	}
 	resp, err := c.WriteBoxFile(&pb.WriteBoxFileRequest{
-		Username: p.Box, Path: p.Path, Content: p.Content, Mode: p.Mode, Sha256: want,
+		Username: p.Box, Path: p.Path, Content: p.Content, Mode: p.Mode, Sha256: want, ForRun: p.ForRun,
 	})
 	if err != nil {
 		return nil, boxFileError(p.Box, p.Path, err)
