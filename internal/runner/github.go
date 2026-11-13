@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"github.com/footprintai/containarium/internal/limitio"
 	"net/http"
 	"time"
 )
@@ -62,7 +62,7 @@ func (c *githubClient) ListRunners(ctx context.Context, repo, pat string) ([]Reg
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return nil, fmt.Errorf("github list runners: HTTP %d: %s%s",
 			resp.StatusCode, string(body), target.scopeHint(resp.StatusCode))
 	}
@@ -111,7 +111,7 @@ func (c *githubClient) RemoveRunner(ctx context.Context, repo, pat string, runne
 		// Idempotent: a runner that's already gone is fine.
 		return nil
 	default:
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("github delete runner: HTTP %d: %s%s",
 			resp.StatusCode, string(body), target.scopeHint(resp.StatusCode))
 	}
