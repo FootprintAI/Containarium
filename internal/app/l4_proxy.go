@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
+	"github.com/footprintai/containarium/internal/limitio"
 	"log"
 	"net/http"
 	"strings"
@@ -93,7 +93,7 @@ func (m *L4ProxyManager) IsL4Active() bool {
 	if resp.StatusCode != http.StatusOK {
 		return false
 	}
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	trimmed := strings.TrimSpace(string(body))
 	return len(trimmed) > 0 && trimmed != "null"
 }
@@ -540,7 +540,7 @@ func (m *L4ProxyManager) getFullConfig() (map[string]interface{}, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -566,7 +566,7 @@ func (m *L4ProxyManager) loadConfig(config map[string]interface{}) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("load failed (status %d): %s", resp.StatusCode, string(body))
 	}
 

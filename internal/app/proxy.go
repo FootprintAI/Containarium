@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
+	"github.com/footprintai/containarium/internal/limitio"
 	"log"
 	"net/http"
 	"strconv"
@@ -301,7 +301,7 @@ func (p *ProxyManager) addRouteWithProtocol(subdomain, containerIP string, port 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("caddy returned error (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -354,7 +354,7 @@ func (p *ProxyManager) RemoveTLSSubject(domain string) error {
 	}
 
 	var policies []CaddyTLSAutomationPolicy
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if len(bytes.TrimSpace(body)) == 0 || string(bytes.TrimSpace(body)) == "null" {
 		return nil
 	}
@@ -393,7 +393,7 @@ func (p *ProxyManager) RemoveTLSSubject(domain string) error {
 	}
 	defer patchResp.Body.Close()
 	if patchResp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(patchResp.Body)
+		errBody, _ := limitio.ReadAll(patchResp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("caddy returned %d patching TLS policies: %s", patchResp.StatusCode, string(errBody))
 	}
 	return nil
@@ -558,7 +558,7 @@ func (p *ProxyManager) patchTLSPolicies(url string, policies []CaddyTLSAutomatio
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("caddy returned error updating TLS policy (status %d): %s", resp.StatusCode, string(body))
 	}
 	return nil
@@ -607,12 +607,12 @@ func (p *ProxyManager) ProvisionTLS(domain string) error {
 	// so a duplicate carrying different issuers can shadow the intended one
 	// (#1590).
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("caddy returned %d reading TLS policies: %s",
 			resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return fmt.Errorf("failed to read TLS policies response: %w", err)
 	}
@@ -702,7 +702,7 @@ func (p *ProxyManager) ProvisionTLS(domain string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("caddy returned error creating TLS policy (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -775,12 +775,12 @@ func (p *ProxyManager) EnsureTLSSubjects(domains []string) error {
 	// duplicate policy alongside the real ones. This runs on every sync tick,
 	// so a flapping admin API would accumulate them.
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("caddy returned %d reading TLS policies: %s",
 			resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return fmt.Errorf("read TLS policies: %w", err)
 	}
@@ -890,7 +890,7 @@ func (p *ProxyManager) EnsureTLSSubjects(domains []string) error {
 	defer postResp.Body.Close()
 
 	if postResp.StatusCode != http.StatusOK && postResp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(postResp.Body)
+		body, _ := limitio.ReadAll(postResp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("caddy returned %d creating TLS policy: %s", postResp.StatusCode, string(body))
 	}
 	return nil
@@ -970,7 +970,7 @@ func (p *ProxyManager) removeRouteByDomain(domain string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("failed to list routes (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -1026,7 +1026,7 @@ func (p *ProxyManager) ListRoutes() ([]Route, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		// Handle case when no routes are configured (path doesn't exist in Caddy config)
 		// Caddy returns 400 with "invalid traversal path" when the http app or server doesn't exist
 		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound {
@@ -1150,7 +1150,7 @@ func (p *ProxyManager) EnsureServerConfig() error {
 	// []CaddyRouteTyped, whose Handle field is the []CaddyHandler interface
 	// slice encoding/json cannot unmarshal into (the ensureHTTPApp bug this
 	// file already carries a regression test for).
-	body, err := io.ReadAll(resp.Body)
+	body, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return fmt.Errorf("failed to read existing server config: %w", err)
 	}
@@ -1240,7 +1240,7 @@ func (p *ProxyManager) ensureTLSApp() error {
 	// Check if it's null or empty. Caddy returns "null\n" (with trailing
 	// newline) for a missing config path, so trim whitespace before
 	// comparing.
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	trimmed := strings.TrimSpace(string(body))
 	if trimmed == "" || trimmed == "null" {
 		return p.createTLSApp()
@@ -1282,7 +1282,7 @@ func (p *ProxyManager) createTLSApp() error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("caddy returned error creating TLS app (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -1317,7 +1317,7 @@ func (p *ProxyManager) ensureHTTPApp() error {
 		return p.createHTTPApp()
 	}
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	trimmed := strings.TrimSpace(string(body))
 	if trimmed == "" || trimmed == "null" {
 		return p.createHTTPApp()
@@ -1372,7 +1372,7 @@ func (p *ProxyManager) createHTTPApp() error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("caddy returned error creating HTTP app (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -1497,10 +1497,10 @@ func (p *ProxyManager) baseConfigIntact() (bool, error) {
 		return false, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return false, fmt.Errorf("probe http server config: status %d: %s", resp.StatusCode, string(body))
 	}
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	trimmed := strings.TrimSpace(string(body))
 	if trimmed == "" || trimmed == "null" {
 		return false, nil
@@ -1550,7 +1550,7 @@ func (p *ProxyManager) getFullConfig() (map[string]interface{}, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
+		b, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return nil, fmt.Errorf("caddy returned %d: %s", resp.StatusCode, string(b))
 	}
 	var config map[string]interface{}
@@ -1578,7 +1578,7 @@ func (p *ProxyManager) loadConfig(config map[string]interface{}) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
+		b, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("caddy /load returned %d: %s", resp.StatusCode, string(b))
 	}
 	return nil
@@ -1610,7 +1610,7 @@ func (p *ProxyManager) createServerConfig() error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("caddy returned error (status %d): %s", resp.StatusCode, string(body))
 	}
 
