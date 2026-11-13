@@ -2329,7 +2329,7 @@ skipAppHosting:
 	// public proxy list) or spread across non-web ports (a scanner).
 	// Record-only; default thresholds. Independent of the mining thresholds.
 	if threatDetectEngine != nil {
-		threatDetectEngine.Register(threatdetect.NewOutboundFanoutRule(threatdetect.OutboundFanoutThresholds{}))
+		threatDetectEngine.Register(threatdetect.NewOutboundFanoutRule(threatdetect.OutboundFanoutThresholds{}).RespondWithHighSeverity(threatCfg.FanoutRespond))
 	}
 	// Miner-signature rule (#2638): a known miner's name, argv marker or
 	// executable hash on an exec. Like the bad-destination list, the list is

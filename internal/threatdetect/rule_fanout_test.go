@@ -451,3 +451,34 @@ func TestOutboundFanoutRule_BoxChangeResetsHistory(t *testing.T) {
 		t.Fatalf("findings = %+v, want none: 10 addresses on each side of the move", got)
 	}
 }
+
+// Severity matrix for the opt-in response path: HIGH only when the operator
+// opted in AND the finding names its box.
+func TestOutboundFanoutRule_Severity(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		respond bool
+		box     bool
+		want    pb.ThreatSeverity
+	}{
+		{"default, box named", false, true, pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM},
+		{"default, no box", false, false, pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM},
+		{"respond, box named", true, true, pb.ThreatSeverity_THREAT_SEVERITY_HIGH},
+		{"respond, no box: the responder acts on a container and none is known", true, false, pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newFanoutHarness(t, OutboundFanoutThresholds{})
+			h.r.RespondWithHighSeverity(tc.respond)
+			tenants := map[string]string{fanoutBoxIP: "org"}
+			boxes := map[string]string{}
+			if tc.box {
+				boxes[fanoutBoxIP] = "box-x"
+			}
+			h.feedBoxes(tenants, boxes, fanoutFlows(fanoutBoxIP, 20, 3128, 6))
+			got := h.sweep()
+			if len(got) != 1 || got[0].Severity != tc.want {
+				t.Fatalf("findings = %+v, want one at %v", got, tc.want)
+			}
+		})
+	}
+}

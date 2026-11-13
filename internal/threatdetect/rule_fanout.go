@@ -136,6 +136,11 @@ type fanoutSource struct {
 type OutboundFanoutRule struct {
 	th OutboundFanoutThresholds
 
+	// respond raises a finding that names its box to HIGH, which is what
+	// makes the process responder eligible to act on it (see RespondsTo).
+	// Off by default: the rule is record-only at MEDIUM.
+	respond bool
+
 	mu        sync.Mutex
 	sources   map[netip.Addr]*fanoutSource
 	capLogged bool
@@ -144,6 +149,17 @@ type OutboundFanoutRule struct {
 // NewOutboundFanoutRule builds the rule; zero threshold fields take defaults.
 func NewOutboundFanoutRule(th OutboundFanoutThresholds) *OutboundFanoutRule {
 	return &OutboundFanoutRule{th: th.withDefaults(), sources: make(map[netip.Addr]*fanoutSource)}
+}
+
+// RespondWithHighSeverity opts the rule into the response path: a finding that
+// names its box is raised at HIGH so the process responder may act on it under
+// the operator's process policy (whose default action is ALERT, i.e. nothing is
+// throttled or frozen until the operator chooses one). A finding with no named
+// box stays MEDIUM: the responder acts on a container, and the rule never
+// guesses one. Returns the rule for chaining at construction.
+func (r *OutboundFanoutRule) RespondWithHighSeverity(on bool) *OutboundFanoutRule {
+	r.respond = on
+	return r
 }
 
 func (r *OutboundFanoutRule) ID() pb.ThreatRuleId {
@@ -265,10 +281,10 @@ func (r *OutboundFanoutRule) Sweep(ctx RuleContext, now time.Time) []RawFinding 
 			continue
 		}
 		if s.dirtyProxy && len(s.proxy) >= r.th.ProxyDistinct {
-			out = append(out, fanoutFinding(src, s, fanoutSubjectProxy, s.proxy))
+			out = append(out, r.fanoutFinding(src, s, fanoutSubjectProxy, s.proxy))
 		}
 		if s.dirtyWide && len(s.wide) >= r.th.WideDistinct {
-			out = append(out, fanoutFinding(src, s, fanoutSubjectWide, s.wide))
+			out = append(out, r.fanoutFinding(src, s, fanoutSubjectWide, s.wide))
 		}
 		s.dirtyProxy, s.dirtyWide = false, false
 	}
@@ -277,7 +293,7 @@ func (r *OutboundFanoutRule) Sweep(ctx RuleContext, now time.Time) []RawFinding 
 
 // fanoutFinding builds one finding with a capped, deterministic sample of
 // the qualifying flows (address order) as evidence.
-func fanoutFinding(src netip.Addr, s *fanoutSource, subject string, set map[netip.Addr]fanoutEntry) RawFinding {
+func (r *OutboundFanoutRule) fanoutFinding(src netip.Addr, s *fanoutSource, subject string, set map[netip.Addr]fanoutEntry) RawFinding {
 	addrs := make([]netip.Addr, 0, len(set))
 	for a := range set {
 		addrs = append(addrs, a)
@@ -316,9 +332,13 @@ func fanoutFinding(src netip.Addr, s *fanoutSource, subject string, set map[neti
 	if s.container != "" {
 		subject += ":" + s.container
 	}
+	severity := pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM
+	if r.respond && s.container != "" {
+		severity = pb.ThreatSeverity_THREAT_SEVERITY_HIGH
+	}
 	return RawFinding{
 		Rule:      pb.ThreatRuleId_THREAT_RULE_ID_OUTBOUND_FANOUT,
-		Severity:  pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM,
+		Severity:  severity,
 		TenantID:  s.tenantID,
 		Container: s.container,
 		Subject:   subject,

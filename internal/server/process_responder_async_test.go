@@ -350,3 +350,23 @@ func TestQueuedResponse_StillOpenIsActedOn(t *testing.T) {
 		t.Fatal("a current job was skipped")
 	}
 }
+
+// #3709: a fan-out finding is respondable only at HIGH and only when it names
+// its box. At its default MEDIUM it is record-only.
+func TestRespondable_OutboundFanout(t *testing.T) {
+	mk := func(sev pb.ThreatSeverity, box string) *threatdetect.Finding {
+		return &threatdetect.Finding{
+			Rule: pb.ThreatRuleId_THREAT_RULE_ID_OUTBOUND_FANOUT, Severity: sev,
+			Container: box, State: threatdetect.FindingStateOpen,
+		}
+	}
+	if !respondable(mk(pb.ThreatSeverity_THREAT_SEVERITY_HIGH, "box-x")) {
+		t.Error("an opted-in HIGH fan-out finding naming its box must be respondable")
+	}
+	if respondable(mk(pb.ThreatSeverity_THREAT_SEVERITY_MEDIUM, "box-x")) {
+		t.Error("the default MEDIUM fan-out finding must stay record-only")
+	}
+	if respondable(mk(pb.ThreatSeverity_THREAT_SEVERITY_HIGH, "")) {
+		t.Error("a finding that names no box has nothing to act on")
+	}
+}
