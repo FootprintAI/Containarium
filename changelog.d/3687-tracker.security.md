@@ -1,0 +1,1 @@
+- **Tracker API responses are read through the 16 MiB cap** (#3687). The GitHub and GitLab tracker adapters read each response body whole with `io.ReadAll`. They now read through the shared capped reader; a body over the cap is an error.

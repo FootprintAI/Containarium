@@ -7,7 +7,7 @@ package github
 import (
 	"context"
 	"fmt"
-	"io"
+	"github.com/footprintai/containarium/internal/limitio"
 	"net/http"
 	"strings"
 
@@ -131,10 +131,10 @@ func (a *Adapter) describeViaUser(ctx context.Context, base, token string) ([]st
 	case http.StatusOK:
 		return splitScopes(resp.Header.Get("X-OAuth-Scopes")), nil
 	case http.StatusUnauthorized, http.StatusForbidden:
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return nil, fmt.Errorf("%w: HTTP %d: %s", tracker.ErrCredentialInvalid, resp.StatusCode, string(body))
 	default:
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return nil, fmt.Errorf("github describe credential: HTTP %d: %s", resp.StatusCode, string(body))
 	}
 }
@@ -156,10 +156,10 @@ func (a *Adapter) probeRateLimit(ctx context.Context, base, token string) error 
 	case http.StatusOK:
 		return nil
 	case http.StatusUnauthorized, http.StatusForbidden:
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("%w: HTTP %d: %s", tracker.ErrCredentialInvalid, resp.StatusCode, string(body))
 	default:
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return fmt.Errorf("github describe credential: HTTP %d: %s", resp.StatusCode, string(body))
 	}
 }
