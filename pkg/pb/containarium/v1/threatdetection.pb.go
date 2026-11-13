@@ -126,21 +126,30 @@ const (
 	// unattended containment never silently becomes permanent. Subject is the
 	// container name; the response on the original HIGH finding is EXPIRED.
 	ThreatRuleId_THREAT_RULE_ID_PROCESS_ACTION_EXPIRED ThreatRuleId = 9
+	// A box opened connections to many distinct external addresses inside a
+	// short window: either on open-proxy ports (3128, 1080, 8118, 8888, ...),
+	// the shape of a DDoS / scraping tool rotating through a public proxy
+	// list, or to a very wide spread of addresses on any non-web port, the
+	// shape of a scanner. MEDIUM, record-only. Subject is "proxy-fanout" or
+	// "wide-fanout"; evidence is a capped sample of the qualifying flows.
+	// Thresholds: OutboundFanoutThresholds in internal/threatdetect.
+	ThreatRuleId_THREAT_RULE_ID_OUTBOUND_FANOUT ThreatRuleId = 10
 )
 
 // Enum value maps for ThreatRuleId.
 var (
 	ThreatRuleId_name = map[int32]string{
-		0: "THREAT_RULE_ID_UNSPECIFIED",
-		1: "THREAT_RULE_ID_BAD_DESTINATION",
-		2: "THREAT_RULE_ID_CROSS_TENANT_FLOW",
-		3: "THREAT_RULE_ID_DENY_BURST",
-		4: "THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH",
-		5: "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER",
-		8: "THREAT_RULE_ID_SENTRY_UNAVAILABLE",
-		6: "THREAT_RULE_ID_MINING_BEHAVIOR",
-		7: "THREAT_RULE_ID_MINER_SIGNATURE",
-		9: "THREAT_RULE_ID_PROCESS_ACTION_EXPIRED",
+		0:  "THREAT_RULE_ID_UNSPECIFIED",
+		1:  "THREAT_RULE_ID_BAD_DESTINATION",
+		2:  "THREAT_RULE_ID_CROSS_TENANT_FLOW",
+		3:  "THREAT_RULE_ID_DENY_BURST",
+		4:  "THREAT_RULE_ID_BOX_SSHD_PASSWORD_AUTH",
+		5:  "THREAT_RULE_ID_BOX_ROGUE_SSH_LISTENER",
+		8:  "THREAT_RULE_ID_SENTRY_UNAVAILABLE",
+		6:  "THREAT_RULE_ID_MINING_BEHAVIOR",
+		7:  "THREAT_RULE_ID_MINER_SIGNATURE",
+		9:  "THREAT_RULE_ID_PROCESS_ACTION_EXPIRED",
+		10: "THREAT_RULE_ID_OUTBOUND_FANOUT",
 	}
 	ThreatRuleId_value = map[string]int32{
 		"THREAT_RULE_ID_UNSPECIFIED":            0,
@@ -153,6 +162,7 @@ var (
 		"THREAT_RULE_ID_MINING_BEHAVIOR":        6,
 		"THREAT_RULE_ID_MINER_SIGNATURE":        7,
 		"THREAT_RULE_ID_PROCESS_ACTION_EXPIRED": 9,
+		"THREAT_RULE_ID_OUTBOUND_FANOUT":        10,
 	}
 )
 
@@ -3544,7 +3554,7 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x13THREAT_SEVERITY_LOW\x10\x01\x12\x1a\n" +
 	"\x16THREAT_SEVERITY_MEDIUM\x10\x02\x12\x18\n" +
 	"\x14THREAT_SEVERITY_HIGH\x10\x03\x12\x1c\n" +
-	"\x18THREAT_SEVERITY_CRITICAL\x10\x04*\x87\x03\n" +
+	"\x18THREAT_SEVERITY_CRITICAL\x10\x04*\xab\x03\n" +
 	"\fThreatRuleId\x12\x1e\n" +
 	"\x1aTHREAT_RULE_ID_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eTHREAT_RULE_ID_BAD_DESTINATION\x10\x01\x12$\n" +
@@ -3555,7 +3565,9 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"!THREAT_RULE_ID_SENTRY_UNAVAILABLE\x10\b\x12\"\n" +
 	"\x1eTHREAT_RULE_ID_MINING_BEHAVIOR\x10\x06\x12\"\n" +
 	"\x1eTHREAT_RULE_ID_MINER_SIGNATURE\x10\a\x12)\n" +
-	"%THREAT_RULE_ID_PROCESS_ACTION_EXPIRED\x10\t*a\n" +
+	"%THREAT_RULE_ID_PROCESS_ACTION_EXPIRED\x10\t\x12\"\n" +
+	"\x1eTHREAT_RULE_ID_OUTBOUND_FANOUT\x10\n" +
+	"*a\n" +
 	"\fFindingState\x12\x1d\n" +
 	"\x19FINDING_STATE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12FINDING_STATE_OPEN\x10\x01\x12\x1a\n" +

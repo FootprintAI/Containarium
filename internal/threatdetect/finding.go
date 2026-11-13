@@ -54,7 +54,8 @@ type FlowEvidence struct {
 	Bytes    int64  `json:"bytes"`
 	Packets  int64  `json:"packets"`
 	// FirstSeen/LastSeen and Matched are set by the mining-behavior rule
-	// (#2635) only; see pb.FlowEvidence.
+	// (#2635) and, for LastSeen and Matched, the outbound fan-out rule
+	// (#3709); unset on other rules' evidence. See pb.FlowEvidence.
 	FirstSeen time.Time `json:"first_seen,omitzero"`
 	LastSeen  time.Time `json:"last_seen,omitzero"`
 	Matched   string    `json:"matched,omitempty"`

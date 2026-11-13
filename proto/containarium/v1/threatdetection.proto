@@ -61,6 +61,14 @@ enum ThreatRuleId {
   // unattended containment never silently becomes permanent. Subject is the
   // container name; the response on the original HIGH finding is EXPIRED.
   THREAT_RULE_ID_PROCESS_ACTION_EXPIRED = 9;
+  // A box opened connections to many distinct external addresses inside a
+  // short window: either on open-proxy ports (3128, 1080, 8118, 8888, ...),
+  // the shape of a DDoS / scraping tool rotating through a public proxy
+  // list, or to a very wide spread of addresses on any non-web port, the
+  // shape of a scanner. MEDIUM, record-only. Subject is "proxy-fanout" or
+  // "wide-fanout"; evidence is a capped sample of the qualifying flows.
+  // Thresholds: OutboundFanoutThresholds in internal/threatdetect.
+  THREAT_RULE_ID_OUTBOUND_FANOUT = 10;
 }
 
 // FindingState is the lifecycle state of a security finding.

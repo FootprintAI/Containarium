@@ -1006,7 +1006,7 @@ func (s *Server) registerTools() {
 		{
 			Name: "list_security_sentry_findings",
 			Description: "List security findings raised by the background threat-detection sentry " +
-				"(#1639-#1642) — mining-abuse egress, cross-tenant flow, and deny-burst detections — " +
+				"(#1639-#1642) — mining-abuse egress, cross-tenant flow, deny-burst, and outbound fan-out (DDoS / proxy-rotation / scanner) detections — " +
 				"with evidence (triggering flow 5-tuples / deny counts). Distinct from " +
 				"`security_findings`, which is the unrelated ClamAV/pentest/ZAP scanner surface.\n\n" +
 				"Every filter is optional. Non-admin callers only ever see their own tenant, " +
