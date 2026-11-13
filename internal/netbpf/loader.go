@@ -562,7 +562,9 @@ const vethPolicyValueSize = 16
 // vethPolicyValue serializes a PolicyConfig into the 16-byte `struct policy_cfg`
 // layout: u32 tenant_id, u8 mode, u8 allow_intra, u8 allow_metadata,
 // u8 egress_mode (the former pad byte), then the box's IPv4 as its 4 wire bytes,
-// u8 flags and 3 pad bytes (#2618, appended). Native byte order for the
+// u8 flags (#2618, appended), then u8 conn_cap_mode and u16 conn_cap_per_sec
+// (#3709, the former 3 pad bytes, so the struct stays 16 bytes). Native byte
+// order for the
 // integers (the kernel reads the map value with native loads); the address
 // stays in network byte order so the program compares it to ip->saddr as-is.
 func vethPolicyValue(cfg PolicyConfig) [vethPolicyValueSize]byte {
@@ -574,6 +576,8 @@ func vethPolicyValue(cfg PolicyConfig) [vethPolicyValueSize]byte {
 	b[7] = cfg.EgressMode
 	copy(b[8:12], cfg.BoxIP[:])
 	b[12] = uint8(cfg.Flags)
+	b[13] = cfg.ConnCapMode
+	binary.NativeEndian.PutUint16(b[14:16], cfg.ConnCapPerSec)
 	return b
 }
 

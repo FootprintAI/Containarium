@@ -40,6 +40,32 @@ type containerView struct {
 	ValidateOnly bool
 }
 
+// applyConnCap stamps the outbound connection-rate cap (#3709) onto every
+// tenant veth's config in the plan. It is a separate pure step, not a
+// planReconcile parameter, because the cap is a daemon-wide switch, not part of
+// any tenant's policy. A validate-only veth (the control plane, an untenanted
+// instance) is never capped: it is not policed at all. perSec 0 leaves the
+// cap off everywhere. enforce is the effective decision: the caller has already
+// folded in the daemon-wide arm, so a cap configured to enforce on a daemon
+// that is not armed only counts.
+func applyConnCap(plan *reconcilePlan, perSec uint16, enforce bool) {
+	if perSec == 0 {
+		return
+	}
+	mode := netbpf.ModeLogOnly
+	if enforce {
+		mode = netbpf.ModeEnforce
+	}
+	for ifindex, cfg := range plan.vethPolicy {
+		if cfg.Flags&netbpf.PolicyFlagValidateOnly != 0 {
+			continue
+		}
+		cfg.ConnCapPerSec = perSec
+		cfg.ConnCapMode = mode
+		plan.vethPolicy[ifindex] = cfg
+	}
+}
+
 // reconcilePlan is the desired BPF map state for one reconcile pass — pure data
 // so planReconcile is unit-testable without a kernel.
 type reconcilePlan struct {

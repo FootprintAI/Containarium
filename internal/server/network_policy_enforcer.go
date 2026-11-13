@@ -90,6 +90,10 @@ type NetworkPolicyEnforcer struct {
 	bus            *events.Bus
 	interval       time.Duration
 	enforceEnabled bool // daemon-wide guard: ENFORCE policies only drop when true
+	// connCapPerSec/connCapEnforce are the daemon-wide outbound connection-rate
+	// cap (#3709): 0 is off. Set before Start via SetEgressConnCap.
+	connCapPerSec  uint16
+	connCapEnforce bool
 
 	// eventDebounce is the trailing debounce on the container-event path
 	// (#3050); the timer path (interval) is not debounced.
@@ -294,6 +298,14 @@ func (e *NetworkPolicyEnforcer) defaultPolicyFor(tenant string) (netpolicy.Compi
 		return netpolicy.CompiledPolicy{}, false
 	}
 	return e.expandPolicy(c, false), true
+}
+
+// SetEgressConnCap sets the daemon-wide outbound connection-rate cap (#3709):
+// perSec new TCP connections per second per box to addresses outside the
+// managed set, 0 for none. enforce asks for drops; they happen only if the
+// enforcer itself is armed. Must be called before Start.
+func (e *NetworkPolicyEnforcer) SetEgressConnCap(perSec uint16, enforce bool) {
+	e.connCapPerSec, e.connCapEnforce = perSec, enforce
 }
 
 // SetImplicitGateway tells the enforcer the bridge gateway address, the
@@ -688,6 +700,8 @@ func (e *NetworkPolicyEnforcer) OnDenyEvent(ctx context.Context, ev netbpf.DenyE
 			kind = "virtual-patch"
 		case netbpf.DenyReasonSpoofedSource:
 			kind = "spoofed-source" // the box sent from an address that is not its own (#2618)
+		case netbpf.DenyReasonConnCap:
+			kind = "conn-cap" // the box exceeded its outbound connection-rate cap (#3709)
 		}
 		log.Printf("[netpolicy] %s: tenant=%q src=%s dst=%s proto=%d dport=%d %s",
 			kind, tenant, ev.Src(), ev.Dst(), ev.Proto, ev.Dport, action)
@@ -914,6 +928,9 @@ func (e *NetworkPolicyEnforcer) reconcile(ctx context.Context) error {
 		return err
 	}
 	plan := planReconcile(views, policies, e.enforceEnabled)
+	// The cap drops only when the operator chose enforce AND the daemon-wide
+	// guard is armed; otherwise it counts and reports, like any other policy.
+	applyConnCap(&plan, e.connCapPerSec, e.connCapEnforce && e.enforceEnabled)
 	// Fail closed on a policy that does not compile (#3518): keep the tenant's
 	// last good egress and deny sets, and log the failure once per change.
 	holdLastGood(&plan, e.egressInstalled, e.denyInstalled)

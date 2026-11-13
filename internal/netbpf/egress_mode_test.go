@@ -91,3 +91,31 @@ func TestFitVethPolicyValue(t *testing.T) {
 		t.Errorf("fit to 20 = %v, want %v then zeros", got, v[:])
 	}
 }
+
+// #3709: the connection-rate cap lives in what used to be the 3 pad bytes after
+// flags, so the struct stays 16 bytes and an older object still loads. Byte 13
+// is conn_cap_mode, bytes 14-15 the native-endian u16 conn_cap_per_sec.
+func TestVethPolicyValue_ConnCapInPadBytes(t *testing.T) {
+	b := vethPolicyValue(PolicyConfig{TenantID: 7, Mode: ModeLogOnly, Flags: PolicyFlagValidateOnly, ConnCapMode: ModeEnforce, ConnCapPerSec: 0x1234})
+	if len(b) != 16 {
+		t.Fatalf("policy_cfg value is %d bytes, want 16 (the cap must not grow the struct)", len(b))
+	}
+	if b[12] != uint8(PolicyFlagValidateOnly) {
+		t.Errorf("flags = %d, the cap must not disturb it", b[12])
+	}
+	if b[13] != ModeEnforce {
+		t.Errorf("conn_cap_mode = %d, want %d", b[13], ModeEnforce)
+	}
+	if got := binary.NativeEndian.Uint16(b[14:16]); got != 0x1234 {
+		t.Errorf("conn_cap_per_sec = %#x, want 0x1234", got)
+	}
+	// Largest representable cap round-trips; and unset is all zero (cap off).
+	mx := vethPolicyValue(PolicyConfig{ConnCapPerSec: 65535})
+	if got := binary.NativeEndian.Uint16(mx[14:16]); got != 65535 {
+		t.Errorf("max cap = %d, want 65535", got)
+	}
+	z := vethPolicyValue(PolicyConfig{TenantID: 7, Mode: ModeEnforce})
+	if z[13] != 0 || z[14] != 0 || z[15] != 0 {
+		t.Errorf("an uncapped box must leave the cap bytes zero, got %v", z[13:16])
+	}
+}

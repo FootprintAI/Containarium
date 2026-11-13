@@ -472,6 +472,41 @@ exec's decode stamp (see *What a match does*) stops one reused by another
 process in the *same* box (skipped as `PID_REUSED`). Only a reuse inside
 the exec-to-decode window, at most one 50 ms ring drain, is not excluded.
 
+## Capping a box's outbound connection rate (opt-in)
+
+Detection tells you a box is acting like a DDoS or scraping tool; the connection
+cap limits how much damage one can do before anyone reads the finding. The eBPF
+network policy counts each box's **new outbound TCP connections** (a SYN with no
+ACK) to an address **outside the managed set** in a one-second window, and over
+the cap it either counts the excess or drops it.
+
+| Variable | Meaning |
+|----------|---------|
+| `CONTAINARIUM_EGRESS_CONN_CAP_PER_SEC` | New outbound connections per second per box. Unset, `0`, negative, non-numeric or above 65535 means **no cap**. |
+| `CONTAINARIUM_EGRESS_CONN_CAP_MODE` | `log_only` (default) counts and reports, never drops. `enforce` drops connections over the cap, **and only when the daemon-wide network-policy enforce switch is armed**; otherwise the cap still only counts. |
+
+Set them on the daemon and restart; the daemon logs the effective cap and mode at
+startup. Off by default, so upgrading changes nothing until you opt in.
+
+- **Soak first.** Run `log_only` with a rate you think is generous, then read the
+  `conn-cap` deny events in the daemon log and the audit trail. The program emits
+  one event per box per second window, when the count first passes the cap, so a
+  sustained burst does not flood the event buffer. A CI runner, a build that
+  fetches many dependencies, or a crawler you do host legitimately will show up
+  here: raise the rate or leave it off until none of them do. The cap is uniform
+  across boxes; there is no per-box override yet.
+- **Enforce** drops every connection over the cap in that window, not just the
+  first. Dropped events count toward the deny-burst rule like any other enforced
+  drop, so a box hammering the cap raises a MEDIUM "fence probing" finding.
+- **What it does not see:** IPv4 only; TCP connection attempts only (UDP floods
+  and ICMP are not counted); a connection to another managed box is not counted
+  (that is the cross-tenant fence's job). The window is a fixed second and its
+  rollover is not atomic across CPUs, so the cap is a rate limiter, not an exact
+  counter: a burst straddling two windows can pass up to twice the cap, and two
+  CPUs racing at a boundary can let a few extra through.
+- A packet from a box with a forged source address is not counted against the
+  real box's budget; the spoofed-source check handles it.
+
 ## Triaging findings
 
 ```bash

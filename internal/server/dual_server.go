@@ -1912,6 +1912,12 @@ skipAppHosting:
 		enforceArmed := netCfg.PolicyEnforce
 		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, fullListInspector{networkIncusClient}, auditStore, events.GetBus(), enforceArmed)
 		networkPolicyEnforcer.SetIncusDataDir(networkIncusClient.DataDir()) // DHCP leases live under it (#2618)
+		// Outbound connection-rate cap (#3709): off unless a rate is set, and it
+		// only counts unless the operator chose enforce AND the daemon is armed.
+		if cc := appconfig.LoadEgressConnCap(); cc.PerSec > 0 {
+			networkPolicyEnforcer.SetEgressConnCap(cc.PerSec, cc.Enforce)
+			log.Printf("NetworkPolicy: outbound connection cap %d/s per box (%s)", cc.PerSec, connCapModeLabel(cc.Enforce, enforceArmed))
+		}
 		// Status reads what the enforcer loaded; it reports "not running" on its
 		// own until Start succeeds, so a failed start needs no unwiring.
 		npServer.SetAppliedStateSource(networkPolicyEnforcer)
@@ -4142,4 +4148,17 @@ func (ds *DualServer) wireRetentionAnchor(file *audit.FileSink, bucket *audit.GC
 		return
 	}
 	ds.retentionChainSource.SetAnchor(fn)
+}
+
+// connCapModeLabel names what the outbound connection cap will do, for the
+// startup log: a cap configured to enforce on an unarmed daemon only counts.
+func connCapModeLabel(enforce, armed bool) string {
+	switch {
+	case enforce && armed:
+		return "enforce: connections over the cap are dropped"
+	case enforce:
+		return "log-only: enforce was requested but the network policy is not armed, so connections over the cap are only counted"
+	default:
+		return "log-only: connections over the cap are counted, not dropped"
+	}
 }

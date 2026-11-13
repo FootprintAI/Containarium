@@ -47,6 +47,8 @@ func denyReasonName(reason uint8) string {
 		return "virtual-patch"
 	case netbpf.DenyReasonSignature:
 		return "signature"
+	case netbpf.DenyReasonConnCap:
+		return "conn-cap"
 	default:
 		return "policy"
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/footprintai/containarium/internal/netbpf"
@@ -403,5 +404,61 @@ func TestPlanReconcile_IPBox(t *testing.T) {
 		if _, ok := plan.ipBox[ip]; !ok {
 			t.Errorf("ip %v is in ipTenant but has no box name", ip)
 		}
+	}
+}
+
+// #3709: the cap is stamped on every policed veth, never on a validate-only
+// one, and perSec 0 leaves the plan untouched.
+func TestApplyConnCap(t *testing.T) {
+	mk := func() reconcilePlan {
+		return reconcilePlan{vethPolicy: map[int]netbpf.PolicyConfig{
+			11: {TenantID: 1, Mode: netbpf.ModeEnforce},
+			12: {TenantID: 2, Mode: netbpf.ModeLogOnly},
+			30: netbpf.ValidateOnlyConfig([4]byte{10, 0, 0, 99}),
+		}}
+	}
+
+	off := mk()
+	applyConnCap(&off, 0, true)
+	for i, c := range off.vethPolicy {
+		if c.ConnCapPerSec != 0 || c.ConnCapMode != 0 {
+			t.Errorf("perSec 0 must leave veth %d alone, got %+v", i, c)
+		}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		enforce bool
+		want    uint8
+	}{{"log-only", false, netbpf.ModeLogOnly}, {"enforce", true, netbpf.ModeEnforce}} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := mk()
+			applyConnCap(&p, 150, tc.enforce)
+			for _, i := range []int{11, 12} {
+				c := p.vethPolicy[i]
+				if c.ConnCapPerSec != 150 || c.ConnCapMode != tc.want {
+					t.Errorf("veth %d cap = %d/%d, want 150/%d", i, c.ConnCapPerSec, c.ConnCapMode, tc.want)
+				}
+				// The cap must not disturb the tenant's own policy.
+				if c.TenantID != mk().vethPolicy[i].TenantID || c.Mode != mk().vethPolicy[i].Mode {
+					t.Errorf("veth %d policy changed: %+v", i, c)
+				}
+			}
+			if c := p.vethPolicy[30]; c.ConnCapPerSec != 0 || c.ConnCapMode != 0 {
+				t.Errorf("a validate-only veth must never be capped, got %+v", c)
+			}
+		})
+	}
+}
+
+func TestConnCapModeLabel(t *testing.T) {
+	if got := connCapModeLabel(true, true); !strings.HasPrefix(got, "enforce") {
+		t.Errorf("enforce+armed = %q", got)
+	}
+	if got := connCapModeLabel(true, false); !strings.Contains(got, "not armed") {
+		t.Errorf("enforce but unarmed must say it only counts, got %q", got)
+	}
+	if got := connCapModeLabel(false, true); !strings.HasPrefix(got, "log-only") {
+		t.Errorf("log-only = %q", got)
 	}
 }
