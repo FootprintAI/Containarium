@@ -140,8 +140,12 @@ type Cluster struct {
 	// and never rewritten. Stores resolve an unset value to
 	// IsolationVM, so a read never has to guess.
 	NodeIsolation Isolation
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// CAIDBound is true once the cluster's autoscaler credential carries its
+	// immutable id (#3689). Until then the cluster is on the legacy name-only
+	// subject, and the re-mint pass moves it over.
+	CAIDBound bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Node is one VM belonging to a cluster.

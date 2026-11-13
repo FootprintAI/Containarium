@@ -32,6 +32,10 @@ type ClusterReconciler struct {
 	store clusterstore.Store
 	mgr   *clustercore.Manager
 
+	// deployCA pushes the autoscaler credential and bootstraps it onto a
+	// cluster. A field so the re-mint pass can be tested without a host.
+	deployCA func(tenant, clusterName string, d clustercore.CADeploy, creds clustercore.CACredentials) error
+
 	// admit is the CPU-admission seam (nil = no gate, unit tests).
 	// Refusals are recorded as events, never silent. The returned release
 	// func (#1588) must be called once this reconciler's own provisioning
@@ -72,7 +76,11 @@ type ClusterReconciler struct {
 // NewClusterReconciler wires the loop. publish/unpublish may be nil
 // (endpoint stays the CP IP; nothing to reverse).
 func NewClusterReconciler(store clusterstore.Store, mgr *clustercore.Manager) *ClusterReconciler {
-	return &ClusterReconciler{store: store, mgr: mgr, interval: 15 * time.Second}
+	r := &ClusterReconciler{store: store, mgr: mgr, interval: 15 * time.Second}
+	if mgr != nil {
+		r.deployCA = mgr.DeployCA
+	}
+	return r
 }
 
 // SetAdmission wires the CPU-admission gate.
@@ -191,6 +199,64 @@ func (r *ClusterReconciler) ReconcileOnce(ctx context.Context) {
 			// pass retries (interval = natural backoff).
 			_ = r.store.SetState(ctx, c.Owner, c.Name, clusterstore.StateError, err.Error())
 		}
+	}
+	if fresh, err := r.store.List(ctx, ""); err == nil {
+		r.remintCAIdentities(ctx, fresh)
+	}
+}
+
+// markCAIDBound records that the cluster's autoscaler credential now carries
+// its id. A failure is logged, not returned: the deploy already happened, and
+// the re-mint pass retries the marker on its next run (#3689).
+func (r *ClusterReconciler) markCAIDBound(ctx context.Context, c *clusterstore.Cluster) {
+	if c.CAIDBound {
+		return
+	}
+	if err := r.store.SetCAIDBound(ctx, c.Owner, c.Name); err != nil {
+		log.Printf("[cluster] %q/%q: record CA identity: %v", c.Owner, c.Name, err)
+	}
+}
+
+// remintCAIdentities moves every ready cluster that is still on the legacy
+// name-only autoscaler subject onto the id-bearing credential (#3689 stage 3a).
+// It is separate from the settle path and never sets a cluster to ERROR: a
+// failed re-mint is logged and retried next pass, and the cluster keeps the
+// credential it has. It logs how many ready clusters remain on the legacy
+// subject, so the window can be seen closing.
+func (r *ClusterReconciler) remintCAIdentities(ctx context.Context, clusters []*clusterstore.Cluster) {
+	if r.mintCACert == nil || r.deployCA == nil {
+		return
+	}
+	remaining := 0
+	for _, c := range clusters {
+		if c.State != clusterstore.StateReady || c.CAIDBound {
+			continue
+		}
+		creds, err := r.mintCACert(c.Owner, c.Name, c.ID)
+		if err != nil {
+			remaining++
+			log.Printf("[cluster] re-mint %q/%q: %v", c.Owner, c.Name, err)
+			continue
+		}
+		deploy := clustercore.CADeploy{
+			ProviderAddr:           r.caAddr,
+			ScaleDownDelayAfterAdd: r.caScaleDownDelay,
+			ScaleDownUnneededTime:  r.caScaleDownUnneeded,
+		}
+		if err := r.deployCA(c.Owner, c.Name, deploy, creds); err != nil {
+			remaining++
+			log.Printf("[cluster] re-mint %q/%q: deploy: %v", c.Owner, c.Name, err)
+			continue
+		}
+		if err := r.store.SetCAIDBound(ctx, c.Owner, c.Name); err != nil {
+			remaining++
+			log.Printf("[cluster] re-mint %q/%q: record: %v", c.Owner, c.Name, err)
+			continue
+		}
+		log.Printf("[cluster] re-minted %q/%q onto the id-bearing autoscaler credential", c.Owner, c.Name)
+	}
+	if remaining > 0 {
+		log.Printf("[cluster] CA identity: %d ready cluster(s) still on the name-only subject", remaining)
 	}
 }
 
@@ -402,7 +468,7 @@ func (r *ClusterReconciler) settleState(ctx context.Context, c *clusterstore.Clu
 	}
 
 	// The autoscaler rides the settle path too: DeployCA is idempotent.
-	if r.mintCACert != nil && c.State != clusterstore.StateReady {
+	if r.mintCACert != nil && r.deployCA != nil && c.State != clusterstore.StateReady {
 		creds, err := r.mintCACert(c.Owner, c.Name, c.ID)
 		if err != nil {
 			return fmt.Errorf("mint autoscaler credential: %w", err)
@@ -412,9 +478,10 @@ func (r *ClusterReconciler) settleState(ctx context.Context, c *clusterstore.Clu
 			ScaleDownDelayAfterAdd: r.caScaleDownDelay,
 			ScaleDownUnneededTime:  r.caScaleDownUnneeded,
 		}
-		if err := r.mgr.DeployCA(c.Owner, c.Name, deploy, creds); err != nil {
+		if err := r.deployCA(c.Owner, c.Name, deploy, creds); err != nil {
 			return fmt.Errorf("deploy autoscaler: %w", err)
 		}
+		r.markCAIDBound(ctx, c)
 	}
 
 	expected := 1 // control plane
