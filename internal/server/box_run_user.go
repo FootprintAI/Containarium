@@ -149,25 +149,33 @@ func boxRunStageScript(ownerHome, runHome string) (string, error) {
 	var b strings.Builder
 	b.WriteString("set -e\n")
 	b.WriteString("o=" + q(ownerHome) + "\nr=" + q(runHome) + "\nu=" + boxRunUnprivilegedUser + "\n")
-	b.WriteString(`mkdir -p "$r/.local/bin" "$r/.claude" "$r/.config/containarium"
-chown "$u:$u" "$r/.local" "$r/.local/bin" "$r/.claude" "$r/.config" "$r/.config/containarium"
+	// Every root write below goes through nofollow first: it refuses a symlink on
+	// the target or on any directory between the target and the run home, so a
+	// planted link cannot redirect the write or the delete (#3703). Ownership is
+	// changed with -h, so it never follows a link either.
+	b.WriteString(`nofollow() { p="$1"; while :; do [ -L "$p" ] && { echo "refusing: $p is a symlink" >&2; exit 1; }; [ "$p" = "$r" ] && break; p=$(dirname -- "$p"); done; }
+nofollow "$r"
+for d in "$r/.local/bin" "$r/.claude" "$r/.config/containarium"; do nofollow "$d"; done
+mkdir -p "$r/.local/bin" "$r/.claude" "$r/.config/containarium"
+chown -h "$u:$u" "$r/.local" "$r/.local/bin" "$r/.claude" "$r/.config" "$r/.config/containarium"
 chmod 0700 "$r/.config/containarium"
 `)
 	for _, rel := range boxRunStagedBinaries {
 		b.WriteString("if [ -e \"$o/" + rel + "\" ]; then if [ ! -x \"$r/" + rel + "\" ] || [ \"$o/" + rel + "\" -nt \"$r/" + rel + "\" ]; then " +
-			"cp -pL \"$o/" + rel + "\" \"$r/" + rel + ".new\" && chown \"$u:$u\" \"$r/" + rel + ".new\" && chmod 0755 \"$r/" + rel + ".new\" && mv -f \"$r/" + rel + ".new\" \"$r/" + rel + "\"; fi; fi\n")
+			"nofollow \"$r/" + rel + "\"; nofollow \"$r/" + rel + ".new\"; " +
+			"cp -pL \"$o/" + rel + "\" \"$r/" + rel + ".new\" && chown -h \"$u:$u\" \"$r/" + rel + ".new\" && chmod 0755 \"$r/" + rel + ".new\" && mv -f \"$r/" + rel + ".new\" \"$r/" + rel + "\"; fi; fi\n")
 	}
 	for _, rel := range boxRunStagedConfig {
-		b.WriteString("if [ -f \"$o/" + rel + "\" ]; then (umask 077; sed \"s|$o|$r|g\" \"$o/" + rel + "\" > \"$r/" + rel + "\"); chown \"$u:$u\" \"$r/" + rel + "\"; chmod 0600 \"$r/" + rel + "\"; fi\n")
+		b.WriteString("if [ -f \"$o/" + rel + "\" ]; then nofollow \"$r/" + rel + "\"; (umask 077; sed \"s|$o|$r|g\" \"$o/" + rel + "\" > \"$r/" + rel + "\"); chown -h \"$u:$u\" \"$r/" + rel + "\"; chmod 0600 \"$r/" + rel + "\"; fi\n")
 	}
 	for _, rel := range boxRunStagedPlatformCredentials {
-		b.WriteString("if [ -f \"$o/" + rel + "\" ]; then (umask 077; cat \"$o/" + rel + "\" > \"$r/" + rel + ".new\") && chown \"$u:$u\" \"$r/" + rel + ".new\" && chmod 0600 \"$r/" + rel + ".new\" && mv -f \"$r/" + rel + ".new\" \"$r/" + rel + "\"; fi\n")
+		b.WriteString("if [ -f \"$o/" + rel + "\" ]; then nofollow \"$r/" + rel + ".new\"; (umask 077; cat \"$o/" + rel + "\" > \"$r/" + rel + ".new\") && chown -h \"$u:$u\" \"$r/" + rel + ".new\" && chmod 0600 \"$r/" + rel + ".new\" && mv -f \"$r/" + rel + ".new\" \"$r/" + rel + "\"; fi\n")
 	}
 	for _, rel := range boxRunStaleCredentials {
-		b.WriteString("rm -f \"$r/" + rel + "\"\n")
+		b.WriteString("nofollow \"$r/" + rel + "\"; rm -f \"$r/" + rel + "\"\n")
 	}
 	// The skills layout: a plain tree, refreshed each run.
-	b.WriteString("if [ -d \"$o/.claude/skills\" ]; then rm -rf \"$r/.claude/skills\"; cp -R \"$o/.claude/skills\" \"$r/.claude/skills\"; chown -R \"$u:$u\" \"$r/.claude/skills\"; fi\n")
+	b.WriteString("if [ -d \"$o/.claude/skills\" ]; then nofollow \"$r/.claude/skills\"; rm -rf \"$r/.claude/skills\"; cp -R \"$o/.claude/skills\" \"$r/.claude/skills\"; chown -R -h \"$u:$u\" \"$r/.claude/skills\"; fi\n")
 	return b.String(), nil
 }
 
