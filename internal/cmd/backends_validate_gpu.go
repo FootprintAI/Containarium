@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
+	"github.com/footprintai/containarium/internal/limitio"
 	"net/http"
 	"strings"
 	"time"
@@ -89,7 +89,7 @@ func runBackendsValidateGPU(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("request %s: %w", url, err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}

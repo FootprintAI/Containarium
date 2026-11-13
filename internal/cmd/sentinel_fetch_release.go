@@ -6,7 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
+	"github.com/footprintai/containarium/internal/limitio"
 	"net/http"
 	"time"
 
@@ -83,7 +83,7 @@ func runSentinelFetchRelease(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("sentinel returned %d: %s", resp.StatusCode, string(respBody))
 	}

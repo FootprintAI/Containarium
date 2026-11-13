@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/footprintai/containarium/internal/limitio"
 	"io"
 	"net/http"
 	"net/url"
@@ -66,7 +67,7 @@ func attachConsole(username string) error {
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
 	if err != nil {
 		if resp != nil {
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 			_ = resp.Body.Close()
 			return fmt.Errorf("failed to attach console (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
 		}

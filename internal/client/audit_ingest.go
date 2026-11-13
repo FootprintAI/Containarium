@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"github.com/footprintai/containarium/internal/limitio"
 	"net/http"
 
 	"google.golang.org/grpc/codes"
@@ -43,7 +43,7 @@ func (c *HTTPClient) IngestSSHSessionRecords(ctx context.Context, req *pb.Ingest
 		return nil, fmt.Errorf("ingest ssh session records: %w", err)
 	}
 	defer drainClose(resp)
-	b, err := io.ReadAll(resp.Body)
+	b, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("ingest ssh session records: read response: %w", err)
 	}

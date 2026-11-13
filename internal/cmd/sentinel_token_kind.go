@@ -5,7 +5,7 @@ package cmd
 import (
 	"bytes"
 	"fmt"
-	"io"
+	"github.com/footprintai/containarium/internal/limitio"
 	"net/http"
 	"time"
 
@@ -60,7 +60,7 @@ func sendSentinelAdminRequest(method, endpoint, secret string, body []byte) erro
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("sentinel returned %d: %s", resp.StatusCode, string(respBody))
 	}

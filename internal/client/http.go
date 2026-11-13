@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/footprintai/containarium/internal/limitio"
 	"io"
 	"net/http"
 	"net/url"
@@ -192,7 +193,7 @@ func drainClose(resp *http.Response) {
 func parseResponse[T any](resp *http.Response) (*T, error) {
 	defer drainClose(resp)
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -525,7 +526,7 @@ func (c *HTTPClient) ToggleAutoSleep(username string, enabled bool, idleThreshol
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		var errResp struct {
 			Error string `json:"error"`
@@ -566,7 +567,7 @@ func (c *HTTPClient) SetContainerTTL(username string, durationSeconds int64) (*p
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, status.Errorf(codes.Unimplemented, "server does not expose SetContainerTTL (HTTP 404)")
 	}
@@ -612,7 +613,7 @@ func (c *HTTPClient) SetContainerDeletePolicy(username string, policy pb.DeleteP
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, status.Errorf(codes.Unimplemented, "server does not expose SetContainerDeletePolicy (HTTP 404)")
 	}
@@ -655,7 +656,7 @@ func (c *HTTPClient) SetContainerToolAccess(username string, level pb.BoxToolAcc
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, status.Errorf(codes.Unimplemented, "server does not expose SetContainerToolAccess (HTTP 404)")
 	}
@@ -696,7 +697,7 @@ func (c *HTTPClient) SetContainerAttribution(username string, labels map[string]
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, status.Errorf(codes.Unimplemented, "server does not expose SetContainerAttribution (HTTP 404)")
 	}
@@ -742,7 +743,7 @@ func (c *HTTPClient) StartContainer(username string, waitForReady bool, readyTim
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		var errResp struct {
 			Error string `json:"error"`
@@ -776,7 +777,7 @@ func (c *HTTPClient) StopContainer(username string, force bool) (*pb.StopContain
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		var errResp struct {
 			Error string `json:"error"`
@@ -811,7 +812,7 @@ func (c *HTTPClient) ToggleMonitoring(username string, enabled bool) (string, bo
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		var errResp struct {
 			Error string `json:"error"`
@@ -864,7 +865,7 @@ func (c *HTTPClient) SetMetricsExport(enabled bool, provider pb.CloudMetricsProv
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode == http.StatusNotImplemented {
 		var errResp struct {
 			Error string `json:"error"`
@@ -904,7 +905,7 @@ func (c *HTTPClient) GetMetricsExport() (*pb.GetMetricsExportResponse, error) {
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		var errResp struct {
 			Error string `json:"error"`
@@ -942,7 +943,7 @@ func (c *HTTPClient) RefreshToken(refreshTok string) (string, string, int64, int
 		return "", "", 0, 0, fmt.Errorf("refresh token: %w", err)
 	}
 	defer drainClose(resp)
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return "", "", 0, 0, parseErr(b, resp.StatusCode, "refresh token")
 	}
@@ -994,7 +995,7 @@ func (c *HTTPClient) ListRevokedTokens(limit int32, includeExpired bool, jtiPref
 		return nil, fmt.Errorf("list revoked tokens: %w", err)
 	}
 	defer drainClose(resp)
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, parseErr(b, resp.StatusCode, "list revoked tokens")
 	}
@@ -1028,7 +1029,7 @@ func (c *HTTPClient) GetUnscopedTokenReport() (UnscopedTokenReport, error) {
 		return UnscopedTokenReport{}, fmt.Errorf("get unscoped token report: %w", err)
 	}
 	defer drainClose(resp)
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return UnscopedTokenReport{}, parseErr(b, resp.StatusCode, "get unscoped token report")
 	}
@@ -1059,7 +1060,7 @@ func (c *HTTPClient) RevokeToken(jti, reason, expiresAt string) (string, error) 
 		return "", fmt.Errorf("revoke token: %w", err)
 	}
 	defer drainClose(resp)
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return "", parseErr(b, resp.StatusCode, "revoke token")
 	}
@@ -1095,7 +1096,7 @@ func (c *HTTPClient) ExchangeDelegatedToken(subject string, scopes, roles []stri
 		return "", time.Time{}, nil, nil, fmt.Errorf("exchange delegated token: %w", err)
 	}
 	defer drainClose(resp)
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return "", time.Time{}, nil, nil, parseErr(b, resp.StatusCode, "exchange delegated token")
 	}
@@ -1139,7 +1140,7 @@ func (c *HTTPClient) SetSecret(username, name, value, delivery string) (string, 
 		return "", fmt.Errorf("set secret: %w", err)
 	}
 	defer drainClose(resp)
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return "", parseErr(b, resp.StatusCode, "set secret")
 	}
@@ -1160,7 +1161,7 @@ func (c *HTTPClient) GetSecret(username, name string) (string, error) {
 		return "", fmt.Errorf("get secret: %w", err)
 	}
 	defer drainClose(resp)
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return "", parseErr(b, resp.StatusCode, "get secret")
 	}
@@ -1190,7 +1191,7 @@ func (c *HTTPClient) ListSecrets(username string) ([]*pb.SecretMetadata, error) 
 		return nil, fmt.Errorf("list secrets: %w", err)
 	}
 	defer drainClose(resp)
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, parseErr(b, resp.StatusCode, "list secrets")
 	}
@@ -1214,7 +1215,7 @@ func (c *HTTPClient) DeleteSecret(username, name string) error {
 		return fmt.Errorf("delete secret: %w", err)
 	}
 	defer drainClose(resp)
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return parseErr(b, resp.StatusCode, "delete secret")
 	}
@@ -1231,7 +1232,7 @@ func (c *HTTPClient) RefreshSecrets(username string) (string, int32, error) {
 		return "", 0, fmt.Errorf("refresh secrets: %w", err)
 	}
 	defer drainClose(resp)
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return "", 0, parseErr(b, resp.StatusCode, "refresh secrets")
 	}
@@ -1259,7 +1260,7 @@ func (c *HTTPClient) SetTenantKMSKey(username, keyResourceName string) (string, 
 		return "", false, fmt.Errorf("set tenant kms key: %w", err)
 	}
 	defer drainClose(resp)
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return "", false, parseErr(b, resp.StatusCode, "set tenant kms key")
 	}
@@ -1310,7 +1311,7 @@ func (c *HTTPClient) ResizeContainer(username, cpu, memory, disk, memoryRequest,
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		var errResp struct {
 			Error string `json:"error"`
@@ -1347,7 +1348,7 @@ func (c *HTTPClient) DeleteContainer(username string, force bool) error {
 	defer drainClose(resp)
 
 	if resp.StatusCode >= 400 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		var errResp struct {
 			Error string `json:"error"`
 		}
@@ -1382,7 +1383,7 @@ func (c *HTTPClient) StartEgressProxy(containerName string, upstreamPort, proxyP
 	defer drainClose(resp)
 
 	if resp.StatusCode >= 400 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		var errResp struct {
 			Error string `json:"error"`
 		}
@@ -1467,7 +1468,7 @@ func (c *HTTPClient) AddCollaborator(ownerUsername, collaboratorUsername string,
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "add collaborator")
 	}
@@ -1490,7 +1491,7 @@ func (c *HTTPClient) RemoveCollaborator(ownerUsername, collaboratorUsername stri
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "remove collaborator")
 	}
@@ -1513,7 +1514,7 @@ func (c *HTTPClient) ListCollaborators(ownerUsername string) (*pb.ListCollaborat
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "list collaborators")
 	}
@@ -1533,7 +1534,7 @@ func (c *HTTPClient) ListBoxRuns(username string) ([]*pb.BoxRun, error) {
 		return nil, fmt.Errorf("list box runs: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "list box runs")
 	}
@@ -1556,7 +1557,7 @@ func (c *HTTPClient) GetBoxRunUserStatus(username string) (*pb.GetBoxRunUserStat
 		return nil, fmt.Errorf("get box run user status: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, status.Errorf(codes.Unimplemented, "server does not expose GetBoxRunUserStatus (HTTP 404)")
 	}
@@ -1586,7 +1587,7 @@ func (c *HTTPClient) SweepBoxRunCheckouts(req *pb.SweepBoxRunCheckoutsRequest) (
 		return nil, fmt.Errorf("sweep box run checkouts: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode == http.StatusNotFound && !bytes.Contains(bodyBytes, []byte(`"code"`)) {
 		return nil, status.Errorf(codes.Unimplemented, "server does not expose SweepBoxRunCheckouts (HTTP 404)")
 	}
@@ -1616,7 +1617,7 @@ func (c *HTTPClient) ApplyBoxSkillSets(req *pb.ApplyBoxSkillSetsRequest) (*pb.Ap
 		return nil, fmt.Errorf("apply box skill sets: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode == http.StatusNotFound && !bytes.Contains(bodyBytes, []byte(`"code"`)) {
 		return nil, status.Errorf(codes.Unimplemented, "server does not expose ApplyBoxSkillSets (HTTP 404)")
 	}
@@ -1648,7 +1649,7 @@ func (c *HTTPClient) WriteBoxFile(req *pb.WriteBoxFileRequest) (*pb.WriteBoxFile
 		return nil, fmt.Errorf("write box file: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		// Keeps the gRPC code so a refusal stays typed (http_box_files.go).
 		return nil, boxFileHTTPError(resp.StatusCode, bodyBytes, "WriteBoxFile")
@@ -1669,7 +1670,7 @@ func (c *HTTPClient) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRun
 		return nil, fmt.Errorf("tail box run log: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "tail box run log")
 	}
@@ -1690,7 +1691,7 @@ func (c *HTTPClient) TailBoxLogs(req *pb.TailBoxLogsRequest) (*pb.TailBoxLogsRes
 		return nil, fmt.Errorf("tail box logs: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "tail box logs")
 	}
@@ -1732,7 +1733,7 @@ func (c *HTTPClient) doProto(method, path string, body []byte, out proto.Message
 		return fmt.Errorf("%s: %w", what, err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return httpError(bodyBytes, resp.StatusCode, what)
 	}
@@ -1754,7 +1755,7 @@ func (c *HTTPClient) DebugContainer(username string) (*pb.DebugContainerResponse
 	}
 	defer drainClose(resp)
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -1781,7 +1782,7 @@ func (c *HTTPClient) GetConsoleLog(username string) (*pb.GetConsoleLogResponse, 
 	}
 	defer drainClose(resp)
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -1825,7 +1826,7 @@ func (c *HTTPClient) getSystemInfo() (*pb.SystemInfo, error) {
 	}
 
 	defer drainClose(resp)
-	body, err := io.ReadAll(resp.Body)
+	body, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get system info: failed to read response body: %w", err)
 	}
@@ -1872,7 +1873,7 @@ func (c *HTTPClient) InstallStack(username, stackID string) error {
 	defer drainClose(resp)
 
 	if resp.StatusCode >= 400 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		var errResp struct {
 			Error string `json:"error"`
 		}
@@ -1896,7 +1897,7 @@ func (c *HTTPClient) ListRecipes() ([]*pb.Recipe, error) {
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "list recipes")
 	}
@@ -1919,7 +1920,7 @@ func (c *HTTPClient) GetRecipe(id string) (*pb.Recipe, error) {
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "get recipe")
 	}
@@ -1943,7 +1944,7 @@ func (c *HTTPClient) GetWorkspaceAccess(name string) (*pb.GetWorkspaceAccessResp
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "get workspace access")
 	}
@@ -1986,7 +1987,7 @@ func (c *HTTPClient) DeployRecipe(recipeID, name string, opts DeployRecipeOption
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "deploy recipe")
 	}
@@ -2009,7 +2010,7 @@ func (c *HTTPClient) ListAgentEngines() (*pb.ListAgentEnginesResponse, error) {
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "list agent engines")
 	}
@@ -2031,7 +2032,7 @@ func (c *HTTPClient) ListAgentSkills() ([]*pb.AgentSkill, error) {
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "list agent skills")
 	}
@@ -2054,7 +2055,7 @@ func (c *HTTPClient) GetAgentSkill(id string) (*pb.AgentSkill, error) {
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "get agent skill")
 	}
@@ -2083,7 +2084,7 @@ func (c *HTTPClient) ProvisionSkillBox(skillID, backendID, pool string) (*pb.Pro
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "provision skill box")
 	}
@@ -2108,7 +2109,7 @@ func (c *HTTPClient) GetSkillBoxCredentialStatus(skillID string) (*pb.GetSkillBo
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "get skill box credential status")
 	}
@@ -2151,7 +2152,7 @@ func (c *HTTPClient) RunAgentSkill(skillID, backendID, pool, inputJSON, gitSourc
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "run agent skill")
 	}
@@ -2180,7 +2181,7 @@ func (c *HTTPClient) EnqueueAgentTask(skillID, inputJSON string) (*pb.EnqueueAge
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "enqueue agent task")
 	}
@@ -2212,7 +2213,7 @@ func (c *HTTPClient) StartAgentWorker(skillID, backendID, pool, workerID string)
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "start agent worker")
 	}
@@ -2243,7 +2244,7 @@ func (c *HTTPClient) SendAgentTask(fromSkillID, toPeerID, inputJSON string) (*pb
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "send agent task")
 	}
@@ -2263,7 +2264,7 @@ func (c *HTTPClient) ListCrews() ([]*pb.Crew, error) {
 		return nil, fmt.Errorf("list crews: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "list crews")
 	}
@@ -2283,7 +2284,7 @@ func (c *HTTPClient) GetCrew(id string) (*pb.Crew, error) {
 		return nil, fmt.Errorf("get crew: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "get crew")
 	}
@@ -2322,7 +2323,7 @@ func (c *HTTPClient) RunCrew(crewID, backendID, pool, inputJSON, gitSource, gitR
 		return nil, fmt.Errorf("run crew: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "run crew")
 	}
@@ -2346,7 +2347,7 @@ func (c *HTTPClient) RunCrewGraph(req *pb.RunCrewRequest) (*pb.CrewRun, error) {
 		return nil, err
 	}
 	defer drainClose(resp)
-	data, err := io.ReadAll(resp.Body)
+	data, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -2369,7 +2370,7 @@ func (c *HTTPClient) GetCrewRun(id string) (*pb.CrewRun, error) {
 		return nil, fmt.Errorf("get crew run: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "get crew run")
 	}
@@ -2393,7 +2394,7 @@ func (c *HTTPClient) PlanTaskGraph(req *pb.PlanTaskGraphRequest) (*pb.PlanTaskGr
 		return nil, fmt.Errorf("plan task graph: %w", err)
 	}
 	defer drainClose(resp)
-	data, err := io.ReadAll(resp.Body)
+	data, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read planner response: %w", err)
 	}
@@ -2421,7 +2422,7 @@ func (c *HTTPClient) ValidateTaskGraph(g *pb.TaskGraph) (*pb.ValidateTaskGraphRe
 		return nil, fmt.Errorf("validate task graph: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "validate task graph")
 	}
@@ -2441,7 +2442,7 @@ func (c *HTTPClient) TailRunLog(req *pb.TailRunLogRequest) (*pb.TailRunLogRespon
 		return nil, fmt.Errorf("tail run log: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "tail run log")
 	}
@@ -2467,7 +2468,7 @@ func (c *HTTPClient) CreateBackup(req *pb.CreateBackupRequest) (*pb.CreateBackup
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "create backup")
 	}
@@ -2493,7 +2494,7 @@ func (c *HTTPClient) ListBackups(username string) ([]*pb.BackupRecord, error) {
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "list backups")
 	}
@@ -2516,7 +2517,7 @@ func (c *HTTPClient) GetBackup(id string) (*pb.BackupRecord, error) {
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "get backup")
 	}
@@ -2543,7 +2544,7 @@ func (c *HTTPClient) RestoreBackup(req *pb.RestoreBackupRequest) (*pb.RestoreBac
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "restore backup")
 	}
@@ -2570,7 +2571,7 @@ func (c *HTTPClient) RestoreBoxBackup(req *pb.RestoreBoxBackupRequest) (*pb.Rest
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "restore box backup")
 	}
@@ -2597,7 +2598,7 @@ func (c *HTTPClient) VerifyBackup(req *pb.VerifyBackupRequest) (*pb.VerifyBackup
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "verify backup")
 	}
@@ -2620,7 +2621,7 @@ func (c *HTTPClient) DeleteBackup(id string) (*pb.DeleteBackupResponse, error) {
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "delete backup")
 	}
@@ -2647,7 +2648,7 @@ func (c *HTTPClient) PruneBackups(req *pb.PruneBackupsRequest) (*pb.PruneBackups
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "prune backups")
 	}
@@ -2669,7 +2670,7 @@ func (c *HTTPClient) GetKMSStatus() (*pb.GetKMSStatusResponse, error) {
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "get kms status")
 	}
@@ -2691,7 +2692,7 @@ func (c *HTTPClient) GetEnvelopeCoverage() (*pb.GetEnvelopeCoverageResponse, err
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "get envelope coverage")
 	}
@@ -2717,7 +2718,7 @@ func (c *HTTPClient) MigrateToEnvelope(req *pb.MigrateToEnvelopeRequest) (*pb.Mi
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "migrate to envelope")
 	}
@@ -2848,7 +2849,7 @@ func (c *HTTPClient) guardrailPolicyCall(method, path string, body []byte, out p
 		return fmt.Errorf("%s: %w", op, err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return httpError(bodyBytes, resp.StatusCode, op)
 	}
@@ -2913,7 +2914,7 @@ func (c *HTTPClient) SetLabels(username string, labels map[string]string) error 
 	defer drainClose(resp)
 
 	if resp.StatusCode >= 400 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		var errResp struct {
 			Error string `json:"error"`
 		}
@@ -2940,7 +2941,7 @@ func (c *HTTPClient) RemoveLabel(username string, key string) error {
 	defer drainClose(resp)
 
 	if resp.StatusCode >= 400 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		var errResp struct {
 			Error string `json:"error"`
 		}
@@ -3001,7 +3002,7 @@ func (c *HTTPClient) AddRoute(domain, targetIP string, targetPort int32, contain
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpErr("add route", resp.StatusCode, bodyBytes)
 	}
@@ -3036,7 +3037,7 @@ func (c *HTTPClient) ListRoutes(username string, activeOnly bool) ([]*pb.ProxyRo
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, 0, httpErr("list routes", resp.StatusCode, bodyBytes)
 	}
@@ -3060,7 +3061,7 @@ func (c *HTTPClient) DeleteRoute(domain string) error {
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return httpErr("delete route", resp.StatusCode, bodyBytes)
 	}
@@ -3087,7 +3088,7 @@ func (c *HTTPClient) ListPassthroughRoutes() ([]*pb.PassthroughRoute, int32, err
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, 0, httpErr("list passthrough routes", resp.StatusCode, bodyBytes)
 	}
@@ -3121,7 +3122,7 @@ func (c *HTTPClient) AddPassthroughRoute(externalPort, targetPort int32, targetI
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpErr("add passthrough route", resp.StatusCode, bodyBytes)
 	}
@@ -3150,7 +3151,7 @@ func (c *HTTPClient) DeletePassthroughRoute(externalPort int32, protocol pb.Rout
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return httpErr("delete passthrough route", resp.StatusCode, bodyBytes)
 	}
@@ -3193,7 +3194,7 @@ func (c *HTTPClient) CreateContainerSnapshot(req *pb.CreateContainerSnapshotRequ
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "create snapshot")
 	}
@@ -3216,7 +3217,7 @@ func (c *HTTPClient) ListContainerSnapshots(req *pb.ListContainerSnapshotsReques
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "list snapshots")
 	}
@@ -3240,7 +3241,7 @@ func (c *HTTPClient) DeleteContainerSnapshot(req *pb.DeleteContainerSnapshotRequ
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "delete snapshot")
 	}
@@ -3268,7 +3269,7 @@ func (c *HTTPClient) RollbackContainerSnapshot(req *pb.RollbackContainerSnapshot
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "rollback snapshot")
 	}
@@ -3298,7 +3299,7 @@ func (c *HTTPClient) clusterDo(method, path, label string, reqBody []byte, out p
 		return fmt.Errorf("%s: %w", label, err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return httpError(bodyBytes, resp.StatusCode, label)
 	}
@@ -3411,7 +3412,7 @@ func (c *HTTPClient) trackerDoTimeout(timeout time.Duration, method, path, label
 		return fmt.Errorf("%s: %w", label, err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return httpError(bodyBytes, resp.StatusCode, label)
 	}
@@ -3698,7 +3699,7 @@ func (c *HTTPClient) anonCall(method, path string, in proto.Message, out proto.M
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode == http.StatusNotFound {
 		return status.Errorf(codes.Unimplemented, "server does not expose AnonymousBoxService (HTTP 404)")
 	}

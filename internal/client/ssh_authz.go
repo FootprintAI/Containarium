@@ -3,7 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
-	"io"
+	"github.com/footprintai/containarium/internal/limitio"
 	"net/http"
 
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
@@ -33,7 +33,7 @@ func (c *HTTPClient) AuthorizeSSH(ctx context.Context, req *pb.AuthorizeSSHReque
 	}
 	defer drainClose(resp)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, httpError(bodyBytes, resp.StatusCode, "authorize ssh")
 	}

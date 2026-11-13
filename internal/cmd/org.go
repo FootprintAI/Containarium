@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/footprintai/containarium/internal/limitio"
 	"io"
 	"net/http"
 	"net/url"
@@ -99,7 +100,7 @@ func doCloudAPIRequest(method, path string, body any) ([]byte, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}

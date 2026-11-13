@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"github.com/footprintai/containarium/internal/limitio"
 	"net/http"
 	"net/url"
 	"slices"
@@ -128,7 +128,7 @@ func (c *HTTPClient) StartBoxRun(req *pb.StartBoxRunRequest) (*pb.StartBoxRunRes
 		return nil, fmt.Errorf("start box run: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	if resp.StatusCode >= 400 {
 		return nil, boxFileHTTPError(resp.StatusCode, bodyBytes, "StartBoxRun")
 	}

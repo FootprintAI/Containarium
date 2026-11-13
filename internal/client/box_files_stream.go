@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/footprintai/containarium/internal/limitio"
 	"io"
 	"net/http"
 	"time"
@@ -186,7 +187,7 @@ func (c *HTTPClient) WriteBoxFileStream(h *pb.WriteBoxFileStreamHeader, content 
 		return nil, fmt.Errorf("write box file stream: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 	lerr := localReadErr()
 	if resp.StatusCode >= 400 {
 		if lerr != nil {
