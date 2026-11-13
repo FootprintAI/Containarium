@@ -266,7 +266,14 @@ func TestBoxRunManagedPath(t *testing.T) {
 			t.Errorf("%q should be managed", rel)
 		}
 	}
-	for _, rel := range []string{"attachments/turn-1/brief.md", ".claude/notes.md", ".config/other.json", ".claudeish/skills"} {
+	// Beneath a managed file: the file would become a directory the staging step
+	// cannot write over (#3701 finding A).
+	for _, rel := range []string{".gitconfig/x", ".local/bin/claude/x", ".claude/settings.json/x", ".config/containarium/manifest.json/x"} {
+		if !boxRunManagedPath(rel) {
+			t.Errorf("%q is beneath a managed file and should be refused", rel)
+		}
+	}
+	for _, rel := range []string{"attachments/turn-1/brief.md", ".claude/notes.md", ".config/other.json", ".claudeish/skills", ".config/containarium/other.json"} {
 		if boxRunManagedPath(rel) {
 			t.Errorf("%q should not be managed", rel)
 		}
