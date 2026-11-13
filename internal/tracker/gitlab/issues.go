@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/footprintai/containarium/internal/limitio"
 	"io"
 	"log"
 	"net/http"
@@ -309,12 +310,12 @@ func (a *Adapter) doWithHeaderClient(ctx context.Context, client *http.Client, m
 		}
 		return resp.Header, nil
 	case http.StatusUnauthorized, http.StatusForbidden:
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return nil, fmt.Errorf("%w: HTTP %d: %s", tracker.ErrCredentialInvalid, resp.StatusCode, string(respBody))
 	case http.StatusNotFound:
 		return nil, fmt.Errorf("%w: %s", tracker.ErrNotFound, rawURL)
 	default:
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return nil, fmt.Errorf("gitlab: HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 }

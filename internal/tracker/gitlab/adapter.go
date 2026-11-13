@@ -7,7 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"github.com/footprintai/containarium/internal/limitio"
 	"net/http"
 	"strings"
 	"time"
@@ -122,10 +122,10 @@ func (a *Adapter) describeSelf(ctx context.Context, apiBase, token string) (trac
 		}
 		return tracker.CredentialInfo{Scopes: parsed.Scopes, ExpiresAt: expires}, nil
 	case http.StatusUnauthorized, http.StatusForbidden:
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return tracker.CredentialInfo{}, fmt.Errorf("%w: HTTP %d: %s", tracker.ErrCredentialInvalid, resp.StatusCode, string(body))
 	default:
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
 		return tracker.CredentialInfo{}, fmt.Errorf("gitlab describe credential: HTTP %d: %s", resp.StatusCode, string(body))
 	}
 }
