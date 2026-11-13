@@ -134,6 +134,13 @@ const (
 	// "wide-fanout"; evidence is a capped sample of the qualifying flows.
 	// Thresholds: OutboundFanoutThresholds in internal/threatdetect.
 	ThreatRuleId_THREAT_RULE_ID_OUTBOUND_FANOUT ThreatRuleId = 10
+	// A process exec in a box matched the abuse-tool baseline (#3709): a
+	// reverse-tunnel client (a persistent way in for someone outside the box) or
+	// a known DDoS / stress tool. MEDIUM and record-only: unlike the miner
+	// signature rule it is never acted on, because a tunnel client in particular
+	// has legitimate uses. Subject is "container:<box>:<kind>:<pattern>" of the
+	// entry that hit; evidence is the ExecEvidence of the exec, with `matched` set.
+	ThreatRuleId_THREAT_RULE_ID_ABUSE_TOOL ThreatRuleId = 11
 )
 
 // Enum value maps for ThreatRuleId.
@@ -150,6 +157,7 @@ var (
 		7:  "THREAT_RULE_ID_MINER_SIGNATURE",
 		9:  "THREAT_RULE_ID_PROCESS_ACTION_EXPIRED",
 		10: "THREAT_RULE_ID_OUTBOUND_FANOUT",
+		11: "THREAT_RULE_ID_ABUSE_TOOL",
 	}
 	ThreatRuleId_value = map[string]int32{
 		"THREAT_RULE_ID_UNSPECIFIED":            0,
@@ -163,6 +171,7 @@ var (
 		"THREAT_RULE_ID_MINER_SIGNATURE":        7,
 		"THREAT_RULE_ID_PROCESS_ACTION_EXPIRED": 9,
 		"THREAT_RULE_ID_OUTBOUND_FANOUT":        10,
+		"THREAT_RULE_ID_ABUSE_TOOL":             11,
 	}
 )
 
@@ -3873,7 +3882,7 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x13THREAT_SEVERITY_LOW\x10\x01\x12\x1a\n" +
 	"\x16THREAT_SEVERITY_MEDIUM\x10\x02\x12\x18\n" +
 	"\x14THREAT_SEVERITY_HIGH\x10\x03\x12\x1c\n" +
-	"\x18THREAT_SEVERITY_CRITICAL\x10\x04*\xab\x03\n" +
+	"\x18THREAT_SEVERITY_CRITICAL\x10\x04*\xca\x03\n" +
 	"\fThreatRuleId\x12\x1e\n" +
 	"\x1aTHREAT_RULE_ID_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eTHREAT_RULE_ID_BAD_DESTINATION\x10\x01\x12$\n" +
@@ -3886,7 +3895,8 @@ const file_containarium_v1_threatdetection_proto_rawDesc = "" +
 	"\x1eTHREAT_RULE_ID_MINER_SIGNATURE\x10\a\x12)\n" +
 	"%THREAT_RULE_ID_PROCESS_ACTION_EXPIRED\x10\t\x12\"\n" +
 	"\x1eTHREAT_RULE_ID_OUTBOUND_FANOUT\x10\n" +
-	"*a\n" +
+	"\x12\x1d\n" +
+	"\x19THREAT_RULE_ID_ABUSE_TOOL\x10\v*a\n" +
 	"\fFindingState\x12\x1d\n" +
 	"\x19FINDING_STATE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12FINDING_STATE_OPEN\x10\x01\x12\x1a\n" +

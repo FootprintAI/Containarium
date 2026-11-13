@@ -2356,6 +2356,14 @@ skipAppHosting:
 	// public proxy list) or spread across non-web ports (a scanner).
 	// Record-only; default thresholds. Independent of the mining thresholds.
 	if threatDetectEngine != nil {
+		// Abuse-tool rule (#3709): a reverse-tunnel client or a known DDoS / stress
+		// tool on an exec. Record-only (never on the responder's list), baseline
+		// only, and it needs exec telemetry like the miner-signature rule.
+		if toolRule, tErr := threatdetect.NewAbuseToolRule(); tErr != nil {
+			log.Printf("Warning: threat-detection abuse-tool rule init failed (%v); it will not run", tErr)
+		} else {
+			threatDetectEngine.Register(toolRule)
+		}
 		threatDetectEngine.Register(threatdetect.NewOutboundFanoutRule(threatdetect.OutboundFanoutThresholds{}).RespondWithHighSeverity(threatCfg.FanoutRespond))
 	}
 	// Miner-signature rule (#2638): a known miner's name, argv marker or

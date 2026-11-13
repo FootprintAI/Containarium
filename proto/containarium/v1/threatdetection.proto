@@ -69,6 +69,13 @@ enum ThreatRuleId {
   // "wide-fanout"; evidence is a capped sample of the qualifying flows.
   // Thresholds: OutboundFanoutThresholds in internal/threatdetect.
   THREAT_RULE_ID_OUTBOUND_FANOUT = 10;
+  // A process exec in a box matched the abuse-tool baseline (#3709): a
+  // reverse-tunnel client (a persistent way in for someone outside the box) or
+  // a known DDoS / stress tool. MEDIUM and record-only: unlike the miner
+  // signature rule it is never acted on, because a tunnel client in particular
+  // has legitimate uses. Subject is "container:<box>:<kind>:<pattern>" of the
+  // entry that hit; evidence is the ExecEvidence of the exec, with `matched` set.
+  THREAT_RULE_ID_ABUSE_TOOL = 11;
 }
 
 // FindingState is the lifecycle state of a security finding.
