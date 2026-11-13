@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +44,12 @@ type ThreatDetectionServer struct {
 	// in-memory fallback failed to construct) reports Unavailable rather
 	// than panicking, same as badDestRule.
 	store threatdetect.FindingReader
+
+	// flowLog backs QueryFlowHistory (#3709). nil when the operator has not
+	// opted in (CONTAINARIUM_THREAT_FLOWLOG_HOURS): the RPC then reports
+	// FailedPrecondition rather than an empty answer that would read as
+	// "no box contacted it".
+	flowLog *threatdetect.FlowLog
 
 	// policies and responder back the process-policy RPCs (#2636); see
 	// threatdetect_policy_server.go. Either may be nil.
@@ -104,6 +111,14 @@ func NewThreatDetectionServer(engine *threatdetect.Engine, sentryEnabled, ebpfAv
 		ebpfAvailable:     ebpfAvailable,
 		unavailableReason: unavailableReason,
 	}
+}
+
+// SetFlowLog wires the opt-in flow log (#3709). nil leaves QueryFlowHistory
+// reporting that the log is off.
+func (s *ThreatDetectionServer) SetFlowLog(l *threatdetect.FlowLog) {
+	s.mu.Lock()
+	s.flowLog = l
+	s.mu.Unlock()
 }
 
 // SetCPUSamplerStatus records which source feeds the mining-behavior
@@ -349,6 +364,94 @@ func (s *ThreatDetectionServer) ListFindings(ctx context.Context, req *pb.ListFi
 		out = append(out, f.ToProto())
 	}
 	return &pb.ListFindingsResponse{Findings: out}, nil
+}
+
+// maxFlowHistoryLimit and defaultFlowHistoryLimit bound QueryFlowHistory.
+const (
+	defaultFlowHistoryLimit = 100
+	maxFlowHistoryLimit     = 500
+)
+
+// QueryFlowHistory answers "which box contacted this destination, and when"
+// from the opt-in flow log (#3709). Tenant-scoped exactly like ListFindings: a
+// non-admin caller's tenant is forced to their own subject, and asking for
+// another tenant's is denied.
+func (s *ThreatDetectionServer) QueryFlowHistory(ctx context.Context, req *pb.QueryFlowHistoryRequest) (*pb.QueryFlowHistoryResponse, error) {
+	if err := auth.RequireScope(ctx, auth.ScopeSecurityRead); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	fl := s.flowLog
+	s.mu.Unlock()
+	if fl == nil {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"the flow log is not enabled; set CONTAINARIUM_THREAT_FLOWLOG_HOURS on the daemon and restart")
+	}
+	subject, roles, ok := auth.SubjectFromGRPCContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "no authenticated subject")
+	}
+	dst, err := netip.ParseAddr(strings.TrimSpace(req.GetDstIp()))
+	if err != nil || !dst.Is4() {
+		return nil, status.Errorf(codes.InvalidArgument, "dst_ip must be an IPv4 address, got %q", req.GetDstIp())
+	}
+	if req.GetDstPort() > 65535 {
+		return nil, status.Errorf(codes.InvalidArgument, "dst_port %d is out of range", req.GetDstPort())
+	}
+	tenantID := req.GetTenantId()
+	if !auth.HasRole(roles, auth.RoleAdmin) {
+		if tenantID != "" && tenantID != subject {
+			return nil, status.Error(codes.PermissionDenied, "not authorized for this tenant")
+		}
+		tenantID = subject
+	}
+	limit := int(req.GetLimit())
+	if limit <= 0 || limit > maxFlowHistoryLimit {
+		limit = defaultFlowHistoryLimit
+	}
+	q := threatdetect.FlowLogQuery{Dst: dst, Dport: uint16(req.GetDstPort()), TenantID: tenantID, Limit: limit} // #nosec G115 -- bounded above
+	if req.GetSince() != nil {
+		q.Since = req.GetSince().AsTime()
+	}
+	if req.GetUntil() != nil {
+		q.Until = req.GetUntil().AsTime()
+	}
+	entries, covered := fl.Query(time.Now(), q)
+	out := &pb.QueryFlowHistoryResponse{
+		CoveredSince:     timestamppb.New(covered),
+		RetentionSeconds: int64(fl.Retention() / time.Second),
+		Entries:          make([]*pb.FlowHistoryEntry, 0, len(entries)),
+	}
+	for _, e := range entries {
+		out.Entries = append(out.Entries, &pb.FlowHistoryEntry{
+			Container:   e.Container,
+			TenantId:    e.TenantID,
+			SrcIp:       e.Src.String(),
+			DstIp:       e.Dst.String(),
+			DstPort:     uint32(e.Dport),
+			Protocol:    flowLogProtoName(e.Proto),
+			FirstSeen:   timestamppb.New(e.FirstSeen),
+			LastSeen:    timestamppb.New(e.LastSeen),
+			Bytes:       int64(e.Bytes),   // #nosec G115 -- one flow's counters
+			Packets:     int64(e.Packets), // #nosec G115 -- one flow's counters
+			LikelyReply: e.LikelyReply(),
+		})
+	}
+	return out, nil
+}
+
+// flowLogProtoName is the IP protocol's short name, "" for one the log never
+// records.
+func flowLogProtoName(p uint8) string {
+	switch p {
+	case 1:
+		return "icmp"
+	case 6:
+		return "tcp"
+	case 17:
+		return "udp"
+	}
+	return ""
 }
 
 // ResolveFinding transitions an open finding to resolved. Any authenticated

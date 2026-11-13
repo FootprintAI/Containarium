@@ -507,6 +507,42 @@ startup. Off by default, so upgrading changes nothing until you opt in.
 - A packet from a box with a forged source address is not counted against the
   real box's budget; the spoofed-source check handles it.
 
+## Attributing an egress alert to a box: the flow log (opt-in)
+
+A cloud provider's firewall alert names a VM and a destination, not the box
+that opened the connection, and the host keeps no per-flow history to say which
+box it was. The flow log closes that gap: an in-memory record of which box
+contacted which **public** address, and when.
+
+It is off by default, because it retains destination addresses (which the
+conntrack fan-out design in [EGRESS-FANOUT-DETECTION.md](EGRESS-FANOUT-DETECTION.md)
+deliberately does not). Set `CONTAINARIUM_THREAT_FLOWLOG_HOURS` on the daemon
+(1 to 72, anything else is off) and restart. It needs the network-policy
+enforcer, not the sentry. History is **in memory only** and bounded in size: a
+restart empties it, and a very busy host keeps less than the configured hours.
+
+```
+containarium --server <url> security flow-history 91.121.106.55 --port 4444 --since 24h
+```
+
+It prints each box that contacted the destination (box, tenant, source address,
+first and last seen), and always states the time the log covers. **An empty
+answer only means "no box did" from that time on**: before it, the log simply
+was not recording. The `query_flow_history` MCP tool is the same call. A
+non-admin caller only sees their own tenant, and the call needs the
+`security:read` scope.
+
+Limits to read the output against:
+
+- The flow records also hold a box's **replies to clients that connected to it**.
+  Those carry the client's ephemeral port, so an entry whose port is 32768 or
+  higher is marked `reply?`: it may be the box answering, not dialing out. A flow
+  to a fixed service port (a stratum pool's 4444, a proxy's 3128) is box-initiated.
+- Timestamps come from the 15-second flow poll. A flow that started before the
+  log did is first seen at the first poll after the log began.
+- Counters are the largest reported for any one flow to that destination, not a
+  sum. IPv4 only. Destinations on private or reserved ranges are never recorded.
+
 ## Triaging findings
 
 ```bash

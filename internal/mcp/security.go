@@ -3,7 +3,10 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"strings"
+
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // Security tool kinds — match the daemon's three scanner subsystems.
@@ -345,6 +348,39 @@ func handleListSecuritySentryFindings(client API, args map[string]interface{}) (
 		f.State = strings.TrimPrefix(f.State, "FINDING_STATE_")
 	}
 	out, _ := json.MarshalIndent(resp, "", "  ")
+	return string(out), nil
+}
+
+// handleQueryFlowHistory answers "which box contacted this destination, and
+// when" from the daemon's opt-in flow log (#3709), the same call as
+// `containarium security flow-history`. The result always carries covered_since
+// and retention, so an empty list is read against what the log can actually
+// answer; a daemon with the log off returns an error, never an empty list.
+func handleQueryFlowHistory(client API, args map[string]interface{}) (string, error) {
+	dst := strings.TrimSpace(getStringArg(args, "dst_ip", ""))
+	if a, err := netip.ParseAddr(dst); err != nil || !a.Is4() {
+		return "", fmt.Errorf("dst_ip must be an IPv4 address, got %q", dst)
+	}
+	port := 0
+	if v, ok := getInt64Arg(args, "dst_port"); ok {
+		if v < 0 || v > 65535 {
+			return "", fmt.Errorf("dst_port %d is out of range", v)
+		}
+		port = int(v)
+	}
+	limit := 0
+	if v, ok := getInt64Arg(args, "limit"); ok {
+		limit = int(v)
+	}
+	resp, err := client.QueryFlowHistory(dst, port,
+		getStringArg(args, "since", ""), getStringArg(args, "until", ""), getStringArg(args, "tenant", ""), limit)
+	if err != nil {
+		return "", fmt.Errorf("query flow history: %w", err)
+	}
+	out, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(resp)
+	if err != nil {
+		return "", fmt.Errorf("render flow history: %w", err)
+	}
 	return string(out), nil
 }
 

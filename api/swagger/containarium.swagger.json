@@ -8355,6 +8355,76 @@
         ]
       }
     },
+    "/v1/security/flow-history": {
+      "get": {
+        "summary": "Query recorded flows to a destination",
+        "description": "Returns the boxes that contacted a destination address (and optional port) within the flow log's retention, most recently seen first, so an egress alert from the provider can be attributed to a box after the fact. The log is opt-in (CONTAINARIUM_THREAT_FLOWLOG_HOURS) and held in memory only. Non-admin callers only see their own tenant.",
+        "operationId": "ThreatDetectionService_QueryFlowHistory",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/QueryFlowHistoryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "dstIp",
+            "description": "Destination address to look up (IPv4, exact). Required.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "dstPort",
+            "description": "Destination port. 0 (default) matches any port.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "name": "since",
+            "description": "Only flows last seen at or after / first seen at or before these times.\nUnset matches everything the log holds.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "name": "tenantId",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "limit",
+            "description": "\u003c= 0 or \u003e 500 is treated as the server default (100).",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          }
+        ],
+        "tags": [
+          "Security"
+        ]
+      }
+    },
     "/v1/security/miner-signatures": {
       "get": {
         "summary": "List miner signatures",
@@ -15790,6 +15860,54 @@
       },
       "description": "FlowEvidence captures one triggering flow's 5-tuple and volume, attached to\na finding as supporting evidence."
     },
+    "FlowHistoryEntry": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "type": "string",
+          "description": "The box that opened the flow, when its address resolved to one; empty when\nonly the tenant is known."
+        },
+        "tenantId": {
+          "type": "string"
+        },
+        "srcIp": {
+          "type": "string"
+        },
+        "dstIp": {
+          "type": "string"
+        },
+        "dstPort": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "protocol": {
+          "type": "string",
+          "description": "\"tcp\", \"udp\" or \"icmp\"."
+        },
+        "firstSeen": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastSeen": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "bytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "The largest cumulative counters reported for any single flow to this\ndestination, not a sum: several connections share one entry."
+        },
+        "packets": {
+          "type": "string",
+          "format": "int64"
+        },
+        "likelyReply": {
+          "type": "boolean",
+          "description": "True when dst_port is in the ephemeral range (32768 and up). The flow\nrecords also hold a box's replies to clients that connected to it, which\ncarry the client's ephemeral port, so such an entry may be the box\nanswering rather than dialing out. A flow to a fixed service port is a\nbox-initiated one."
+        }
+      },
+      "description": "FlowHistoryEntry is one box's recorded contact with one destination: the\nbox, the destination, and when it was first and last seen."
+    },
     "GPUInfo": {
       "type": "object",
       "properties": {
@@ -20145,6 +20263,29 @@
             "type": "string"
           },
           "description": "Per-record delete failures, as \"\u003cid\u003e: \u003cerror\u003e\" strings. One bad\nrecord (e.g. a transient object-store error) never aborts pruning\nthe rest — mirrors CreateBackupResponse.failures (#954)."
+        }
+      }
+    },
+    "QueryFlowHistoryResponse": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/FlowHistoryEntry"
+          },
+          "description": "Most recently seen first."
+        },
+        "coveredSince": {
+          "type": "string",
+          "format": "date-time",
+          "description": "How far back the log can answer: the oldest moment it has covered since the\ndaemon started recording, capped by the retention. An empty result for a\ntime before this proves nothing; after it, it means the box did not open the\nflow (within the 15 s flow-poll granularity)."
+        },
+        "retentionSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "The configured retention, in seconds."
         }
       }
     },

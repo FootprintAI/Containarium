@@ -45,6 +45,7 @@ import (
 	"github.com/footprintai/containarium/internal/metrics/platformstats"
 	"github.com/footprintai/containarium/internal/modelgateway"
 	"github.com/footprintai/containarium/internal/mtls"
+	"github.com/footprintai/containarium/internal/netbpf"
 	"github.com/footprintai/containarium/internal/nicguard"
 	"github.com/footprintai/containarium/internal/notify"
 	"github.com/footprintai/containarium/internal/policyreadiness"
@@ -2266,6 +2267,26 @@ skipAppHosting:
 	}
 	threatDetectServer := NewThreatDetectionServer(threatDetectEngine, threatCfg.SentryEnabled, sentryAvailable, sentryUnavailableReason)
 	threatDetectServer.SetFindingStore(threatDetectStore)
+	// Flow log (#3709): opt-in, in memory. It rides the enforcer's flow poll, so
+	// it needs the network-policy enforcer but not the sentry. The enforcer has
+	// one flow hook, so this composes with the engine's rather than replacing it.
+	if flowLog := threatdetect.NewFlowLog(threatCfg.FlowLogRetention, time.Now()); flowLog != nil {
+		if networkPolicyEnforcer == nil {
+			log.Printf("Warning: %s is set but the network-policy enforcer is not running; the flow log has no source and stays empty", appconfig.EnvThreatFlowLogHours)
+		} else {
+			enf := networkPolicyEnforcer
+			engineHook := func([]netbpf.FlowRecord) {}
+			if threatDetectEngine != nil {
+				engineHook = threatDetectEngine.OnFlows
+			}
+			enf.SetFlowHook(func(flows []netbpf.FlowRecord) {
+				engineHook(flows)
+				flowLog.Record(time.Now(), flows, enf.TenantForIP, enf.ContainerForIP)
+			})
+			log.Printf("Threat detection: flow log on, keeping %s of box-to-destination history in memory", flowLog.Retention())
+		}
+		threatDetectServer.SetFlowLog(flowLog)
+	}
 	if execWatcher != nil {
 		threatDetectServer.SetExecTelemetry(execWatcher)
 		// The watcher loads the exec-watch object from the network-policy

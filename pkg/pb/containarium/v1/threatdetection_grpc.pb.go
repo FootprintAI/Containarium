@@ -24,6 +24,7 @@ const (
 	ThreatDetectionService_AddBadDestination_FullMethodName    = "/containarium.v1.ThreatDetectionService/AddBadDestination"
 	ThreatDetectionService_RemoveBadDestination_FullMethodName = "/containarium.v1.ThreatDetectionService/RemoveBadDestination"
 	ThreatDetectionService_ListFindings_FullMethodName         = "/containarium.v1.ThreatDetectionService/ListFindings"
+	ThreatDetectionService_QueryFlowHistory_FullMethodName     = "/containarium.v1.ThreatDetectionService/QueryFlowHistory"
 	ThreatDetectionService_ResolveFinding_FullMethodName       = "/containarium.v1.ThreatDetectionService/ResolveFinding"
 	ThreatDetectionService_GetProcessPolicy_FullMethodName     = "/containarium.v1.ThreatDetectionService/GetProcessPolicy"
 	ThreatDetectionService_SetProcessPolicy_FullMethodName     = "/containarium.v1.ThreatDetectionService/SetProcessPolicy"
@@ -62,6 +63,11 @@ type ThreatDetectionServiceClient interface {
 	// ListFindings lists security findings, most recently seen first.
 	// Tenant-scoped: a non-admin caller only ever sees their own tenant_id.
 	ListFindings(ctx context.Context, in *ListFindingsRequest, opts ...grpc.CallOption) (*ListFindingsResponse, error)
+	// QueryFlowHistory answers "which box contacted this destination, and when",
+	// from the opt-in in-memory flow log. Fails with FAILED_PRECONDITION when the
+	// log is not enabled. Tenant-scoped: a non-admin caller only sees their own
+	// tenant_id.
+	QueryFlowHistory(ctx context.Context, in *QueryFlowHistoryRequest, opts ...grpc.CallOption) (*QueryFlowHistoryResponse, error)
 	// ResolveFinding transitions an open finding to resolved. Fails if the
 	// finding is already resolved or doesn't exist.
 	ResolveFinding(ctx context.Context, in *ResolveFindingRequest, opts ...grpc.CallOption) (*ResolveFindingResponse, error)
@@ -147,6 +153,16 @@ func (c *threatDetectionServiceClient) ListFindings(ctx context.Context, in *Lis
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListFindingsResponse)
 	err := c.cc.Invoke(ctx, ThreatDetectionService_ListFindings_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *threatDetectionServiceClient) QueryFlowHistory(ctx context.Context, in *QueryFlowHistoryRequest, opts ...grpc.CallOption) (*QueryFlowHistoryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(QueryFlowHistoryResponse)
+	err := c.cc.Invoke(ctx, ThreatDetectionService_QueryFlowHistory_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -270,6 +286,11 @@ type ThreatDetectionServiceServer interface {
 	// ListFindings lists security findings, most recently seen first.
 	// Tenant-scoped: a non-admin caller only ever sees their own tenant_id.
 	ListFindings(context.Context, *ListFindingsRequest) (*ListFindingsResponse, error)
+	// QueryFlowHistory answers "which box contacted this destination, and when",
+	// from the opt-in in-memory flow log. Fails with FAILED_PRECONDITION when the
+	// log is not enabled. Tenant-scoped: a non-admin caller only sees their own
+	// tenant_id.
+	QueryFlowHistory(context.Context, *QueryFlowHistoryRequest) (*QueryFlowHistoryResponse, error)
 	// ResolveFinding transitions an open finding to resolved. Fails if the
 	// finding is already resolved or doesn't exist.
 	ResolveFinding(context.Context, *ResolveFindingRequest) (*ResolveFindingResponse, error)
@@ -325,6 +346,9 @@ func (UnimplementedThreatDetectionServiceServer) RemoveBadDestination(context.Co
 }
 func (UnimplementedThreatDetectionServiceServer) ListFindings(context.Context, *ListFindingsRequest) (*ListFindingsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListFindings not implemented")
+}
+func (UnimplementedThreatDetectionServiceServer) QueryFlowHistory(context.Context, *QueryFlowHistoryRequest) (*QueryFlowHistoryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method QueryFlowHistory not implemented")
 }
 func (UnimplementedThreatDetectionServiceServer) ResolveFinding(context.Context, *ResolveFindingRequest) (*ResolveFindingResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResolveFinding not implemented")
@@ -458,6 +482,24 @@ func _ThreatDetectionService_ListFindings_Handler(srv interface{}, ctx context.C
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ThreatDetectionServiceServer).ListFindings(ctx, req.(*ListFindingsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ThreatDetectionService_QueryFlowHistory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(QueryFlowHistoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ThreatDetectionServiceServer).QueryFlowHistory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ThreatDetectionService_QueryFlowHistory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ThreatDetectionServiceServer).QueryFlowHistory(ctx, req.(*QueryFlowHistoryRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -625,6 +667,10 @@ var ThreatDetectionService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListFindings",
 			Handler:    _ThreatDetectionService_ListFindings_Handler,
+		},
+		{
+			MethodName: "QueryFlowHistory",
+			Handler:    _ThreatDetectionService_QueryFlowHistory_Handler,
 		},
 		{
 			MethodName: "ResolveFinding",
