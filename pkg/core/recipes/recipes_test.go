@@ -743,6 +743,90 @@ func TestCodingAgentRecipe_OldInstallerHandling(t *testing.T) {
 	}
 }
 
+// TestCodingAgentRecipe_SkillsVersion: skills_base_url and skills_version are
+// optional parameters handed to the installer as they are. A version asked of
+// an installer that would ignore it (or of a release with none) fails the
+// step, so a deploy never reports a box as moved when it was not.
+func TestCodingAgentRecipe_SkillsVersion(t *testing.T) {
+	m := New()
+	if err := m.LoadEmbedded(); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"coding-agent", "slides-agent"} {
+		r, err := m.Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := map[string]bool{}
+		for _, p := range r.Parameters {
+			if p.Name == "skills_version" || p.Name == "skills_base_url" {
+				found[p.Name] = true
+				if p.Required || p.Default != "" {
+					t.Errorf("%s: %s must be optional with an empty default (empty = the box stays where it is)", id, p.Name)
+				}
+			}
+		}
+		if len(found) != 2 {
+			t.Errorf("%s: parameters skills_version and skills_base_url: found %v", id, found)
+		}
+	}
+	r, _ := m.Get("coding-agent")
+	var step string
+	for _, line := range r.PostStart {
+		if strings.Contains(line, "install-sdlc-skills.sh") {
+			step = line
+		}
+	}
+	for _, want := range []string{`SKILLS_BASE_URL="${CONTAINARIUM_PARAM_SKILLS_BASE_URL:-}"`, `SKILLS_VERSION="${CONTAINARIUM_PARAM_SKILLS_VERSION:-}"`} {
+		if !strings.Contains(step, want) {
+			t.Errorf("the SDLC skills step does not pass %s to the box user's script", want)
+		}
+	}
+	start := strings.Index(step, "bash -c '")
+	end := strings.LastIndex(step, "\n'")
+	if start < 0 || end < start {
+		t.Fatal("cannot find the inner installer script")
+	}
+	inner := step[start+len("bash -c '") : end]
+
+	const marked = "# skill-sets: v1\n# skills-source: v1\n"
+	for _, tc := range []struct {
+		name, status, body, base, version string
+		wantOK, wantRan                   bool
+		wantOut                           string
+	}{
+		{"version, installer knows it: both values reach it", "200", marked + "echo \"got=$SDLC_SKILLS_VERSION@$SDLC_SKILLS_BASE_URL\"\n", "https://skills.example.com/sdlc", "2026.11.0", true, true, "got=2026.11.0@https://skills.example.com/sdlc"},
+		{"version, older installer: refused", "200", "# skill-sets: v1\n", "https://skills.example.com/sdlc", "2026.11.0", false, false, "predates signed skills releases"},
+		{"version, no installer: refused", "404", "", "https://skills.example.com/sdlc", "2026.11.0", false, false, "cannot move the box to skills release 2026.11.0"},
+		{"base URL only, older installer: as before", "200", "# skill-sets: v1\n", "https://skills.example.com/sdlc", "", true, true, ""},
+		{"neither: as before", "200", marked + "echo \"got=$SDLC_SKILLS_VERSION@$SDLC_SKILLS_BASE_URL\"\n", "", "", true, true, "got=@"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ran := dir + "/ran"
+			fake := "#!/bin/sh\nout=''\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) out=\"$2\"; shift;; esac; shift; done\n" +
+				"cat > \"$out\" <<'INSTALLER'\n#!/bin/sh\n" + tc.body + "touch " + ran + "\nINSTALLER\nprintf '" + tc.status + "'\n"
+			if err := os.MkdirAll(dir+"/bin", 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(dir+"/bin/curl", []byte(fake), 0o700); err != nil { //nolint:gosec // test stand-in
+				t.Fatal(err)
+			}
+			cmd := exec.Command("bash", "-c", inner) //nolint:gosec // embedded recipe text
+			cmd.Env = append(os.Environ(), "PATH="+dir+"/bin:"+os.Getenv("PATH"), "RELEASE=v9.9.9", "SETS=all",
+				"SKILLS_BASE_URL="+tc.base, "SKILLS_VERSION="+tc.version)
+			out, err := cmd.CombinedOutput()
+			_, statErr := os.Stat(ran)
+			if (err == nil) != tc.wantOK || (statErr == nil) != tc.wantRan {
+				t.Errorf("ok=%v ran=%v, want ok=%v ran=%v\n%s", err == nil, statErr == nil, tc.wantOK, tc.wantRan, out)
+			}
+			if tc.wantOut != "" && !strings.Contains(string(out), tc.wantOut) {
+				t.Errorf("output %q does not contain %q", out, tc.wantOut)
+			}
+		})
+	}
+}
+
 // TestSlidesAgentRecipe (#3434): a slides-agent box is coding-agent plus the
 // prebaked slides image. It shares coding-agent's post_start contract line for
 // line, runs the dev server only behind the in-box auth proxy, and fetches

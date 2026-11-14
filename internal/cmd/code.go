@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -96,6 +97,8 @@ var (
 	codeBootstrapURL      string
 	codeNoSDLCSkills      bool
 	codeSkillSets         string
+	codeSkillsVersion     string
+	codeSkillsBaseURL     string
 	codeRelease           string
 	codeClaudeCodeVersion string
 
@@ -244,6 +247,10 @@ func init() {
 	_ = codeInstallCmd.Flags().MarkDeprecated("no-sdlc-skills", "use --skill-sets none")
 	codeInstallCmd.Flags().StringVar(&codeSkillSets, "skill-sets", "",
 		"which pinned SDLC skill sets to install into ~/.claude/skills: a comma-separated list of set ids (for example sdlc,qa), \"all\", or \"none\" (default: all). An unknown id fails and names the known ones; narrowing the list on a re-run removes the dropped sets. To change the sets later without re-installing the engine, use `containarium code skill-sets`")
+	codeInstallCmd.Flags().StringVar(&codeSkillsVersion, "skills-version", "",
+		"move this box to a signed skills release: a version name or \"latest\". Needs --skills-base-url. Default: keep the box on the skills release it has (a box with none takes the newest one once when --skills-base-url is set, else the release's own bundle)")
+	codeInstallCmd.Flags().StringVar(&codeSkillsBaseURL, "skills-base-url", "",
+		"where signed skills releases are published (default: $"+skillsBaseURLEnv+"). Without one the skills come from the Containarium release's own bundle")
 	codeInstallCmd.Flags().StringVar(&codeRelease, "release", "",
 		"release tag to pull the agent-box / mcp-server assets from, v-prefixed (default: this CLI's own version)")
 	codeInstallCmd.Flags().StringVar(&codeClaudeCodeVersion, "claude-code-version", "",
@@ -638,8 +645,32 @@ echo "agent-box installed at $HOME/.local/bin/agent-box"`
 // releaseTagPattern, so it is safe inside the double-quoted URL. The script
 // itself is sdlcskills.InstallScript, shared with the daemon's
 // ApplyBoxSkillSets (#3374) so both paths run the one installer the same way.
-func sdlcSkillsInstallScript(release string, sets sdlcskills.SkillSets) string {
-	return sdlcskills.InstallScript(agentBoxRepo, release, sets)
+func sdlcSkillsInstallScript(release string, sets sdlcskills.SkillSets, src sdlcskills.SkillsSource) string {
+	return sdlcskills.InstallScriptFrom(agentBoxRepo, release, sets, src)
+}
+
+// skillsBaseURLEnv is the default for --skills-base-url, the same variable
+// the daemon reads.
+const skillsBaseURLEnv = "CONTAINARIUM_SDLC_SKILLS_BASE_URL"
+
+// codeInstallSkillsSource resolves --skills-base-url (else the environment,
+// else the built-in default) and --skills-version into a validated source.
+func codeInstallSkillsSource() (sdlcskills.SkillsSource, error) {
+	base := strings.TrimSpace(codeSkillsBaseURL)
+	if base == "" {
+		base = strings.TrimSpace(os.Getenv(skillsBaseURLEnv))
+	}
+	if base == "" {
+		base = sdlcskills.DefaultBaseURL
+	}
+	if strings.TrimSpace(codeSkillsVersion) != "" && base == "" {
+		return sdlcskills.SkillsSource{}, fmt.Errorf("--skills-version needs --skills-base-url (or $%s): where signed skills releases are published", skillsBaseURLEnv)
+	}
+	src, err := sdlcskills.NewSkillsSource(base, codeSkillsVersion)
+	if err != nil {
+		return sdlcskills.SkillsSource{}, fmt.Errorf("--skills-version / --skills-base-url: %w", err)
+	}
+	return src, nil
 }
 
 // releaseTagPattern is what may be interpolated into the asset URL above.
@@ -729,6 +760,10 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	skillsSource, err := codeInstallSkillsSource()
+	if err != nil {
+		return err
+	}
 	mint, err := codeInstallPreflight(ctx, box, plan, diag)
 	if err != nil {
 		return err
@@ -764,7 +799,7 @@ func runCodeInstall(cmd *cobra.Command, args []string) error {
 	// The role skills are Claude Code skills (~/.claude/skills), so only the
 	// Claude engine gets them (#2065).
 	if plan.engine.Name() == engine.NameClaude {
-		if _, err := run(sdlcSkillsInstallScript(release, skillSets)); err != nil {
+		if _, err := run(sdlcSkillsInstallScript(release, skillSets, skillsSource)); err != nil {
 			return fmt.Errorf("install SDLC skills (%s) on %q: %w", release, box, err)
 		}
 		fmt.Fprintf(diag, "✓ SDLC skills (%s) installed on %s (from %s)\n", skillSets, box, release)

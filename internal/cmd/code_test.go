@@ -522,7 +522,7 @@ func TestCodeInstallScripts_AreValidPOSIXShell(t *testing.T) {
 		"claude-install":      claudeInstallScriptFor("1.2.3"),
 		"claude-install-bare": claudeInstallScriptFor(""),
 		"agent-box":           agentBoxInstallScript("v0.89.0"),
-		"sdlc-skills":         sdlcSkillsInstallScript("v0.89.0", sdlcskills.SkillSets{}),
+		"sdlc-skills":         sdlcSkillsInstallScript("v0.89.0", sdlcskills.SkillSets{}, sdlcskills.SkillsSource{}),
 		"bootstrap":           bootstrapScript("https://example.test/b.tar.gz"),
 		"bootstrap-preflight": bootstrapPreflightScript(),
 		"verify":              claudeVerifyScript(),

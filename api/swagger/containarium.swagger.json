@@ -12139,6 +12139,10 @@
         "release": {
           "type": "string",
           "description": "The Containarium release whose installer, lock and skills bundle to use\n(a v-prefixed tag). Empty means the daemon's own release."
+        },
+        "skillsVersion": {
+          "type": "string",
+          "description": "The signed skills release to move the box to: a version name, or\n\"latest\". Empty keeps the box on the skills release it has (a box with\nnone recorded takes the newest one once, when the daemon has a skills\nbase URL configured). This is the only way a box changes skills release:\na daemon upgrade or a change of skill_sets alone never does. A value\nneeds a daemon configured with a skills base URL (FAILED_PRECONDITION\notherwise) and a release whose installer knows signed skills releases;\na value that is not a version name is INVALID_ARGUMENT."
         }
       },
       "description": "ApplyBoxSkillSetsRequest re-applies a box's SDLC skill sets."
@@ -12176,6 +12180,10 @@
         "release": {
           "type": "string",
           "description": "The release the skills came from (the request's, or the daemon's own)."
+        },
+        "skillsVersion": {
+          "type": "string",
+          "description": "The signed skills release the box now records, as its installer wrote\nit. Empty when the box's skills came from a Containarium release asset\n(no signed skills release), or when the call removed every set."
         }
       }
     },

@@ -32,11 +32,11 @@ func blockInstall(t *testing.T, s *ContainerServer, home string) (entered, relea
 	inner := s.boxSkillSetsInstall
 	entered, release = make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	s.boxSkillSetsInstall = func(box, user, rel string, sets sdlcskills.SkillSets) (string, error) {
+	s.boxSkillSetsInstall = func(box, user, rel string, sets sdlcskills.SkillSets, src sdlcskills.SkillsSource) (string, error) {
 		writeSkill(t, home, "qa-half-written", "partial")
 		once.Do(func() { close(entered) })
 		<-release
-		return inner(box, user, rel, sets)
+		return inner(box, user, rel, sets, src)
 	}
 	return entered, release
 }

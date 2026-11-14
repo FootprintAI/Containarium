@@ -123,7 +123,7 @@ func TestApplyBoxSkillSets_RemovesTheMarkerOnFailureAndPanic(t *testing.T) {
 			home := t.TempDir()
 			s, _, _ := skillSetServer(t, home, pb.ContainerState_CONTAINER_STATE_RUNNING)
 			sawMarker := false
-			s.boxSkillSetsInstall = func(_, _, _ string, _ sdlcskills.SkillSets) (string, error) {
+			s.boxSkillSetsInstall = func(_, _, _ string, _ sdlcskills.SkillSets, _ sdlcskills.SkillsSource) (string, error) {
 				_, err := os.Stat(applyMarkerPath(home))
 				sawMarker = err == nil
 				if tc.install != nil {
@@ -221,13 +221,13 @@ func TestApplyBoxSkillSets_NoRenewalAfterTheMarkerIsRemoved(t *testing.T) {
 	}
 	// The install ends while the first renewal is in flight.
 	inner := s.boxSkillSetsInstall
-	s.boxSkillSetsInstall = func(box, user, rel string, sets sdlcskills.SkillSets) (string, error) {
+	s.boxSkillSetsInstall = func(box, user, rel string, sets sdlcskills.SkillSets, src sdlcskills.SkillsSource) (string, error) {
 		select {
 		case <-renewing:
 		case <-time.After(10 * time.Second):
 			return "", errors.New("no renewal within 10s")
 		}
-		return inner(box, user, rel, sets)
+		return inner(box, user, rel, sets, src)
 	}
 
 	applied := make(chan error, 1)

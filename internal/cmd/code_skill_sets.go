@@ -19,8 +19,9 @@ import (
 // changes them afterwards, with no SSH client, on a box that already exists.
 
 var (
-	codeSkillSetsValue   string
-	codeSkillSetsRelease string
+	codeSkillSetsValue         string
+	codeSkillSetsRelease       string
+	codeSkillSetsSkillsVersion string
 )
 
 var codeSkillSetsCmd = &cobra.Command{
@@ -55,9 +56,17 @@ not ones proven to have held it for 30s); retry shortly.
 the box fetches (default: the daemon's own). The box needs to reach GitHub, as
 for ` + "`code install`" + `.
 
+--skills-version moves this one box to a signed skills release: a version name,
+or "latest". It is the only thing that does. Without it the box stays on the
+skills release it has, whatever the daemon's release and whatever --skill-sets
+changes; give an earlier version to go back. It needs a daemon configured with
+a skills base URL (CONTAINARIUM_SDLC_SKILLS_BASE_URL); the box then also needs
+to reach that URL. The output names the skills release the box is on.
+
 Examples:
   containarium code skill-sets alice --skill-sets sdlc,qa --server <host>
-  containarium code skill-sets alice --skill-sets none --server <host>`,
+  containarium code skill-sets alice --skill-sets none --server <host>
+  containarium code skill-sets alice --skill-sets sdlc,qa --skills-version 2026.11.0 --server <host>`,
 	Args: cobra.ExactArgs(1),
 	RunE: runCodeSkillSets,
 }
@@ -69,6 +78,8 @@ func init() {
 	_ = codeSkillSetsCmd.MarkFlagRequired("skill-sets")
 	codeSkillSetsCmd.Flags().StringVar(&codeSkillSetsRelease, "release", "",
 		"Containarium release tag whose installer, lock and skills bundle to use (default: the daemon's own)")
+	codeSkillSetsCmd.Flags().StringVar(&codeSkillSetsSkillsVersion, "skills-version", "",
+		"move this box to a signed skills release: a version name or \"latest\" (default: keep the box on the skills release it has)")
 }
 
 // boxSkillSetApplier is what the command needs from a daemon client.
@@ -95,7 +106,7 @@ func runCodeSkillSets(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer func() { _ = c.Close() }()
-	return codeApplySkillSets(c, args[0], codeSkillSetsValue, codeSkillSetsRelease, os.Stdout)
+	return codeApplySkillSets(c, args[0], codeSkillSetsValue, codeSkillSetsRelease, codeSkillSetsSkillsVersion, os.Stdout)
 }
 
 // resolveSkillSetTarget turns the --skill-sets value into the RPC's explicit
@@ -128,12 +139,12 @@ func resolveSkillSetTarget(value string) ([]string, error) {
 	return sets.IDs(), nil
 }
 
-func codeApplySkillSets(c boxSkillSetApplier, box, value, release string, w io.Writer) error {
+func codeApplySkillSets(c boxSkillSetApplier, box, value, release, skillsVersion string, w io.Writer) error {
 	target, err := resolveSkillSetTarget(value)
 	if err != nil {
 		return err
 	}
-	resp, err := client.ApplySkillSets(c, box, target, release)
+	resp, err := client.ApplySkillSetsWith(c, client.SkillSetsApply{Box: box, Target: target, Release: release, SkillsVersion: skillsVersion})
 	if isUnimplemented(err) {
 		return fmt.Errorf("this daemon does not support re-applying skill sets (ApplyBoxSkillSets); upgrade it, or re-run `containarium code install %s --skill-sets %s`", box, value)
 	}

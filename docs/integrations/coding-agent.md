@@ -146,7 +146,8 @@ An agent re-applies a box's sets with the platform MCP tool
 `apply_box_skill_sets` (#3511), a thin wrapper over the same client function
 as `code skill-sets` and the same REST path. Its arguments are `box`,
 `skill_sets` (the complete target list of set ids; an empty array removes
-every set, and there is no `all` literal) and an optional `release`. It reports
+every set, and there is no `all` literal), an optional `release` and an
+optional `skills_version` (see "Moving one box to another skills release"). It reports
 what was installed, removed or left unchanged, and a refusal comes back as
 `refused (RUN_IN_PROGRESS)`, `refused (SET_PREDATES_MANIFEST)` or
 `refused (UNKNOWN_SKILL_SET)` followed by the daemon's message. A bad box name,
@@ -205,3 +206,29 @@ keeps it: a later run without `SDLC_SKILLS_VERSION` installs the recorded
 version again, a box whose skills came from a release asset stays on that
 asset, and only a box with nothing recorded takes `latest`. Set
 `SDLC_SKILLS_VERSION=<version>` (or `latest`) to move a box, forward or back.
+
+**Moving one box to another skills release.** A box changes skills release
+only when it is asked to by name:
+
+```
+containarium code skill-sets <box> --skill-sets sdlc,qa --skills-version 2026.11.0 --server <host>
+```
+
+`--skills-version` takes a version name or `latest`; an earlier version is the
+way back. Without it the box stays on the skills release it has, whatever the
+daemon's release and whatever `--skill-sets` changes. The output names the
+skills release the box is on afterwards. The daemon needs to know where signed
+skills releases are published: set `CONTAINARIUM_SDLC_SKILLS_BASE_URL` in its
+environment (a version asked of a daemon without one is refused with
+`FAILED_PRECONDITION`). The same field is `skills_version` on
+`ApplyBoxSkillSets` and on the `apply_box_skill_sets` MCP tool. At install
+time, `containarium code install --skills-base-url <url> [--skills-version <v>]`
+and the `coding-agent` / `slides-agent` recipe parameters `skills_base_url`
+and `skills_version` do the same. A version asked of a release whose
+installer predates signed skills releases fails rather than reporting a move
+that did not happen. Nothing moves more than one box per call.
+
+A daemon that composes the hosted issue-implementer's standard from a bundle
+(`CONTAINARIUM_SDLC_SKILLS_BUNDLE`) verifies a signed skills release when
+`sdlc-skills.manifest` and its `.sig` lie beside the bundle, with the keys
+built into the daemon or `CONTAINARIUM_SDLC_SKILLS_TRUSTED_KEYS_FILE`.

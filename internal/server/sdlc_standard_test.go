@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -106,5 +107,52 @@ func TestApplyPinnedStandard_FailuresFallBackAndSayWhy(t *testing.T) {
 				t.Errorf("prompt/source changed on a failure: %q %v", s.SystemPrompt, s.PromptSource)
 			}
 		})
+	}
+}
+
+// A bundle with a manifest beside it is a signed skills release: it is
+// verified by signature, with the built-in keys or the operator's key file,
+// and never falls back to the embedded lock.
+func TestLoadSDLCBundle_SignedReleaseBesideTheBundle(t *testing.T) {
+	releases := newSignedSkillsReleases(t)
+	releases.publish(t, "2026.11.0", false)
+	bundle := filepath.Join(releases.dir, "2026.11.0", "sdlc-skills.tar.gz")
+
+	t.Setenv(sdlcTrustedKeysEnv, releases.pub)
+	p, err := loadSDLCBundle(bundle)
+	if err != nil {
+		t.Fatalf("signed release refused: %v", err)
+	}
+	if got, want := p.Pin(), "example/skills@"+strings.Repeat("a", 12); got != want {
+		t.Errorf("Pin() = %q, want %q", got, want)
+	}
+
+	// Another key: refused, and the reason is the signature, not the lock.
+	other := newSignedSkillsReleases(t)
+	t.Setenv(sdlcTrustedKeysEnv, other.pub)
+	if _, err := loadSDLCBundle(bundle); err == nil || !strings.Contains(err.Error(), "signature") {
+		t.Errorf("err = %v, want a signature refusal", err)
+	}
+	// No operator key file: only the keys built into this binary count, and
+	// none of them signed this fixture.
+	t.Setenv(sdlcTrustedKeysEnv, "")
+	if _, err := loadSDLCBundle(bundle); err == nil {
+		t.Error("a release signed by a test key verified against the built-in keys")
+	}
+	t.Setenv(sdlcTrustedKeysEnv, filepath.Join(t.TempDir(), "absent.pub"))
+	if _, err := loadSDLCBundle(bundle); err == nil || !strings.Contains(err.Error(), sdlcTrustedKeysEnv) {
+		t.Errorf("err = %v, want one naming %s", err, sdlcTrustedKeysEnv)
+	}
+}
+
+// Without a manifest beside it, the bundle is the release asset and is
+// verified against the embedded lock as before.
+func TestLoadSDLCBundle_NoManifestUsesTheEmbeddedLock(t *testing.T) {
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "sdlc-skills.tar.gz")
+	writeFile(t, bundle, "not the pinned bytes")
+	_, err := loadSDLCBundle(bundle)
+	if err == nil || !strings.Contains(err.Error(), "pinned digest") {
+		t.Errorf("err = %v, want the lock's digest refusal", err)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -56,6 +57,10 @@ const (
 	// boxSkillSetsInstallerManifestFile is the installer's own list of the
 	// directories it owns, one per line.
 	boxSkillSetsInstallerManifestFile = ".sdlc-skills-manifest"
+	// boxSkillSetsVersionFile is the installer's record of what it installed:
+	// one line of key=value words, with skills=<version> for a signed skills
+	// release.
+	boxSkillSetsVersionFile = ".sdlc-skills-version"
 	// boxSkillSetManifestVersion is the manifest's format version.
 	boxSkillSetManifestVersion = 1
 	// boxSkillSetsSharedDir is installed whenever at least one set is and
@@ -83,7 +88,7 @@ type boxSkillSetManifest struct {
 // boxSkillSetsInstallFunc runs the installer in box as username for release
 // with the selection sets. Production is the shared installer script through
 // the box user's exec; tests run the real installer against a temp home.
-type boxSkillSetsInstallFunc func(box, username, release string, sets sdlcskills.SkillSets) (string, error)
+type boxSkillSetsInstallFunc func(box, username, release string, sets sdlcskills.SkillSets, src sdlcskills.SkillsSource) (string, error)
 
 // boxSkillSetsInstallFn returns the install seam: the injected fake, else the
 // shared installer script run as the box user.
@@ -95,9 +100,48 @@ func (s *ContainerServer) boxSkillSetsInstallFn() boxSkillSetsInstallFunc {
 	if exec == nil {
 		return nil
 	}
-	return func(box, username, release string, sets sdlcskills.SkillSets) (string, error) {
-		return exec(box, username, sdlcskills.InstallScript(sdlcskills.DefaultRepo, release, sets))
+	return func(box, username, release string, sets sdlcskills.SkillSets, src sdlcskills.SkillsSource) (string, error) {
+		return exec(box, username, sdlcskills.InstallScriptFrom(sdlcskills.DefaultRepo, release, sets, src))
 	}
+}
+
+// sdlcSkillsBaseURLEnv is where an operator tells the daemon signed skills
+// releases are published (docs/design/sdlc-skills-option-b.md). Unset, the
+// daemon uses sdlcskills.DefaultBaseURL; with neither, boxes take the skills
+// bundle of the Containarium release and no skills version can be asked for.
+const sdlcSkillsBaseURLEnv = "CONTAINARIUM_SDLC_SKILLS_BASE_URL"
+
+// skillsBaseURL is the daemon's skills base URL: the injected one (tests),
+// else the environment's, else the built-in default.
+func (s *ContainerServer) skillsBaseURL() string {
+	if s.sdlcSkillsBaseURL != nil {
+		return *s.sdlcSkillsBaseURL
+	}
+	if v := strings.TrimSpace(os.Getenv(sdlcSkillsBaseURLEnv)); v != "" {
+		return v
+	}
+	return sdlcskills.DefaultBaseURL
+}
+
+// boxSkillsSource turns a request's skills_version into the installer's
+// source. A value that is not a version name is the caller's mistake
+// (INVALID_ARGUMENT); a version asked of a daemon with no skills base URL is
+// the daemon's state (FAILED_PRECONDITION), as is a configured URL the daemon
+// cannot use. Nothing on the box is looked at.
+func (s *ContainerServer) boxSkillsSource(version string) (sdlcskills.SkillsSource, error) {
+	version = strings.TrimSpace(version)
+	if version != "" && version != sdlcskills.LatestVersion && !sdlcskills.ValidSkillsVersion(version) {
+		return sdlcskills.SkillsSource{}, status.Errorf(codes.InvalidArgument, "skills_version %q is not a skills release version (letters, digits and ._-, or %q)", version, sdlcskills.LatestVersion)
+	}
+	base := s.skillsBaseURL()
+	if version != "" && strings.TrimSpace(base) == "" {
+		return sdlcskills.SkillsSource{}, status.Errorf(codes.FailedPrecondition, "skills_version %q was asked for, but this daemon has no skills base URL (%s); it installs the skills bundle of its Containarium release", version, sdlcSkillsBaseURLEnv)
+	}
+	src, err := sdlcskills.NewSkillsSource(base, version)
+	if err != nil {
+		return sdlcskills.SkillsSource{}, status.Errorf(codes.FailedPrecondition, "this daemon's %s is not usable: %v", sdlcSkillsBaseURLEnv, err)
+	}
+	return src, nil
 }
 
 // boxSkillSetsRefusal is the typed refusal of ApplyBoxSkillSets: the human
@@ -174,6 +218,7 @@ func validateSkillSetIDs(ids []string, known map[string][]string) ([]string, err
 const (
 	boxSkillSetsStateSets      = "=== sets"
 	boxSkillSetsStateInstaller = "=== installer"
+	boxSkillSetsStateVersion   = "=== version"
 	boxSkillSetsStateEnd       = "=== end"
 )
 
@@ -187,6 +232,9 @@ cat "$d/` + boxSkillSetsManifestFile + `" 2>/dev/null
 echo
 echo '` + boxSkillSetsStateInstaller + `'
 cat "$d/` + boxSkillSetsInstallerManifestFile + `" 2>/dev/null
+echo
+echo '` + boxSkillSetsStateVersion + `'
+head -c 1024 "$d/` + boxSkillSetsVersionFile + `" 2>/dev/null
 echo
 echo '` + boxSkillSetsStateEnd + `'
 `
@@ -216,6 +264,10 @@ type boxSkillSetsState struct {
 	// installerDirs are the directories the installer's own manifest owns,
 	// sorted, _shared included.
 	installerDirs []string
+	// skillsVersion is the signed skills release the installer recorded
+	// (skills=<version> in its version file), or "" when the box's skills
+	// came from a release asset or it has none.
+	skillsVersion string
 }
 
 // parseBoxSkillSetsState parses boxSkillSetsStateScript's output. The box's
@@ -232,10 +284,15 @@ func parseBoxSkillSetsState(out string) (boxSkillSetsState, error) {
 	if !ok {
 		return st, fmt.Errorf("skill-set state: missing %q", boxSkillSetsStateInstaller)
 	}
-	installerText, _, ok := strings.Cut(rest, boxSkillSetsStateEnd)
+	installerText, rest, ok := strings.Cut(rest, boxSkillSetsStateVersion+"\n")
+	if !ok {
+		return st, fmt.Errorf("skill-set state: missing %q", boxSkillSetsStateVersion)
+	}
+	versionText, _, ok := strings.Cut(rest, boxSkillSetsStateEnd)
 	if !ok {
 		return st, fmt.Errorf("skill-set state: missing %q", boxSkillSetsStateEnd)
 	}
+	st.skillsVersion = recordedSkillsVersion(versionText)
 	if setsText = strings.TrimSpace(setsText); setsText != "" {
 		var m boxSkillSetManifest
 		if err := json.Unmarshal([]byte(setsText), &m); err != nil {
@@ -255,6 +312,19 @@ func parseBoxSkillSetsState(out string) (boxSkillSetsState, error) {
 	}
 	st.installerDirs = validSkillDirs(strings.Split(installerText, "\n"))
 	return st, nil
+}
+
+// recordedSkillsVersion reads skills=<version> from the installer's version
+// record (one line of key=value words). The box's user owns the file, so a
+// value that is not a version name is treated as absent.
+func recordedSkillsVersion(record string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(record), "\n")
+	for _, word := range strings.Fields(line) {
+		if v, ok := strings.CutPrefix(word, "skills="); ok && sdlcskills.ValidSkillsVersion(v) {
+			return v
+		}
+	}
+	return ""
 }
 
 // validSkillDirs keeps the names the installer could own, deduplicated and
@@ -597,6 +667,10 @@ func (s *ContainerServer) ApplyBoxSkillSets(ctx context.Context, req *pb.ApplyBo
 	if !sdlcskills.ValidReleaseTag(release) {
 		return nil, status.Errorf(codes.InvalidArgument, "release %q is not a release tag (expected something like v0.89.0)", release)
 	}
+	src, err := s.boxSkillsSource(req.GetSkillsVersion())
+	if err != nil {
+		return nil, err
+	}
 	rootExec, userExec, install := s.boxRunExecFn(), s.boxRunStartExecFn(), s.boxSkillSetsInstallFn()
 	if rootExec == nil || userExec == nil || install == nil {
 		return nil, status.Error(codes.Unavailable, "no container backend to apply skill sets on")
@@ -665,7 +739,7 @@ func (s *ContainerServer) ApplyBoxSkillSets(ctx context.Context, req *pb.ApplyBo
 	}
 
 	sets := sdlcskills.SkillSetsFromIDs(target)
-	if _, err := install(boxName, username, release, sets); err != nil {
+	if _, err := install(boxName, username, release, sets, src); err != nil {
 		return nil, status.Errorf(codes.Unavailable, "install SDLC skills (%s, %s) on %q: %v", sets, release, username, err)
 	}
 
@@ -719,5 +793,8 @@ func (s *ContainerServer) ApplyBoxSkillSets(ctx context.Context, req *pb.ApplyBo
 		Removed:   removed,
 		Unchanged: len(installed) == 0 && len(removed) == 0,
 		Release:   release,
+		// What the installer recorded, not what was asked for: "latest"
+		// resolves to a version, and an empty request keeps the box's own.
+		SkillsVersion: after.skillsVersion,
 	}, nil
 }

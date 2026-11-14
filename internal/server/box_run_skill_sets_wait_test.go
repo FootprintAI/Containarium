@@ -219,10 +219,10 @@ func TestApplyBoxSkillSets_RefusesAsApplyInProgressWhileAnotherApplyHoldsTheGate
 	inInstall, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	realInstall := s.boxSkillSetsInstall
-	s.boxSkillSetsInstall = func(box, user, rel string, sets sdlcskills.SkillSets) (string, error) {
+	s.boxSkillSetsInstall = func(box, user, rel string, sets sdlcskills.SkillSets, src sdlcskills.SkillsSource) (string, error) {
 		once.Do(func() { close(inInstall) })
 		<-release
-		return realInstall(box, user, rel, sets)
+		return realInstall(box, user, rel, sets, src)
 	}
 	first := make(chan error, 1)
 	go func() {

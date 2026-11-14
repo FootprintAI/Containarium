@@ -2591,7 +2591,16 @@ type ApplyBoxSkillSetsRequest struct {
 	SkillSets []string `protobuf:"bytes,2,rep,name=skill_sets,json=skillSets,proto3" json:"skill_sets,omitempty"`
 	// The Containarium release whose installer, lock and skills bundle to use
 	// (a v-prefixed tag). Empty means the daemon's own release.
-	Release       string `protobuf:"bytes,3,opt,name=release,proto3" json:"release,omitempty"`
+	Release string `protobuf:"bytes,3,opt,name=release,proto3" json:"release,omitempty"`
+	// The signed skills release to move the box to: a version name, or
+	// "latest". Empty keeps the box on the skills release it has (a box with
+	// none recorded takes the newest one once, when the daemon has a skills
+	// base URL configured). This is the only way a box changes skills release:
+	// a daemon upgrade or a change of skill_sets alone never does. A value
+	// needs a daemon configured with a skills base URL (FAILED_PRECONDITION
+	// otherwise) and a release whose installer knows signed skills releases;
+	// a value that is not a version name is INVALID_ARGUMENT.
+	SkillsVersion string `protobuf:"bytes,4,opt,name=skills_version,json=skillsVersion,proto3" json:"skills_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2647,6 +2656,13 @@ func (x *ApplyBoxSkillSetsRequest) GetRelease() string {
 	return ""
 }
 
+func (x *ApplyBoxSkillSetsRequest) GetSkillsVersion() string {
+	if x != nil {
+		return x.SkillsVersion
+	}
+	return ""
+}
+
 type ApplyBoxSkillSetsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The sets the box's manifest records after the call, sorted: the target
@@ -2666,7 +2682,11 @@ type ApplyBoxSkillSetsResponse struct {
 	// too.
 	Unchanged bool `protobuf:"varint,4,opt,name=unchanged,proto3" json:"unchanged,omitempty"`
 	// The release the skills came from (the request's, or the daemon's own).
-	Release       string `protobuf:"bytes,5,opt,name=release,proto3" json:"release,omitempty"`
+	Release string `protobuf:"bytes,5,opt,name=release,proto3" json:"release,omitempty"`
+	// The signed skills release the box now records, as its installer wrote
+	// it. Empty when the box's skills came from a Containarium release asset
+	// (no signed skills release), or when the call removed every set.
+	SkillsVersion string `protobuf:"bytes,6,opt,name=skills_version,json=skillsVersion,proto3" json:"skills_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2732,6 +2752,13 @@ func (x *ApplyBoxSkillSetsResponse) GetUnchanged() bool {
 func (x *ApplyBoxSkillSetsResponse) GetRelease() string {
 	if x != nil {
 		return x.Release
+	}
+	return ""
+}
+
+func (x *ApplyBoxSkillSetsResponse) GetSkillsVersion() string {
+	if x != nil {
+		return x.SkillsVersion
 	}
 	return ""
 }
@@ -3684,19 +3711,21 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\tcheckouts\x18\x03 \x03(\v2\x1f.containarium.v1.BoxRunCheckoutR\tcheckouts\"H\n" +
 	"\x11BoxSkillSetChange\x12\x1b\n" +
 	"\tskill_set\x18\x01 \x01(\tR\bskillSet\x12\x16\n" +
-	"\x06skills\x18\x02 \x03(\tR\x06skills\"o\n" +
+	"\x06skills\x18\x02 \x03(\tR\x06skills\"\x96\x01\n" +
 	"\x18ApplyBoxSkillSetsRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1d\n" +
 	"\n" +
 	"skill_sets\x18\x02 \x03(\tR\tskillSets\x12\x18\n" +
-	"\arelease\x18\x03 \x01(\tR\arelease\"\xf2\x01\n" +
+	"\arelease\x18\x03 \x01(\tR\arelease\x12%\n" +
+	"\x0eskills_version\x18\x04 \x01(\tR\rskillsVersion\"\x99\x02\n" +
 	"\x19ApplyBoxSkillSetsResponse\x12\x1d\n" +
 	"\n" +
 	"skill_sets\x18\x01 \x03(\tR\tskillSets\x12@\n" +
 	"\tinstalled\x18\x02 \x03(\v2\".containarium.v1.BoxSkillSetChangeR\tinstalled\x12<\n" +
 	"\aremoved\x18\x03 \x03(\v2\".containarium.v1.BoxSkillSetChangeR\aremoved\x12\x1c\n" +
 	"\tunchanged\x18\x04 \x01(\bR\tunchanged\x12\x18\n" +
-	"\arelease\x18\x05 \x01(\tR\arelease\"n\n" +
+	"\arelease\x18\x05 \x01(\tR\arelease\x12%\n" +
+	"\x0eskills_version\x18\x06 \x01(\tR\rskillsVersion\"n\n" +
 	"\x18ApplyBoxBootstrapRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12#\n" +
 	"\rbootstrap_url\x18\x02 \x01(\tR\fbootstrapUrl\x12\x19\n" +

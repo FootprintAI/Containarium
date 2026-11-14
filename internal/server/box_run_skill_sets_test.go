@@ -326,7 +326,7 @@ func skillSetServer(t *testing.T, home string, state pb.ContainerState) (s *Cont
 	}
 	n := 0
 	installs = &n
-	s.boxSkillSetsInstall = func(_, _, _ string, sets sdlcskills.SkillSets) (string, error) {
+	s.boxSkillSetsInstall = func(_, _, _ string, sets sdlcskills.SkillSets, _ sdlcskills.SkillsSource) (string, error) {
 		n++
 		cmd := osexec.Command("bash", installSDLCSkillsScriptPath)
 		cmd.Env = append(os.Environ(), "HOME="+home, "ARTIFACT_BASE_URL="+base, "SDLC_SKILLS_LOCK_URL="+lock, "SKILL_SETS="+sets.String())
@@ -493,7 +493,7 @@ func TestApplyBoxSkillSets_SetPredatingTheManifest(t *testing.T) {
 	home := t.TempDir()
 	s, _, installs := skillSetServer(t, home, pb.ContainerState_CONTAINER_STATE_RUNNING)
 	// A pre-manifest install: the installer alone, as `code install` runs it.
-	if _, err := s.boxSkillSetsInstall("alice-container", "alice", "v9.9.9", sdlcskills.SkillSetsFromIDs([]string{"qa", "sdlc"})); err != nil {
+	if _, err := s.boxSkillSetsInstall("alice-container", "alice", "v9.9.9", sdlcskills.SkillSetsFromIDs([]string{"qa", "sdlc"}), sdlcskills.SkillsSource{}); err != nil {
 		t.Fatal(err)
 	}
 	*installs = 0
@@ -613,9 +613,9 @@ func TestApplyBoxSkillSets_BoxStateAndRelease(t *testing.T) {
 		s, _, _ := skillSetServer(t, home, pb.ContainerState_CONTAINER_STATE_RUNNING)
 		var gotRelease string
 		inner := s.boxSkillSetsInstall
-		s.boxSkillSetsInstall = func(box, user, release string, sets sdlcskills.SkillSets) (string, error) {
+		s.boxSkillSetsInstall = func(box, user, release string, sets sdlcskills.SkillSets, src sdlcskills.SkillsSource) (string, error) {
 			gotRelease = release
-			return inner(box, user, release, sets)
+			return inner(box, user, release, sets, src)
 		}
 		resp, err := s.ApplyBoxSkillSets(tenantCtx("alice"), &pb.ApplyBoxSkillSetsRequest{Username: "alice", SkillSets: []string{"qa"}})
 		if err != nil {
@@ -636,7 +636,7 @@ func TestBoxSkillSetsInstallFn_RunsTheSharedInstallerAsTheUser(t *testing.T) {
 		gotBox, gotUser, gotScript = box, user, script
 		return "", nil
 	}}
-	if _, err := s.boxSkillSetsInstallFn()("alice-container", "alice", "v1.2.3", sdlcskills.SkillSetsFromIDs([]string{"qa", "sdlc"})); err != nil {
+	if _, err := s.boxSkillSetsInstallFn()("alice-container", "alice", "v1.2.3", sdlcskills.SkillSetsFromIDs([]string{"qa", "sdlc"}), sdlcskills.SkillsSource{}); err != nil {
 		t.Fatal(err)
 	}
 	if gotBox != "alice-container" || gotUser != "alice" || gotScript != sdlcskills.InstallScript(sdlcskills.DefaultRepo, "v1.2.3", sdlcskills.SkillSetsFromIDs([]string{"qa", "sdlc"})) {
@@ -654,7 +654,7 @@ func TestBoxSkillSetsInstallFn_RunsTheSharedInstallerAsTheUser(t *testing.T) {
 // installer-manifest line outside the installer's own name charset is dropped,
 // and a set id outside the lock's charset makes the manifest unreadable.
 func TestParseBoxSkillSetsState(t *testing.T) {
-	out := "=== sets\n" + `{"version":1,"release":"v1","sets":{"qa":["qa-unit-test","../etc","ok_dir"]}}` + "\n=== installer\nqa-unit-test\n../etc\n$(x)\n_shared\n\n=== end\n"
+	out := "=== sets\n" + `{"version":1,"release":"v1","sets":{"qa":["qa-unit-test","../etc","ok_dir"]}}` + "\n=== installer\nqa-unit-test\n../etc\n$(x)\n_shared\n\n=== version\nrelease=v1 sha256=abc installed=now skills=2026.11.0 contract=1\n\n=== end\n"
 	st, err := parseBoxSkillSetsState(out)
 	if err != nil {
 		t.Fatal(err)
@@ -665,13 +665,18 @@ func TestParseBoxSkillSetsState(t *testing.T) {
 	if !reflect.DeepEqual(st.installerDirs, []string{"_shared", "qa-unit-test"}) {
 		t.Errorf("installer dirs = %v", st.installerDirs)
 	}
-	empty, err := parseBoxSkillSetsState("=== sets\n\n=== installer\n\n=== end\n")
-	if err != nil || empty.hasManifest || len(empty.manifest.Sets) != 0 || len(empty.installerDirs) != 0 {
+	if st.skillsVersion != "2026.11.0" {
+		t.Errorf("skills version = %q", st.skillsVersion)
+	}
+	empty, err := parseBoxSkillSetsState("=== sets\n\n=== installer\n\n=== version\n\n=== end\n")
+	if err != nil || empty.hasManifest || len(empty.manifest.Sets) != 0 || len(empty.installerDirs) != 0 || empty.skillsVersion != "" {
 		t.Errorf("empty box: %+v, %v", empty, err)
 	}
 	for _, bad := range []string{
-		"=== sets\n{nope\n=== installer\n\n=== end\n",
-		"=== sets\n" + `{"version":1,"sets":{"Q A":["x"]}}` + "\n=== installer\n\n=== end\n",
+		"=== sets\n{nope\n=== installer\n\n=== version\n\n=== end\n",
+		"=== sets\n" + `{"version":1,"sets":{"Q A":["x"]}}` + "\n=== installer\n\n=== version\n\n=== end\n",
+		// A reply without the version section is not this daemon's state script.
+		"=== sets\n\n=== installer\n\n=== end\n",
 		"garbage without markers",
 	} {
 		if _, err := parseBoxSkillSetsState(bad); err == nil {
