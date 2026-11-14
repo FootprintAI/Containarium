@@ -247,6 +247,10 @@ const (
 	CAClientKeyPath   = CACredDir + "/client.key"
 	CACACertPath      = CACredDir + "/ca.crt"
 	CACloudConfigPath = CACredDir + "/cloud-config.yaml"
+	// CACredFingerprintPath records the fingerprint of the credential and
+	// unit the running autoscaler was last started with (#3718). It lives
+	// outside CACredDir, which is bind-mounted into the autoscaler task.
+	CACredFingerprintPath = "/etc/containarium/ca-deployed.sha256"
 )
 
 // CADeploy parameterizes the autoscaler unit on the control plane.
@@ -338,6 +342,19 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now k3s-cluster-autoscaler.service
-`, K3sBinaryPath, CAImage, CACredDir, CACloudConfigPath, caScaleDownArgs(d))
+systemctl enable k3s-cluster-autoscaler.service
+
+# Starting an already-enabled unit does not restart it, and the autoscaler reads its
+# client credential once at start. Restart whenever the credential, the
+# cloud-config or the unit changed since the last start, or the unit is not
+# running, so a re-minted credential is the one actually presented (#3718).
+fp=$(cat %[6]s %[7]s %[8]s %[4]s /etc/systemd/system/k3s-cluster-autoscaler.service | sha256sum | cut -d' ' -f1)
+if [ "$(cat %[9]s 2>/dev/null || true)" = "$fp" ] && systemctl is-active --quiet k3s-cluster-autoscaler.service; then
+  echo "autoscaler credential unchanged; leaving the unit running"
+else
+  systemctl restart k3s-cluster-autoscaler.service
+  echo "$fp" > %[9]s
+fi
+`, K3sBinaryPath, CAImage, CACredDir, CACloudConfigPath, caScaleDownArgs(d),
+		CAClientCertPath, CAClientKeyPath, CACACertPath, CACredFingerprintPath)
 }
