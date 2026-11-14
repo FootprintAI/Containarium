@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-//go:embed trusted-keys.pem
+//go:embed trusted-keys.pub
 var trustedKeysPEM []byte
 
 // Keyring is the set of public keys trusted to sign a skills release.

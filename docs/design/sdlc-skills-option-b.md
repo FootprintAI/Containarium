@@ -76,8 +76,14 @@ SHA-256, ASN.1 DER, base64 (`cosign sign-blob --key`).
   verifying it needs the certificate and transparency-log trust roots, network
   access and a large dependency, which fits neither the box installer nor an
   air-gapped build.
+- `pkg/core/catalogsig` already verifies detached signatures here, for
+  operator-supplied catalogs: raw Ed25519 with keys the operator configures.
+  It was not reused. Checking a raw Ed25519 signature in the bash installer
+  needs OpenSSL 3 in every box image, and cosign key pairs are P-256. The two
+  stay separate: that one is opt-in trust an operator sets up, this one is a
+  key built into the release.
 
-Trusted keys live in `pkg/core/sdlcskills/trusted-keys.pem` (embedded by the
+Trusted keys live in `pkg/core/sdlcskills/trusted-keys.pub` (embedded by the
 daemon and CLI) and inline in `scripts/install-sdlc-skills.sh`; a test fails
 if the two differ. The file may hold several keys and a `.sig` may hold
 several lines: any trusted key verifying any line is enough. Rotation is "add
@@ -133,7 +139,7 @@ The installer records `skills=<version>` in `~/.claude/skills/.sdlc-skills-versi
   version. Versioned directories are never rewritten.
 - A bad cutover (PR 4): revert it. The lock, build script and release steps
   come back, and releases before the cutover still carry their assets.
-- A compromised signing key: remove it from `trusted-keys.pem` and the
+- A compromised signing key: remove it from `trusted-keys.pub` and the
   installer in a patch release; cloud re-signs published versions with the
   new key.
 

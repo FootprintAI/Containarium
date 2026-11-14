@@ -144,7 +144,7 @@ func TestParseKeyring_RejectsWhatItCannotUse(t *testing.T) {
 // daemon and CLI built from this tree.
 func TestTrustedKeys_EmbeddedFileParses(t *testing.T) {
 	if _, err := TrustedKeys(); err != nil {
-		t.Fatalf("embedded trusted-keys.pem: %v", err)
+		t.Fatalf("embedded trusted-keys.pub: %v", err)
 	}
 }
 

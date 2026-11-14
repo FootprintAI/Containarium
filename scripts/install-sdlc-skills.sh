@@ -70,7 +70,7 @@ set -euo pipefail
 SUPPORTED_CONTRACT=1
 
 # Public keys trusted to sign a skills release: the PEM blocks of
-# pkg/core/sdlcskills/trusted-keys.pem, kept identical by a test. None yet.
+# pkg/core/sdlcskills/trusted-keys.pub, kept identical by a test. None yet.
 TRUSTED_KEYS="$(cat <<'KEYS'
 # BEGIN TRUSTED KEYS
 # END TRUSTED KEYS
@@ -193,7 +193,7 @@ fi
 # --key writes) over <file>.
 verify_signature() {
   command -v openssl >/dev/null 2>&1 || die "openssl is needed to verify the signature of a skills release"
-  local keys="$tmp/trusted-keys.pem" line k
+  local keys="$tmp/trusted-keys.pub" line k
   if [[ -n "${SDLC_SKILLS_TRUSTED_KEYS_FILE:-}" ]]; then
     [[ -f "$SDLC_SKILLS_TRUSTED_KEYS_FILE" ]] || die "SDLC_SKILLS_TRUSTED_KEYS_FILE not found: $SDLC_SKILLS_TRUSTED_KEYS_FILE"
     cp "$SDLC_SKILLS_TRUSTED_KEYS_FILE" "$keys"

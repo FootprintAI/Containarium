@@ -501,7 +501,7 @@ func TestInstallerTrustedKeysMatchTheEmbeddedFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	embedded, err := os.ReadFile("../../pkg/core/sdlcskills/trusted-keys.pem")
+	embedded, err := os.ReadFile("../../pkg/core/sdlcskills/trusted-keys.pub")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +514,7 @@ func TestInstallerTrustedKeysMatchTheEmbeddedFile(t *testing.T) {
 		t.Fatal("installer has no '# END TRUSTED KEYS' marker")
 	}
 	if got, want := pemBlocks(inline), pemBlocks(string(embedded)); got != want {
-		t.Errorf("installer keys differ from pkg/core/sdlcskills/trusted-keys.pem:\ninstaller:\n%s\nembedded:\n%s", got, want)
+		t.Errorf("installer keys differ from pkg/core/sdlcskills/trusted-keys.pub:\ninstaller:\n%s\nembedded:\n%s", got, want)
 	}
 }
 

@@ -1,0 +1,11 @@
+# Public keys trusted to sign a skills release (docs/design/sdlc-skills-option-b.md).
+#
+# One PEM "PUBLIC KEY" block per key: ECDSA P-256, as `cosign public-key`
+# prints it. A manifest signature that any key here verifies is accepted, so
+# during a rotation the old and the new key are both listed.
+#
+# scripts/install-sdlc-skills.sh carries the same blocks inline; a test fails
+# if the two differ.
+#
+# No key is listed yet: nothing is trusted, and the signed source is off
+# unless an operator supplies their own key file.
