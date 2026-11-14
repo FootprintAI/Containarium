@@ -348,12 +348,18 @@ build-macos11: ## Build containarium client for macOS 11 (amd64 + arm64), append
 # (internal/app/caddy_types_makefile_test.go) fails CI if this drifts from
 # that map, in either direction.
 CADDY_VERSION=v2.11.4
+# CADDY_L4_VERSION is pinned for the same reason: an unpinned plugin floats to
+# its newest release, and a release that needs a newer Caddy than CADDY_VERSION
+# fails the whole release build (#3714; caddy-l4 v0.1.3 needs Caddy v2.11.7).
+# Keep it at the newest caddy-l4 whose go.mod requires CADDY_VERSION or older,
+# and bump the two together, deliberately.
+CADDY_L4_VERSION=v0.1.2
 build-caddy: ## Build the pre-configured Caddy release binary (caddy-l4 + every DNS-01 provider)
 	@echo "==> Installing xcaddy..."
 	@scripts/install-xcaddy.sh $$(go env GOPATH)/bin/xcaddy
 	@echo "==> Building Caddy $(CADDY_VERSION) with caddy-l4 + every DNS-01 provider (this takes a few minutes)..."
 	@$$(go env GOPATH)/bin/xcaddy build $(CADDY_VERSION) \
-	    --with github.com/mholt/caddy-l4 \
+	    --with github.com/mholt/caddy-l4@$(CADDY_L4_VERSION) \
 	    --with github.com/caddy-dns/azure \
 	    --with github.com/caddy-dns/cloudflare \
 	    --with github.com/caddy-dns/digitalocean \
