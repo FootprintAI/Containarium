@@ -134,6 +134,8 @@ The installer records `skills=<version>` in `~/.claude/skills/.sdlc-skills-versi
   fleet in one call.
 - A request against an installer or daemon that predates the field fails. It
   is never reported as a move.
+- Removing every set (`none`) removes the record with the skills. Adding sets
+  back later is a fresh install: it takes `latest` unless a version is named.
 
 ## Rollback
 
