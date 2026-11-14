@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.137.1] - 2026-11-14
+
+
+### Fixed
+
+- **The release build no longer breaks when `caddy-l4` ships a release that needs a newer Caddy** (#3714). `make build-caddy` pinned Caddy but let the `caddy-l4` plugin float to its newest version; `caddy-l4 v0.1.3` requires a newer Caddy than the pin, so the `v0.137.0` release build failed before publishing any binaries. The plugin is now pinned (`CADDY_L4_VERSION`), and a test fails if it is ever left unpinned. `v0.137.0` was tagged but never published; this ships in `v0.137.1`.
+
+### Upgrading
+
+- **`v0.137.0` was tagged but never published; install `v0.137.1`** (#3714). The `v0.137.0` release build failed before it published any binary, signature or chart (see the `caddy-l4` fix under Fixed), so the `0.137.0` entry above describes content that first shipped in `v0.137.1`. Nothing else differs between the two. A PyPI package and container images were published under `0.137.0` before the failure; use `0.137.1`.
+
 ## [0.137.0] - 2026-11-14
 
 
