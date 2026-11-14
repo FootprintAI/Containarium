@@ -1,6 +1,6 @@
 # SDLC skills: the pin, the bundle build and delivery move out of this repo ("option B")
 
-**Status:** proposed. PR 1 and PR 2 below are open; nothing is cut over until PR 4.
+**Status:** proposed. Nothing is cut over until PR 4 below.
 
 ## Problem
 
