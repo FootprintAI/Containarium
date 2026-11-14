@@ -53,7 +53,7 @@ internal/runner/install_script_payload.sh	curl	7eb30f4febe0	curl -sX POST -H "Au
 Makefile	npm ci	0a73a8e52e66	npm ci + tsc)..."
 Makefile	npm ci	9bfb10619908	npm ci && npm run build
 Makefile	npm ci	90b0b843a328	npm ci --omit=dev` runs in-box)
-Makefile	xcaddy build	e2ebf1abed53	xcaddy build $(CADDY_VERSION) --with github.com/mholt/caddy-l4 --with 
+Makefile	xcaddy build	ac7b094ef4d8	xcaddy build $(CADDY_VERSION) --with github.com/mholt/caddy-l4@$(CADDY
 scripts/agent-skill-lease-e2e.sh	curl	fcf8e5e02022	curl >/dev/null || fail "no curl"
 scripts/agent-skill-lease-e2e.sh	curl	923d3f75ffa5	curl stderr ----"; read_out "$WORKDIR/during.err"
 scripts/agent-skill-lease-e2e.sh	curl	d2d8c4c75eb1	curl wrote status '$during_code') — the gateway never answered, so not
