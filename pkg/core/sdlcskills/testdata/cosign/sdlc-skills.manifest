@@ -1,0 +1,6 @@
+contract=1
+version=2026.01.0
+sha256=f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d
+source.sdlc=example/skills@0123456789abcdef0123456789abcdef01234567
+set.sdlc=architect,engineer
+set.qa=qa

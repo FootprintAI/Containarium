@@ -73,6 +73,20 @@ func LoadBundleBytes(data []byte, lock Lock) (*Bundle, error) {
 	if got := hex.EncodeToString(sum[:]); got != lock.SHA256 {
 		return nil, fmt.Errorf("sdlcskills: bundle digest %s does not match the pinned digest %s", got[:12], lock.SHA256[:12])
 	}
+	files, err := readBundleFiles(data)
+	if err != nil {
+		return nil, err
+	}
+	ref := lock.Ref
+	if len(ref) > 12 {
+		ref = ref[:12]
+	}
+	return &Bundle{pin: lock.Repo + "@" + ref, files: files}, nil
+}
+
+// readBundleFiles parses the archive into name -> content. The caller has
+// already verified data (by digest against a lock or a signed manifest).
+func readBundleFiles(data []byte) (map[string]string, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("sdlcskills: bundle is not gzip: %w", err)
@@ -104,11 +118,7 @@ func LoadBundleBytes(data []byte, lock Lock) (*Bundle, error) {
 		}
 		files[name] = string(body)
 	}
-	ref := lock.Ref
-	if len(ref) > 12 {
-		ref = ref[:12]
-	}
-	return &Bundle{pin: lock.Repo + "@" + ref, files: files}, nil
+	return files, nil
 }
 
 // SkillBody returns the markdown body of <skill>/SKILL.md with its YAML
