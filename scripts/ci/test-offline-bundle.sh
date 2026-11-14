@@ -11,6 +11,10 @@
 #   - the offline installer errors on an empty apt/ unless --skip-apt, and
 #     has no base-image import step;
 #   - add-zabbly-repo.sh refuses a key with the wrong fingerprint.
+#   - a pinned, signed SDLC skills release is verified into the cache by
+#     download-deps.sh, verified again by build-bundle.sh, and installs
+#     offline from the unpacked bundle (needs openssl and curl; skipped
+#     without them).
 # Needs bash, coreutils, tar, gzip, dpkg-deb and gpg (all on ubuntu runners).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -425,6 +429,81 @@ if PATH="$zk/bin:$PATH" bash "$zabbly" >"$tmp/zabbly.out" 2>&1; then t "add-zabb
 else
   if [ -s "$zk/sudo.log" ]; then t "add-zabbly-repo: wrote before checking the fingerprint"
   else pass "add-zabbly-repo: wrong key fingerprint refused before any write"; fi
+fi
+
+# ------------------------------------------- SDLC skills release in the bundle
+# The bundle carries a pinned, signed skills release, verified when it is
+# downloaded and again when the bundle is assembled
+# (docs/design/sdlc-skills-option-b.md). The release here is signed with a key
+# made for the test and served from a file:// base.
+skills_tools=1
+for tool in openssl curl; do command -v "$tool" >/dev/null 2>&1 || skills_tools=0; done
+if [ "$skills_tools" = 1 ]; then
+  sk=$tmp/skills; mkdir -p "$sk/src/qa-unit-test" "$sk/src/_shared" "$sk/base/1.2.3"
+  echo '# unit' >"$sk/src/qa-unit-test/SKILL.md"; echo '# tracker' >"$sk/src/_shared/tracker.md"
+  tar -C "$sk/src" -czf "$sk/base/1.2.3/sdlc-skills.tar.gz" qa-unit-test _shared
+  openssl ecparam -name prime256v1 -genkey -noout -out "$sk/key.pem" 2>/dev/null
+  openssl ec -in "$sk/key.pem" -pubout -out "$sk/key.pub" 2>/dev/null
+  sksign() { openssl dgst -sha256 -sign "$sk/key.pem" "$1/sdlc-skills.manifest" | base64 | tr -d '\n' >"$1/sdlc-skills.manifest.sig"; }
+  printf 'contract=1\nversion=1.2.3\nsha256=%s\nset.qa=qa\n' "$(sha256sum "$sk/base/1.2.3/sdlc-skills.tar.gz" | cut -d' ' -f1)" >"$sk/base/1.2.3/sdlc-skills.manifest"
+  sksign "$sk/base/1.2.3"
+  # skdeps NAME [ENV=VAL...] -> download-deps.sh, skills step only.
+  skdeps() {
+    local name=$1; shift
+    env STAGING_DIR="$tmp/$name.stage" DEPS_ONLY=skills SDLC_SKILLS_TRUSTED_KEYS_FILE="$sk/key.pub" \
+      "$@" bash "$deps" >"$tmp/$name.out" 2>&1
+  }
+  if skdeps sk-ok SDLC_SKILLS_BASE_URL="file://$sk/base" SDLC_SKILLS_VERSION=1.2.3 \
+     && [ -f "$tmp/sk-ok.stage/sdlc-skills/1.2.3/sdlc-skills.tar.gz" ] && [ -f "$tmp/sk-ok.stage/sdlc-skills/1.2.3/sdlc-skills.manifest.sig" ]; then
+    pass "download-deps: a pinned skills release is fetched and verified into the cache"
+  else t "download-deps: skills release not fetched"; cat "$tmp/sk-ok.out"; fi
+  if skdeps sk-nover SDLC_SKILLS_BASE_URL="file://$sk/base"; then t "download-deps: skills base URL without a version exited 0"
+  elif grep -q 'SDLC_SKILLS_VERSION' "$tmp/sk-nover.out"; then pass "download-deps: a skills base URL without a pinned version fails, naming the variable"
+  else t "download-deps: unpinned skills failed without naming the variable"; cat "$tmp/sk-nover.out"; fi
+  if skdeps sk-latest SDLC_SKILLS_BASE_URL="file://$sk/base" SDLC_SKILLS_VERSION=latest; then t "download-deps: SDLC_SKILLS_VERSION=latest exited 0"
+  else pass "download-deps: 'latest' is not a pin"; fi
+  if skdeps sk-none; then t "download-deps: DEPS_ONLY=skills with nothing configured exited 0"
+  else pass "download-deps: DEPS_ONLY=skills with nothing configured fails"; fi
+  cp -r "$sk/base" "$sk/tampered"; echo x >>"$sk/tampered/1.2.3/sdlc-skills.tar.gz"
+  if skdeps sk-bad SDLC_SKILLS_BASE_URL="file://$sk/tampered" SDLC_SKILLS_VERSION=1.2.3; then t "download-deps: a tampered skills bundle exited 0"
+  elif [ -e "$tmp/sk-bad.stage/sdlc-skills" ]; then t "download-deps: a tampered skills bundle was left in the cache"
+  else pass "download-deps: a tampered skills bundle fails and leaves nothing in the cache"; fi
+  openssl ecparam -name prime256v1 -genkey -noout -out "$sk/other.pem" 2>/dev/null
+  openssl ec -in "$sk/other.pem" -pubout -out "$sk/other.pub" 2>/dev/null
+  if skdeps sk-key SDLC_SKILLS_BASE_URL="file://$sk/base" SDLC_SKILLS_VERSION=1.2.3 SDLC_SKILLS_TRUSTED_KEYS_FILE="$sk/other.pub"; then
+    t "download-deps: a skills release signed by an untrusted key exited 0"
+  else pass "download-deps: a skills release signed by an untrusted key fails"; fi
+
+  # build-bundle.sh: verifies the cached release again and ships it with the installer.
+  mkcache "$tmp/cache-skills" alpha libx
+  if [ -d "$tmp/sk-ok.stage/sdlc-skills" ]; then cp -r "$tmp/sk-ok.stage/sdlc-skills" "$tmp/cache-skills/sdlc-skills"; fi
+  if bundle skills "$tmp/cache-skills" SDLC_SKILLS_TRUSTED_KEYS_FILE="$sk/key.pub"; then
+    tar tzf "$tmp/skills.tgz" >"$tmp/skills.list"
+    if grep -q '/sdlc-skills/1\.2\.3/sdlc-skills\.tar\.gz$' "$tmp/skills.list" && grep -q '/sdlc-skills/1\.2\.3/sdlc-skills\.manifest\.sig$' "$tmp/skills.list" \
+       && grep -q '/sdlc-skills/install-sdlc-skills\.sh$' "$tmp/skills.list"; then
+      pass "build-bundle: the verified skills release and its installer are in the tarball"
+    else t "build-bundle: skills release missing from the tarball"; cat "$tmp/skills.list"; fi
+    # What ships installs with no network, from the unpacked bundle.
+    mkdir -p "$tmp/unpacked"; tar -C "$tmp/unpacked" -xzf "$tmp/skills.tgz"
+    b=$tmp/unpacked/containarium-bundle-v0.0.0-test-linux-amd64/sdlc-skills
+    if env HOME="$tmp/boxhome" SDLC_SKILLS_BASE_URL="file://$b" SDLC_SKILLS_VERSION=1.2.3 SDLC_SKILLS_TRUSTED_KEYS_FILE="$sk/key.pub" \
+         bash "$b/install-sdlc-skills.sh" >"$tmp/skills-install.out" 2>&1 \
+       && [ -f "$tmp/boxhome/.claude/skills/qa-unit-test/SKILL.md" ] && grep -q 'skills=1.2.3' "$tmp/boxhome/.claude/skills/.sdlc-skills-version"; then
+      pass "build-bundle: the bundled installer installs the bundled skills release offline"
+    else t "build-bundle: offline install from the bundle failed"; cat "$tmp/skills-install.out"; fi
+    if REQUIRED_DEBS="alpha libx" bash "$content" "$tmp/skills.tgz" >"$tmp/content-skills.out" 2>&1; then
+      pass "check-bundle-content: a bundle with a skills release is accepted"
+    else t "check-bundle-content: a bundle with a skills release is rejected"; cat "$tmp/content-skills.out"; fi
+  else t "build-bundle: cache with a skills release failed"; cat "$tmp/skills.out"; fi
+  mkcache "$tmp/cache-skills-bad" alpha libx
+  cp -r "$sk/tampered" "$tmp/cache-skills-bad/sdlc-skills"; mkdir -p "$tmp/cache-skills-bad/sdlc-skills/latest"
+  cp "$sk/tampered/1.2.3/sdlc-skills.manifest" "$sk/tampered/1.2.3/sdlc-skills.manifest.sig" "$tmp/cache-skills-bad/sdlc-skills/latest/"
+  if bundle skills-bad "$tmp/cache-skills-bad" SDLC_SKILLS_TRUSTED_KEYS_FILE="$sk/key.pub"; then t "build-bundle: a tampered skills release in the cache exited 0"
+  else pass "build-bundle: a skills release in the cache that does not verify fails the build"; fi
+  if [ -f "$tmp/good.list" ] && grep -q '/sdlc-skills/' "$tmp/good.list"; then t "build-bundle: a cache with no skills release still shipped sdlc-skills/"
+  else pass "build-bundle: no skills release in the cache, none in the bundle"; fi
+else
+  echo "skip: SDLC skills release tests (a tool they need is missing)"
 fi
 
 [ "$fail" -eq 0 ] && echo "all offline-bundle tests passed"

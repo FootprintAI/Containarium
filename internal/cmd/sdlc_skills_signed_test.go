@@ -536,3 +536,113 @@ func pemBlocks(text string) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+// fetchOnly runs the installer in --fetch-only mode: fetch and verify one
+// skills release into out, installing nothing (the air-gapped bundle build).
+func fetchOnly(t *testing.T, base string, key signingKey, out string, extra ...string) (string, bool) {
+	t.Helper()
+	home := t.TempDir()
+	env := append([]string{"SDLC_SKILLS_BASE_URL=file://" + base, "SDLC_SKILLS_TRUSTED_KEYS_FILE=" + key.pub, "HOME=" + home}, extra...)
+	o, ok := run(t, "", env, "bash", installSDLCSkillsScript, "--fetch-only", out)
+	if exists(filepath.Join(home, ".claude")) {
+		t.Errorf("--fetch-only touched the caller's skills directory")
+	}
+	return o, ok
+}
+
+// The air-gapped bundle build takes a pinned, verified skills release with
+// it; a box then installs from that copy with no network, verifying again.
+func TestFetchOnly_CopiesAVerifiedReleaseABoxCanInstallOffline(t *testing.T) {
+	needSigningTools(t)
+	key := newSigningKey(t)
+	r := publishSigned(t, "", "2026.11.0", key, signedSkills, signedSets)
+	out := filepath.Join(t.TempDir(), "sdlc-skills")
+
+	o, ok := fetchOnly(t, r.base, key, out, "SDLC_SKILLS_VERSION=2026.11.0")
+	if !ok {
+		t.Fatalf("fetch failed: %s", o)
+	}
+	for _, f := range []string{"2026.11.0/sdlc-skills.tar.gz", "2026.11.0/sdlc-skills.manifest", "2026.11.0/sdlc-skills.manifest.sig",
+		"latest/sdlc-skills.manifest", "latest/sdlc-skills.manifest.sig"} {
+		if !exists(filepath.Join(out, f)) {
+			t.Errorf("%s missing from the fetched copy", f)
+		}
+	}
+	// The copy is byte-identical to what was published, so its signature holds.
+	for _, f := range []string{"sdlc-skills.tar.gz", "sdlc-skills.manifest", "sdlc-skills.manifest.sig"} {
+		a, _ := os.ReadFile(filepath.Join(r.dir(), f))          //nolint:gosec // test temp dir
+		b, _ := os.ReadFile(filepath.Join(out, "2026.11.0", f)) //nolint:gosec // test temp dir
+		if !bytes.Equal(a, b) {
+			t.Errorf("%s differs from the published file", f)
+		}
+	}
+	// A box with no network installs from the copy, by version and by default.
+	for _, extra := range [][]string{{"SDLC_SKILLS_VERSION=2026.11.0"}, nil} {
+		dir := filepath.Join(t.TempDir(), "skills")
+		if o, ok := installSigned(t, out, key, dir, extra...); !ok {
+			t.Fatalf("offline install %v failed: %s", extra, o)
+		}
+		if rec := versionRecord(t, dir); !strings.Contains(rec, "skills=2026.11.0") {
+			t.Errorf("offline install %v recorded %q", extra, rec)
+		}
+	}
+	// Running it again over the same directory is fine.
+	if o, ok := fetchOnly(t, r.base, key, out, "SDLC_SKILLS_VERSION=2026.11.0"); !ok {
+		t.Errorf("second fetch failed: %s", o)
+	}
+}
+
+func TestFetchOnly_Refusals(t *testing.T) {
+	needSigningTools(t)
+	key, other := newSigningKey(t), newSigningKey(t)
+	r := publishSigned(t, "", "2026.11.0", key, signedSkills, signedSets)
+	r.pointLatest(t)
+
+	cases := map[string]struct {
+		key   signingKey
+		extra []string
+		want  string
+	}{
+		// A bundle build is pinned: it names its version.
+		"no version":      {key, nil, "needs SDLC_SKILLS_VERSION"},
+		"latest":          {key, []string{"SDLC_SKILLS_VERSION=latest"}, "needs SDLC_SKILLS_VERSION"},
+		"untrusted key":   {other, []string{"SDLC_SKILLS_VERSION=2026.11.0"}, "signature"},
+		"unknown version": {key, []string{"SDLC_SKILLS_VERSION=2099.01.0"}, "cannot fetch"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "sdlc-skills")
+			o, ok := fetchOnly(t, r.base, tc.key, out, tc.extra...)
+			if ok || !strings.Contains(o, tc.want) {
+				t.Errorf("ok=%v output=%q, want a refusal mentioning %q", ok, o, tc.want)
+			}
+			if exists(out) {
+				t.Errorf("a refused fetch left %s behind", out)
+			}
+		})
+	}
+	t.Run("swapped bundle", func(t *testing.T) {
+		bad := publishSigned(t, "", "2026.11.0", key, signedSkills, signedSets)
+		if err := os.WriteFile(bad.tarball(), skillsTarGz(t, map[string]string{"architect-design/SKILL.md": "# evil\n"}), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(t.TempDir(), "sdlc-skills")
+		o, ok := fetchOnly(t, bad.base, key, out, "SDLC_SKILLS_VERSION=2026.11.0")
+		if ok || !strings.Contains(o, "sha256 mismatch") || exists(out) {
+			t.Errorf("ok=%v output=%q exists=%v", ok, o, exists(out))
+		}
+	})
+	t.Run("no signed source", func(t *testing.T) {
+		out := filepath.Join(t.TempDir(), "sdlc-skills")
+		o, ok := run(t, "", []string{"RELEASE=v9.9.9", "HOME=" + t.TempDir()}, "bash", installSDLCSkillsScript, "--fetch-only", out)
+		if ok || !strings.Contains(o, "SDLC_SKILLS_BASE_URL") {
+			t.Errorf("ok=%v output=%q", ok, o)
+		}
+	})
+	t.Run("unknown argument", func(t *testing.T) {
+		o, ok := run(t, "", []string{"RELEASE=v9.9.9", "HOME=" + t.TempDir()}, "bash", installSDLCSkillsScript, "--nope")
+		if ok || !strings.Contains(o, "unknown argument") {
+			t.Errorf("ok=%v output=%q", ok, o)
+		}
+	})
+}
