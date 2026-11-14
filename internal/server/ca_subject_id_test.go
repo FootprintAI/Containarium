@@ -48,8 +48,10 @@ func TestBoundClusterRefusesARecreatedCluster(t *testing.T) {
 	if _, err := s.boundCluster(ctx, "alice", "demo", "new-id"); err != nil {
 		t.Fatalf("certificate for the current cluster: %v", err)
 	}
-	if _, err := s.boundCluster(ctx, "alice", "demo", ""); err != nil {
-		t.Fatalf("legacy name-only certificate must still be accepted: %v", err)
+	// A name-only certificate carries no id, so it cannot match the current
+	// cluster and is refused (#3689 stage 3b).
+	if _, err := s.boundCluster(ctx, "alice", "demo", ""); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("name-only certificate: err = %v, want PermissionDenied", err)
 	}
 }
 
