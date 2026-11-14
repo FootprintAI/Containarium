@@ -53,9 +53,19 @@ func TestCaddyModulesInSyncWithMakefile(t *testing.T) {
 	// Catch drift in the other direction too: a module the Makefile still
 	// lists but that was removed from dnsProviderModules would silently keep
 	// shipping in every release forever.
+	sawL4 := false
 	for _, mod := range extractWithModules(target) {
-		if mod == "github.com/mholt/caddy-l4" {
-			continue // not a DNS provider module; always present by design
+		base, version, pinned := strings.Cut(mod, "@")
+		if base == "github.com/mholt/caddy-l4" {
+			sawL4 = true
+			// Not a DNS provider module; always present by design. It must be
+			// pinned: an unpinned plugin floats to its newest release, and one
+			// that needs a newer Caddy than CADDY_VERSION fails the release
+			// build (#3714).
+			if !pinned || version == "" {
+				t.Errorf("Makefile's build-caddy lists --with %s without a version; an unpinned plugin breaks the release build whenever it moves ahead of CADDY_VERSION (#3714)", mod)
+			}
+			continue
 		}
 		found := false
 		for _, want := range AllDNSProviderModules() {
@@ -67,6 +77,12 @@ func TestCaddyModulesInSyncWithMakefile(t *testing.T) {
 		if !found {
 			t.Errorf("Makefile's build-caddy target has --with %s, which is no longer in dnsProviderModules — remove it or re-add the provider", mod)
 		}
+	}
+	if !strings.Contains(makefile, "\nCADDY_L4_VERSION=v") {
+		t.Error("Makefile has no CADDY_L4_VERSION=v... line; build-caddy references it to pin caddy-l4 (#3714)")
+	}
+	if !sawL4 {
+		t.Error("Makefile's build-caddy target has no --with github.com/mholt/caddy-l4 (SNI passthrough needs it)")
 	}
 }
 
