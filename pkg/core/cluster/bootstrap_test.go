@@ -120,6 +120,35 @@ func TestRenderCAUnitScript(t *testing.T) {
 	}
 }
 
+// A re-deploy must restart a running autoscaler when its credential changed:
+// "enable --now" is a no-op on an active unit, and the autoscaler reads its
+// client credential once at start, so without a restart the old (name-only)
+// credential keeps being presented after a re-mint (#3718).
+func TestRenderCAUnitScriptRestartsOnCredentialChange(t *testing.T) {
+	got := RenderCAUnitScript(CADeploy{ProviderAddr: "10.0.0.1:36442"})
+	if strings.Contains(got, "enable --now") {
+		t.Fatalf("enable --now never restarts a running unit; the script must restart explicitly:\n%s", got)
+	}
+	for _, must := range []string{
+		"systemctl restart k3s-cluster-autoscaler.service",
+		"systemctl is-active --quiet k3s-cluster-autoscaler.service",
+		"sha256sum",
+		CAClientCertPath, CAClientKeyPath, CACACertPath, CACloudConfigPath, CACredFingerprintPath,
+	} {
+		if !strings.Contains(got, must) {
+			t.Fatalf("CA unit script missing %q:\n%s", must, got)
+		}
+	}
+	// The fingerprint is recorded only after the restart succeeds (set -e).
+	if strings.Index(got, "systemctl restart") > strings.Index(got, "> "+CACredFingerprintPath) {
+		t.Fatal("the fingerprint must be written after the restart, or a failed restart is recorded as done")
+	}
+	// The unit file is part of the fingerprint, so a changed unit restarts too.
+	if !strings.Contains(got, "/etc/systemd/system/k3s-cluster-autoscaler.service | sha256sum") {
+		t.Fatal("the fingerprint must cover the unit file")
+	}
+}
+
 // The scale-down timers are opt-in: a zero CADeploy must render no
 // --scale-down-* flag at all (the golden above pins the stock unit byte
 // for byte), and a set one must reach the autoscaler's command line, inside

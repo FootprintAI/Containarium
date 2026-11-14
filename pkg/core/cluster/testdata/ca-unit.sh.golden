@@ -31,4 +31,16 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now k3s-cluster-autoscaler.service
+systemctl enable k3s-cluster-autoscaler.service
+
+# Starting an already-enabled unit does not restart it, and the autoscaler reads its
+# client credential once at start. Restart whenever the credential, the
+# cloud-config or the unit changed since the last start, or the unit is not
+# running, so a re-minted credential is the one actually presented (#3718).
+fp=$(cat /etc/containarium/ca/client.crt /etc/containarium/ca/client.key /etc/containarium/ca/ca.crt /etc/containarium/ca/cloud-config.yaml /etc/systemd/system/k3s-cluster-autoscaler.service | sha256sum | cut -d' ' -f1)
+if [ "$(cat /etc/containarium/ca-deployed.sha256 2>/dev/null || true)" = "$fp" ] && systemctl is-active --quiet k3s-cluster-autoscaler.service; then
+  echo "autoscaler credential unchanged; leaving the unit running"
+else
+  systemctl restart k3s-cluster-autoscaler.service
+  echo "$fp" > /etc/containarium/ca-deployed.sha256
+fi
