@@ -90,6 +90,17 @@ func (m *MemStore) SetState(ctx context.Context, owner, name string, st State, r
 	return nil
 }
 
+func (m *MemStore) SetCADeployGen(ctx context.Context, owner, name string, gen int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.clusters[key(owner, name)]
+	if !ok {
+		return ErrNotFound
+	}
+	c.CADeployGen, c.UpdatedAt = gen, time.Now().UTC()
+	return nil
+}
+
 func (m *MemStore) SetCAIDBound(ctx context.Context, owner, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

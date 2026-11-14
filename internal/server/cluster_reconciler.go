@@ -202,18 +202,63 @@ func (r *ClusterReconciler) ReconcileOnce(ctx context.Context) {
 	}
 	if fresh, err := r.store.List(ctx, ""); err == nil {
 		r.remintCAIdentities(ctx, fresh)
+		r.forceCADeploys(ctx, fresh)
 	}
 }
 
-// markCAIDBound records that the cluster's autoscaler credential now carries
-// its id. A failure is logged, not returned: the deploy already happened, and
-// the re-mint pass retries the marker on its next run (#3689).
-func (r *ClusterReconciler) markCAIDBound(ctx context.Context, c *clusterstore.Cluster) {
-	if c.CAIDBound {
+// forceCADeploys re-deploys each ready cluster whose last deploy predates the
+// restart-on-change bootstrap (#3720). Those clusters are already bound to the
+// id-bearing credential, so the re-mint pass skips them; without this pass the
+// running autoscaler could keep a credential the cluster no longer accepts.
+// Like the re-mint pass it never sets a cluster to ERROR, and it logs how many
+// are still behind.
+func (r *ClusterReconciler) forceCADeploys(ctx context.Context, clusters []*clusterstore.Cluster) {
+	if r.mintCACert == nil || r.deployCA == nil {
 		return
 	}
-	if err := r.store.SetCAIDBound(ctx, c.Owner, c.Name); err != nil {
-		log.Printf("[cluster] %q/%q: record CA identity: %v", c.Owner, c.Name, err)
+	behind := 0
+	for _, c := range clusters {
+		if c.State != clusterstore.StateReady || !c.CAIDBound || c.CADeployGen >= clusterstore.CADeployGeneration {
+			continue
+		}
+		creds, err := r.mintCACert(c.Owner, c.Name, c.ID)
+		if err != nil {
+			behind++
+			log.Printf("[cluster] forced CA deploy %q/%q: %v", c.Owner, c.Name, err)
+			continue
+		}
+		deploy := clustercore.CADeploy{
+			ProviderAddr:           r.caAddr,
+			ScaleDownDelayAfterAdd: r.caScaleDownDelay,
+			ScaleDownUnneededTime:  r.caScaleDownUnneeded,
+		}
+		if err := r.deployCA(c.Owner, c.Name, deploy, creds); err != nil {
+			behind++
+			log.Printf("[cluster] forced CA deploy %q/%q: deploy: %v", c.Owner, c.Name, err)
+			continue
+		}
+		r.markCADeployed(ctx, c)
+		log.Printf("[cluster] forced CA deploy %q/%q to restart the autoscaler on the current credential", c.Owner, c.Name)
+	}
+	if behind > 0 {
+		log.Printf("[cluster] CA deploy generation: %d ready cluster(s) still behind generation %d", behind, clusterstore.CADeployGeneration)
+	}
+}
+
+// markCADeployed records a successful autoscaler deploy: the credential now
+// carries the cluster id, and the deploy ran with the current bootstrap
+// generation (#3689, #3720). A failure is logged, not returned: the deploy
+// already happened, and the next pass retries the markers.
+func (r *ClusterReconciler) markCADeployed(ctx context.Context, c *clusterstore.Cluster) {
+	if !c.CAIDBound {
+		if err := r.store.SetCAIDBound(ctx, c.Owner, c.Name); err != nil {
+			log.Printf("[cluster] %q/%q: record CA identity: %v", c.Owner, c.Name, err)
+		}
+	}
+	if c.CADeployGen != clusterstore.CADeployGeneration {
+		if err := r.store.SetCADeployGen(ctx, c.Owner, c.Name, clusterstore.CADeployGeneration); err != nil {
+			log.Printf("[cluster] %q/%q: record CA deploy generation: %v", c.Owner, c.Name, err)
+		}
 	}
 }
 
@@ -248,11 +293,7 @@ func (r *ClusterReconciler) remintCAIdentities(ctx context.Context, clusters []*
 			log.Printf("[cluster] re-mint %q/%q: deploy: %v", c.Owner, c.Name, err)
 			continue
 		}
-		if err := r.store.SetCAIDBound(ctx, c.Owner, c.Name); err != nil {
-			remaining++
-			log.Printf("[cluster] re-mint %q/%q: record: %v", c.Owner, c.Name, err)
-			continue
-		}
+		r.markCADeployed(ctx, c)
 		log.Printf("[cluster] re-minted %q/%q onto the id-bearing autoscaler credential", c.Owner, c.Name)
 	}
 	if remaining > 0 {
@@ -481,7 +522,7 @@ func (r *ClusterReconciler) settleState(ctx context.Context, c *clusterstore.Clu
 		if err := r.deployCA(c.Owner, c.Name, deploy, creds); err != nil {
 			return fmt.Errorf("deploy autoscaler: %w", err)
 		}
-		r.markCAIDBound(ctx, c)
+		r.markCADeployed(ctx, c)
 	}
 
 	expected := 1 // control plane

@@ -144,8 +144,13 @@ type Cluster struct {
 	// immutable id (#3689). Until then the cluster is on the legacy name-only
 	// subject, and the re-mint pass moves it over.
 	CAIDBound bool
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// CADeployGen is the autoscaler bootstrap generation the cluster was last
+	// deployed with. Below CADeployGeneration, the deploy predates the restart
+	// on credential change (#3718/#3719), so the running autoscaler may still
+	// hold an old credential, and the cluster is re-deployed once (#3720).
+	CADeployGen int
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // Node is one VM belonging to a cluster.
@@ -235,3 +240,8 @@ func ValidateNodeGroups(groups []NodeGroup) error {
 	}
 	return nil
 }
+
+// CADeployGeneration is the autoscaler bootstrap generation that restarts the
+// unit when its credential changes (#3718, fixed in #3719). Every deploy records
+// it; a cluster below it needs one forced re-deploy (#3720).
+const CADeployGeneration = 1
