@@ -119,7 +119,7 @@ of that contract: `sdlc`, `qa`, `security`.
 | With this change | newer signed release, same contract | Installs. Extra manifest keys ignored; extra sets handled as above. |
 | With this change | higher contract | Refused, nothing installed; the message names the supported contract. |
 | With this change | box installed from a release asset (no recorded skills version) | Stays on that release's asset until a skills version is asked for. |
-| Air-gapped | signed release fetched at bundle-build time | Verified with the embedded key at build time and again at install; no network at install. |
+| Air-gapped | signed release pinned and fetched at bundle-build time | Verified when cached, again when the bundle is assembled, and again at install; no network at install. |
 
 ## Per-box upgrade
 
@@ -129,8 +129,11 @@ The installer records `skills=<version>` in `~/.claude/skills/.sdlc-skills-versi
   release recorded stays on that release's asset. A box with nothing
   recorded takes `latest` once and records it.
 - `containarium code skill-sets <box> --skill-sets <ids> --skills-version <v|latest>`
-  (and `code install --skills-version`) moves one box. The daemon RPC and the
-  MCP tool carry the same field. Nothing moves a fleet in one call.
+  (and `code install --skills-version`) moves one box. The daemon RPC, the
+  MCP tool and the recipe parameters carry the same field. Nothing moves a
+  fleet in one call.
+- A request against an installer or daemon that predates the field fails. It
+  is never reported as a move.
 
 ## Rollback
 
@@ -147,11 +150,16 @@ The installer records `skills=<version>` in `~/.claude/skills/.sdlc-skills-versi
 
 | # | Repo | What | Depends on |
 | --- | --- | --- | --- |
-| 1 | this repo | Verifier, manifest and contract in `pkg/core/sdlcskills`; installer signed-source mode, off unless a base URL is given. No behaviour change by default. | none |
+| 1 | this repo (#3729) | Verifier, manifest and contract in `pkg/core/sdlcskills`; installer signed-source mode, off unless a base URL is given. No behaviour change by default. | none |
 | 2 | cloud | The lock, the bundle build, manifest, signing and publish steps, and the CI check that the lock matches a rebuild. Publishing is skipped until the signing key and destination are configured. | none (format agreed with 1) |
-| 3 | this repo | `skills_version` on `ApplyBoxSkillSets`, `--skills-version` on `code skill-sets` and `code install`, the MCP argument, the daemon's base-URL setting, signed loading for the hosted issue-implementer's standard. | 1 |
-| 4 | this repo | Cutover: commit the public key, default the base URL, fetch-and-verify in the air-gapped bundle build, delete the lock, build script, `sdlc-skills-lock` workflow and the Release steps. | 1, 3, a first signed cloud release, the key and URL |
-| 5 | cloud | The control plane passes its pinned skills version when it creates or upgrades a box. | 2, 3 |
+| 3 | this repo (#3730) | `skills_version` on `ApplyBoxSkillSets`, `--skills-version` on `code skill-sets` and `code install`, the MCP argument, the recipe parameters, the daemon's base-URL setting, signed loading for the hosted issue-implementer's standard. | 1 |
+| 4 | this repo (#3731) | The air-gapped bundle build fetches a pinned skills release, verifies it and ships it with the installer (`--fetch-only`). | 1 |
+| 5 | this repo | Cutover: commit the public key, default the base URL, delete the lock, build script, `sdlc-skills-lock` workflow and the Release steps; the daemon attributes skills to sets from what the installer recorded (`.sdlc-skills-sets`) instead of the embedded lock. | 1, 3, 4, a first signed cloud release, the key and URL |
+| 6 | cloud | The control plane passes its pinned skills version when it creates or upgrades a box. | 2, and a release of this repo with 3 |
+
+PRs 5 and 6 are not open. 5 waits for two things only an operator can supply
+(the signing key's public half and the public base URL) and for one signed
+release to exist. 6 waits for a release of this repository carrying 3.
 
 ## Not verified by CI
 
