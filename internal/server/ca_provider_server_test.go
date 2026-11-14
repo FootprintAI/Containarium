@@ -52,12 +52,17 @@ func caRig(t *testing.T) (capb.CloudProviderClient, *ClusterServer, *ClusterReco
 	return capb.NewCloudProviderClient(conn), srv, rec, host
 }
 
-// caCtx carries a cluster machine identity the way the production
-// transport stamps it (subject k8s-cluster:<owner>/<name>, scope
-// clusters:scale).
-func caCtx(owner, name string) context.Context {
+// caCtx carries a cluster machine identity the way the production transport
+// stamps it: subject k8s-cluster:<owner>/<name>#<id>, scope clusters:scale. The
+// id is the cluster's own, so the identity is the current cluster's (#3689).
+func caCtx(t *testing.T, srv *ClusterServer, owner, name string) context.Context {
+	t.Helper()
+	c, err := srv.Store().Get(context.Background(), owner, name)
+	if err != nil {
+		t.Fatalf("caCtx: cluster %q/%q: %v", owner, name, err)
+	}
 	return metadata.AppendToOutgoingContext(context.Background(),
-		auth.MDKeyUsername, CASubject(owner, name, ""),
+		auth.MDKeyUsername, CASubject(owner, name, c.ID),
 		auth.MDKeyRoles, "machine",
 		auth.MDKeyScopes, auth.ScopeClustersScale,
 	)
@@ -68,7 +73,7 @@ func TestCAProvider_NodeGroupsAndIdentity(t *testing.T) {
 	mustCreate(t, srv, tenantCtx("alice"), "demo")
 
 	// The cluster's own identity sees its groups with truthful bounds.
-	resp, err := client.NodeGroups(caCtx("alice", "demo"), &capb.NodeGroupsRequest{})
+	resp, err := client.NodeGroups(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupsRequest{})
 	if err != nil {
 		t.Fatalf("NodeGroups: %v", err)
 	}
@@ -85,7 +90,12 @@ func TestCAProvider_NodeGroupsAndIdentity(t *testing.T) {
 	}
 
 	// A DIFFERENT cluster's identity cannot touch demo's groups.
-	_, err = client.NodeGroupTargetSize(caCtx("alice", "other"), &capb.NodeGroupTargetSizeRequest{Id: "alice/demo/small"})
+	// "other" does not exist; the subject carries some id, and the group id
+	// names demo, so the call is refused by ownership, not by the lookup.
+	otherCtx := metadata.AppendToOutgoingContext(context.Background(),
+		auth.MDKeyUsername, CASubject("alice", "other", "not-a-real-id"),
+		auth.MDKeyRoles, "machine", auth.MDKeyScopes, auth.ScopeClustersScale)
+	_, err = client.NodeGroupTargetSize(otherCtx, &capb.NodeGroupTargetSizeRequest{Id: "alice/demo/small"})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("cross-cluster call = %v, want PermissionDenied", err)
 	}
@@ -99,8 +109,14 @@ func TestCAProvider_NodeGroupsAndIdentity(t *testing.T) {
 	}
 
 	// Missing scope is refused before anything else.
+	// The subject carries the cluster's real id, so only the missing scope is
+	// the reason for the refusal.
+	demo, err := srv.Store().Get(context.Background(), "alice", "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
 	noScope := metadata.AppendToOutgoingContext(context.Background(),
-		auth.MDKeyUsername, CASubject("alice", "demo", ""), auth.MDKeyRoles, "machine", auth.MDKeyScopes, auth.ScopeClustersRead)
+		auth.MDKeyUsername, CASubject("alice", "demo", demo.ID), auth.MDKeyRoles, "machine", auth.MDKeyScopes, auth.ScopeClustersRead)
 	_, err = client.NodeGroups(noScope, &capb.NodeGroupsRequest{})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("wrong scope = %v, want PermissionDenied", err)
@@ -114,13 +130,13 @@ func TestCAProvider_ScaleUpMaterializesThroughReconciler(t *testing.T) {
 	rec.ReconcileOnce(ctx) // CP
 	rec.ReconcileOnce(ctx) // worker to min (1)
 
-	ts, err := client.NodeGroupTargetSize(caCtx("alice", "demo"), &capb.NodeGroupTargetSizeRequest{Id: "alice/demo/small"})
+	ts, err := client.NodeGroupTargetSize(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupTargetSizeRequest{Id: "alice/demo/small"})
 	if err != nil || ts.TargetSize != 1 {
 		t.Fatalf("initial target = %v (%v), want 1 (min)", ts.GetTargetSize(), err)
 	}
 
 	// CA raises the target by 2 (pending pods) — bounded at max 3.
-	if _, err := client.NodeGroupIncreaseSize(caCtx("alice", "demo"), &capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 2}); err != nil {
+	if _, err := client.NodeGroupIncreaseSize(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 2}); err != nil {
 		t.Fatalf("IncreaseSize: %v", err)
 	}
 	rec.ReconcileOnce(ctx)
@@ -135,7 +151,7 @@ func TestCAProvider_ScaleUpMaterializesThroughReconciler(t *testing.T) {
 	}
 
 	// Past max is a loud, typed refusal + a REFUSED event.
-	_, err = client.NodeGroupIncreaseSize(caCtx("alice", "demo"), &capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 1})
+	_, err = client.NodeGroupIncreaseSize(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 1})
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("over-max IncreaseSize = %v, want ResourceExhausted", err)
 	}
@@ -154,7 +170,7 @@ func TestCAProvider_ScaleUpMaterializesThroughReconciler(t *testing.T) {
 	}
 
 	// Non-positive delta is invalid.
-	_, err = client.NodeGroupIncreaseSize(caCtx("alice", "demo"), &capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 0})
+	_, err = client.NodeGroupIncreaseSize(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 0})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("zero delta = %v, want InvalidArgument", err)
 	}
@@ -166,7 +182,7 @@ func TestCAProvider_DeleteNodesAndDecrease(t *testing.T) {
 	mustCreate(t, srv, tenantCtx("alice"), "demo")
 	rec.ReconcileOnce(ctx)
 	rec.ReconcileOnce(ctx)
-	if _, err := client.NodeGroupIncreaseSize(caCtx("alice", "demo"), &capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 1}); err != nil {
+	if _, err := client.NodeGroupIncreaseSize(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 1}); err != nil {
 		t.Fatal(err)
 	}
 	rec.ReconcileOnce(ctx) // 2 workers now
@@ -180,7 +196,7 @@ func TestCAProvider_DeleteNodesAndDecrease(t *testing.T) {
 	// — is unchanged and covered by
 	// TestCAProvider_DeleteNodesStillRefusesANodeThatExistsOutsideTheGroup.
 	before := len(host.vms)
-	if _, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+	if _, err := client.NodeGroupDeleteNodes(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
 		Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{{Name: "alice-k8s-demo-small-9"}},
 	}); err != nil {
 		t.Fatalf("deleting a node that exists nowhere = %v, want success (already gone)", err)
@@ -188,7 +204,7 @@ func TestCAProvider_DeleteNodesAndDecrease(t *testing.T) {
 	if len(host.vms) != before {
 		t.Fatalf("a no-op delete removed something: %v", vmNames(host))
 	}
-	if ts, tsErr := client.NodeGroupTargetSize(caCtx("alice", "demo"),
+	if ts, tsErr := client.NodeGroupTargetSize(caCtx(t, srv, "alice", "demo"),
 		&capb.NodeGroupTargetSizeRequest{Id: "alice/demo/small"}); tsErr != nil {
 		t.Fatal(tsErr)
 	} else if ts.GetTargetSize() != 2 {
@@ -196,7 +212,7 @@ func TestCAProvider_DeleteNodesAndDecrease(t *testing.T) {
 	}
 
 	// CA drains and removes one node: VM gone, row gone, target back to 1.
-	if _, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+	if _, err := client.NodeGroupDeleteNodes(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
 		Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{{Name: "alice-k8s-demo-small-2"}},
 	}); err != nil {
 		t.Fatalf("DeleteNodes: %v", err)
@@ -204,7 +220,7 @@ func TestCAProvider_DeleteNodesAndDecrease(t *testing.T) {
 	if _, ok := host.vms["alice-k8s-demo-small-2"]; ok {
 		t.Fatal("VM survived DeleteNodes")
 	}
-	ts, _ := client.NodeGroupTargetSize(caCtx("alice", "demo"), &capb.NodeGroupTargetSizeRequest{Id: "alice/demo/small"})
+	ts, _ := client.NodeGroupTargetSize(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupTargetSizeRequest{Id: "alice/demo/small"})
 	if ts.GetTargetSize() != 1 {
 		t.Fatalf("target after delete = %d, want 1", ts.GetTargetSize())
 	}
@@ -215,7 +231,7 @@ func TestCAProvider_DeleteNodesAndDecrease(t *testing.T) {
 	}
 
 	// DecreaseTargetSize may not go below the existing node count.
-	_, err := client.NodeGroupDecreaseTargetSize(caCtx("alice", "demo"), &capb.NodeGroupDecreaseTargetSizeRequest{Id: "alice/demo/small", Delta: -1})
+	_, err := client.NodeGroupDecreaseTargetSize(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupDecreaseTargetSizeRequest{Id: "alice/demo/small", Delta: -1})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("decrease below existing = %v, want InvalidArgument", err)
 	}
@@ -230,7 +246,7 @@ func TestCAProvider_TemplateAndNodeMapping(t *testing.T) {
 
 	// The template must equal the typed size — the truthfulness the
 	// fit simulation (and scale-from-zero for medium/large) depends on.
-	tmpl, err := client.NodeGroupTemplateNodeInfo(caCtx("alice", "demo"), &capb.NodeGroupTemplateNodeInfoRequest{Id: "alice/demo/medium"})
+	tmpl, err := client.NodeGroupTemplateNodeInfo(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupTemplateNodeInfoRequest{Id: "alice/demo/medium"})
 	if err != nil {
 		t.Fatalf("TemplateNodeInfo: %v", err)
 	}
@@ -243,13 +259,13 @@ func TestCAProvider_TemplateAndNodeMapping(t *testing.T) {
 	}
 
 	// Worker maps to its group; the control plane maps to nothing.
-	fn, err := client.NodeGroupForNode(caCtx("alice", "demo"), &capb.NodeGroupForNodeRequest{
+	fn, err := client.NodeGroupForNode(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupForNodeRequest{
 		Node: &capb.ExternalGrpcNode{Name: "alice-k8s-demo-small-1"},
 	})
 	if err != nil || fn.NodeGroup.Id != "alice/demo/small" {
 		t.Fatalf("worker mapping = %q (%v), want alice/demo/small", fn.GetNodeGroup().GetId(), err)
 	}
-	fn, err = client.NodeGroupForNode(caCtx("alice", "demo"), &capb.NodeGroupForNodeRequest{
+	fn, err = client.NodeGroupForNode(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupForNodeRequest{
 		Node: &capb.ExternalGrpcNode{Name: "alice-k8s-demo-cp"},
 	})
 	if err != nil || fn.NodeGroup.Id != "" {
@@ -257,7 +273,7 @@ func TestCAProvider_TemplateAndNodeMapping(t *testing.T) {
 	}
 
 	// Instances carry provider IDs and states.
-	nodes, err := client.NodeGroupNodes(caCtx("alice", "demo"), &capb.NodeGroupNodesRequest{Id: "alice/demo/small"})
+	nodes, err := client.NodeGroupNodes(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupNodesRequest{Id: "alice/demo/small"})
 	if err != nil || len(nodes.Instances) != 1 {
 		t.Fatalf("NodeGroupNodes = %+v (%v), want 1 instance", nodes.GetInstances(), err)
 	}
@@ -289,7 +305,7 @@ func TestCAProvider_DeleteNodesIsNotUndoneByAConcurrentReconcilerPass(t *testing
 	mustCreate(t, srv, tenantCtx("alice"), "demo")
 	rec.ReconcileOnce(ctx)
 	rec.ReconcileOnce(ctx)
-	if _, err := client.NodeGroupIncreaseSize(caCtx("alice", "demo"),
+	if _, err := client.NodeGroupIncreaseSize(caCtx(t, srv, "alice", "demo"),
 		&capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +321,7 @@ func TestCAProvider_DeleteNodesIsNotUndoneByAConcurrentReconcilerPass(t *testing
 		rec.ReconcileOnce(ctx)
 	}
 
-	if _, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+	if _, err := client.NodeGroupDeleteNodes(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
 		Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{{Name: "alice-k8s-demo-small-2"}},
 	}); err != nil {
 		t.Fatalf("DeleteNodes: %v", err)
@@ -342,7 +358,7 @@ func TestCAProvider_TargetIsLoweredBeforeAnyInstanceIsDestroyed(t *testing.T) {
 	mustCreate(t, srv, tenantCtx("alice"), "demo")
 	rec.ReconcileOnce(ctx)
 	rec.ReconcileOnce(ctx)
-	if _, err := client.NodeGroupIncreaseSize(caCtx("alice", "demo"),
+	if _, err := client.NodeGroupIncreaseSize(caCtx(t, srv, "alice", "demo"),
 		&capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +378,7 @@ func TestCAProvider_TargetIsLoweredBeforeAnyInstanceIsDestroyed(t *testing.T) {
 		}
 	}
 
-	if _, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+	if _, err := client.NodeGroupDeleteNodes(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
 		Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{{Name: "alice-k8s-demo-small-2"}},
 	}); err != nil {
 		t.Fatalf("DeleteNodes: %v", err)
@@ -390,7 +406,7 @@ func TestCAProvider_TargetDoesNotDriftWhenDeletionKeepsFailing(t *testing.T) {
 	mustCreate(t, srv, tenantCtx("alice"), "demo")
 	rec.ReconcileOnce(ctx)
 	rec.ReconcileOnce(ctx)
-	if _, err := client.NodeGroupIncreaseSize(caCtx("alice", "demo"),
+	if _, err := client.NodeGroupIncreaseSize(caCtx(t, srv, "alice", "demo"),
 		&capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 2}); err != nil {
 		t.Fatal(err)
 	}
@@ -400,13 +416,13 @@ func TestCAProvider_TargetDoesNotDriftWhenDeletionKeepsFailing(t *testing.T) {
 	host.deleteErr = errors.New("incus: instance is busy")
 
 	for attempt := 1; attempt <= 3; attempt++ {
-		_, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+		_, err := client.NodeGroupDeleteNodes(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
 			Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{{Name: "alice-k8s-demo-small-3"}},
 		})
 		if err == nil {
 			t.Fatalf("attempt %d: DeleteNodes succeeded though every delete fails", attempt)
 		}
-		ts, tsErr := client.NodeGroupTargetSize(caCtx("alice", "demo"),
+		ts, tsErr := client.NodeGroupTargetSize(caCtx(t, srv, "alice", "demo"),
 			&capb.NodeGroupTargetSizeRequest{Id: "alice/demo/small"})
 		if tsErr != nil {
 			t.Fatal(tsErr)
@@ -419,7 +435,7 @@ func TestCAProvider_TargetDoesNotDriftWhenDeletionKeepsFailing(t *testing.T) {
 		}
 	}
 
-	nodes, err := client.NodeGroupNodes(caCtx("alice", "demo"), &capb.NodeGroupNodesRequest{Id: "alice/demo/small"})
+	nodes, err := client.NodeGroupNodes(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupNodesRequest{Id: "alice/demo/small"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +464,7 @@ func TestReconcilerDoesNotDecideOnAStaleTarget(t *testing.T) {
 	mustCreate(t, srv, tenantCtx("alice"), "demo")
 	rec.ReconcileOnce(ctx)
 	rec.ReconcileOnce(ctx)
-	if _, err := client.NodeGroupIncreaseSize(caCtx("alice", "demo"),
+	if _, err := client.NodeGroupIncreaseSize(caCtx(t, srv, "alice", "demo"),
 		&capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +477,7 @@ func TestReconcilerDoesNotDecideOnAStaleTarget(t *testing.T) {
 		}
 		fired = true
 		host.onObserve = nil
-		if _, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+		if _, err := client.NodeGroupDeleteNodes(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
 			Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{{Name: "alice-k8s-demo-small-2"}},
 		}); err != nil {
 			t.Errorf("DeleteNodes inside observe: %v", err)
@@ -500,7 +516,7 @@ func TestCAProvider_DeleteNodesMakesProgressWhenPartOfTheBatchIsAlreadyGone(t *t
 	mustCreate(t, srv, tenantCtx("alice"), "demo")
 	rec.ReconcileOnce(ctx)
 	rec.ReconcileOnce(ctx)
-	if _, err := client.NodeGroupIncreaseSize(caCtx("alice", "demo"),
+	if _, err := client.NodeGroupIncreaseSize(caCtx(t, srv, "alice", "demo"),
 		&capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/small", Delta: 2}); err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +524,7 @@ func TestCAProvider_DeleteNodesMakesProgressWhenPartOfTheBatchIsAlreadyGone(t *t
 
 	// First attempt removes small-2 and then fails on small-3.
 	host.deleteErrFor = map[string]error{"alice-k8s-demo-small-3": errors.New("incus: instance is busy")}
-	_, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+	_, err := client.NodeGroupDeleteNodes(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
 		Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{
 			{Name: "alice-k8s-demo-small-2"}, {Name: "alice-k8s-demo-small-3"},
 		},
@@ -523,7 +539,7 @@ func TestCAProvider_DeleteNodesMakesProgressWhenPartOfTheBatchIsAlreadyGone(t *t
 	// The retry still names small-2, exactly as cluster-autoscaler
 	// would: its Kubernetes Node object was never deleted by us.
 	host.deleteErrFor = nil
-	if _, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+	if _, err := client.NodeGroupDeleteNodes(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
 		Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{
 			{Name: "alice-k8s-demo-small-2"}, {Name: "alice-k8s-demo-small-3"},
 		},
@@ -547,7 +563,7 @@ func TestCAProvider_DeleteNodesStillRefusesANodeThatExistsOutsideTheGroup(t *tes
 	mustCreate(t, srv, tenantCtx("alice"), "demo")
 	rec.ReconcileOnce(ctx)
 	rec.ReconcileOnce(ctx)
-	if _, err := client.NodeGroupIncreaseSize(caCtx("alice", "demo"),
+	if _, err := client.NodeGroupIncreaseSize(caCtx(t, srv, "alice", "demo"),
 		&capb.NodeGroupIncreaseSizeRequest{Id: "alice/demo/medium", Delta: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -557,7 +573,7 @@ func TestCAProvider_DeleteNodesStillRefusesANodeThatExistsOutsideTheGroup(t *tes
 	}
 
 	// A medium node named in the small group's batch.
-	_, err := client.NodeGroupDeleteNodes(caCtx("alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
+	_, err := client.NodeGroupDeleteNodes(caCtx(t, srv, "alice", "demo"), &capb.NodeGroupDeleteNodesRequest{
 		Id: "alice/demo/small", Nodes: []*capb.ExternalGrpcNode{{Name: "alice-k8s-demo-medium-1"}},
 	})
 	if status.Code(err) != codes.NotFound {
@@ -565,5 +581,19 @@ func TestCAProvider_DeleteNodesStillRefusesANodeThatExistsOutsideTheGroup(t *tes
 	}
 	if _, ok := host.vms["alice-k8s-demo-medium-1"]; !ok {
 		t.Error("the refused node was deleted anyway")
+	}
+}
+
+// A name-only subject predates the cluster id, so every provider RPC refuses it
+// (#3689 stage 3b). Checked through the real client, on one of the RPCs that
+// does not go through the cluster lookup.
+func TestCAProvider_NameOnlyIdentityIsRefused(t *testing.T) {
+	client, srv, _, _ := caRig(t)
+	mustCreate(t, srv, tenantCtx("alice"), "demo")
+	legacy := metadata.AppendToOutgoingContext(context.Background(),
+		auth.MDKeyUsername, CASubject("alice", "demo", ""),
+		auth.MDKeyRoles, "machine", auth.MDKeyScopes, auth.ScopeClustersScale)
+	if _, err := client.NodeGroups(legacy, &capb.NodeGroupsRequest{}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("name-only subject: err = %v, want PermissionDenied", err)
 	}
 }
