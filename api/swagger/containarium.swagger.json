@@ -20404,9 +20404,26 @@
         "guardrailGate": {
           "$ref": "#/definitions/GuardrailGate",
           "description": "When set, every deploy of this recipe is gated on a guardrail\nattestation (#2368): DeployRecipe verifies the dataset the request\nstages against the server guardrail policy and its trusted signers\nBEFORE the container is created, copies exactly the verified bytes to\ndataset_path, and only then runs post_start. The recipe decides whether\na gate applies; a caller cannot opt out by leaving guardrail_input out."
+        },
+        "context": {
+          "$ref": "#/definitions/RecipeContext",
+          "description": "Live context the app publishes for the box's agents (#3726). When set,\npost_start creates ~\u003cbox_user\u003e/.containarium/context/\u003cid\u003e/ inside the box,\nexports CONTAINARIUM_CONTEXT_DIR to it, and an agent on the box can read\nthe files the app writes there. Absent means no directory and no env var."
         }
       },
       "description": "Recipe is a declarative definition of a GPU/app workload that Containarium\ncan provision as a new dedicated container. The container is an LXC system\ncontainer; the recipe's image runs inside it via Podman (post_start),\nmirroring how the kubeflow stack runs k3s inside an LXC."
+    },
+    "RecipeContext": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "File names the app publishes (e.g. \"current.json\"). Plain names only: no\npath separators, no \".\" or \"..\"."
+        }
+      },
+      "description": "RecipeContext declares the files a recipe's app publishes as live context.\nThe files are app-defined JSON written with write-to-temp-then-rename; the\ndirectory is created empty and consumers must re-read them on every use."
     },
     "RecipeParam": {
       "type": "object",

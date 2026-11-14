@@ -867,6 +867,9 @@ func resourceLimits(recipe *pb.Recipe, override *pb.RecipeResources) *pb.Resourc
 func buildPostStartScript(recipe *pb.Recipe, params map[string]string, gatewayEnv string) string {
 	var b strings.Builder
 	b.WriteString("set -euo pipefail\n")
+	// The context directory comes first, so a failure here stops post_start
+	// before the app runs (#3726).
+	b.WriteString(contextSetupScript(recipe, params, contextProfileScript))
 	if gatewayEnv != "" {
 		b.WriteString(gatewayEnv)
 	}

@@ -158,6 +158,21 @@ message Recipe {
   // dataset_path, and only then runs post_start. The recipe decides whether
   // a gate applies; a caller cannot opt out by leaving guardrail_input out.
   GuardrailGate guardrail_gate = 13;
+
+  // Live context the app publishes for the box's agents (#3726). When set,
+  // post_start creates ~<box_user>/.containarium/context/<id>/ inside the box,
+  // exports CONTAINARIUM_CONTEXT_DIR to it, and an agent on the box can read
+  // the files the app writes there. Absent means no directory and no env var.
+  RecipeContext context = 14;
+}
+
+// RecipeContext declares the files a recipe's app publishes as live context.
+// The files are app-defined JSON written with write-to-temp-then-rename; the
+// directory is created empty and consumers must re-read them on every use.
+message RecipeContext {
+  // File names the app publishes (e.g. "current.json"). Plain names only: no
+  // path separators, no "." or "..".
+  repeated string files = 1;
 }
 
 // GuardrailGate is a recipe's guardrail precondition
