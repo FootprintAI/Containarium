@@ -29,11 +29,10 @@ func LoadSignedBundle(bundle, manifest, sig []byte, keys Keyring) (*Bundle, Mani
 	if err != nil {
 		return nil, Manifest{}, err
 	}
-	pin := m.Pin()
-	if len(m.Sources) > 0 {
-		pin += " skills " + m.Version
-	}
-	return &Bundle{pin: pin, files: files}, m, nil
+	// The pin keeps the shape a lock-verified bundle has (<repo>@<sha12>):
+	// it is published as a hosted skill's prompt pin. The release version is
+	// in the returned manifest.
+	return &Bundle{pin: m.Pin(), files: files}, m, nil
 }
 
 // LoadSignedBundleFile reads the bundle at filePath with the manifest and

@@ -177,7 +177,8 @@ func (m Manifest) Namespaces(ids []string) ([]string, error) {
 
 // Pin names the content the release was built from, for stamping into
 // whatever is derived from it: "<owner>/<repo>@<sha12>" of the sdlc source
-// (or the first one), or the release version when no source is recorded.
+// (or the first one), the same shape a lock gives, or "skills <version>"
+// when the manifest records no source.
 func (m Manifest) Pin() string {
 	if len(m.Sources) == 0 {
 		return "skills " + m.Version

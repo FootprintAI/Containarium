@@ -34,7 +34,7 @@ func TestLoadSignedBundle(t *testing.T) {
 	if m.Version != "2026.11.0" {
 		t.Errorf("Version = %q", m.Version)
 	}
-	if got := b.Pin(); got != "example/skills@b348a8258b4c skills 2026.11.0" {
+	if got := b.Pin(); got != "example/skills@b348a8258b4c" {
 		t.Errorf("Pin() = %q", got)
 	}
 	if _, ok := b.Section("engineer-implement", "Engineering principles"); !ok {
