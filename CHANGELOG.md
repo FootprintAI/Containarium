@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Backup verification no longer hangs without a trace when the throwaway verifier container cannot finish provisioning: each wait on cloud-init and apt is bounded (120 s, 120 s, 300 s) and names itself when it times out, apt retries and times out its own downloads, and the daemon logs when provisioning starts, finishes or fails.
+
 ## [0.137.1] - 2026-11-14
 
 

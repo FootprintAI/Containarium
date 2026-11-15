@@ -103,3 +103,36 @@ func TestBackupVerifierListenAddressIsQuoted(t *testing.T) {
 		t.Fatalf("provisioning script does not write a quoted loopback listen_addresses:\n%s", script)
 	}
 }
+
+// TestBackupVerifierProvisioningIsBounded pins that every step that waits on
+// the network or on cloud-init inside the new container runs under a timeout,
+// and names itself when it times out. The verify RPC has no deadline of its
+// own, so an unbounded step here is a request that hangs until the client's
+// deadline with nothing logged on either side.
+func TestBackupVerifierProvisioningIsBounded(t *testing.T) {
+	backend := incustest.NewMockBackend()
+	backend.CreateContainerFunc = func(incus.ContainerConfig) error { return nil }
+	backend.StartContainerFunc = func(string) error { return nil }
+	backend.WaitForNetworkFunc = func(string, time.Duration) (string, error) { return "127.0.0.1", nil }
+	var script string
+	backend.ExecWithExitCodeFunc = func(_ string, cmd []string) (string, string, int, error) {
+		script = cmd[len(cmd)-1]
+		return "", "", 0, nil
+	}
+	backend.DeleteContainerFunc = func(string) error { return nil }
+	if _, _, _, err := NewWithBackend(backend).CreateBackupVerifier("alice"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`bounded 120 "cloud-init status --wait" cloud-init status --wait`,
+		`bounded 120 "apt-get update"`,
+		`bounded 300 "apt-get install postgresql-16"`,
+		"Acquire::Retries=3",
+		"Acquire::http::Timeout=30",
+		"timed out after",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("provisioning script lacks %q:\n%s", want, script)
+		}
+	}
+}
