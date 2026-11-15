@@ -87,7 +87,12 @@ jobs:
   container-e2e:
     name: six-step journey (container nodes, no KVM)
     if: github.event_name != 'workflow_dispatch' || inputs.sabotage == 'none'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # Pinned, not ubuntu-latest: the lane runs k3s in system containers on the
+    # runner, and ubuntu-latest moved to 26.04 on 2026-11-14, which ships without
+    # iptables, so kube-proxy exits, k3s dies and the autoscaler unit cannot
+    # start. The last green runs were on 24.04. Move the pin deliberately, in its
+    # own change, when the lane has been shown to pass on the newer image.
     # Budget, and the rule that ties it together (#1458):
     #
     #   sum(step budgets) <= CONTAINARIUM_E2E_GO_TIMEOUT < timeout-minutes - setup
@@ -172,7 +177,8 @@ jobs:
   prove-lane-can-fail:
     name: sabotage run (suite must go red)
     if: github.event_name == 'workflow_dispatch' && inputs.sabotage == 'join-token'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # Pinned with the journey job above (see the note there).
     # Same rule as the journey job above, and it matters MORE here: a
     # proof run cancelled at the cap reports "the lane cannot fail" for
     # a lane that was merely slow — the inversion this job exists to
@@ -212,7 +218,8 @@ jobs:
   prerouting-sabotage:
     name: sabotage run (tenant path must be checked)
     if: github.event_name == 'workflow_dispatch' && inputs.sabotage == 'drop-prerouting'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # Pinned with the journey job above (see the note there).
     # Same budget rule as every other job that runs the suite (#1458):
     # the go timeout plus provisioning has to fit, or a slow proof run
     # is cancelled and reports "the lane cannot fail" for a lane that
