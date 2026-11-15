@@ -93,19 +93,17 @@ jobs:
       # Every Go test creates from the copy pulled once above, rather than
       # re-fetching from the public mirror on each create (#1375).
       CONTAINARIUM_LANE_IMAGE: lane-box
-      # --standalone does not stop the daemon provisioning its own core-postgres
-      # at startup ("local security scanning"): it downloads an image from the
-      # public mirror and runs apt inside a new container, and the daemon
-      # answers "initialising daemon" until that finishes. On a slow runner
-      # network that outlasts the 5-minute readiness loops below and fails the
-      # lane with "the daemon never answered the CLI". Setting a DSN skips the
-      # provisioning; the unreachable address then fails the one bounded
-      # startup ping (CONTAINARIUM_STARTUP_POSTGRES_TIMEOUT) and the daemon
-      # serves degraded without its Postgres-backed stores, none of which are
-      # on any path this lane exercises. Daemons are started via sudo, which
-      # drops the environment, so each start passes these through explicitly.
-      CONTAINARIUM_POSTGRES_URL: postgres://unused:unused@127.0.0.1:1/unused?sslmode=disable
-      CONTAINARIUM_STARTUP_POSTGRES_TIMEOUT: 5s
+      # The daemons below talk to a PostgreSQL started on the runner by the
+      # "Start a real PostgreSQL" step. Without a DSN, `--standalone` still
+      # makes the daemon provision its own core-postgres at startup: an image
+      # download plus an apt install in a new container, during which it
+      # answers "initialising daemon" — on a slow network that outlasts the
+      # readiness loops and fails the lane with "the daemon never answered the
+      # CLI". A real database is also required for create itself: the tenant
+      # network guard refuses to create when the network-policy store is the
+      # in-memory fallback. sudo drops the environment, so each daemon start
+      # passes this through explicitly.
+      CONTAINARIUM_POSTGRES_URL: postgres://containarium:lane-only-secret-not-a-credential@127.0.0.1:5432/containarium?sslmode=disable
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -286,6 +284,22 @@ jobs:
       #
       # Asserted against the HOST's ZFS state, never the daemon's report of
       # itself — a daemon claiming success is the thing under test.
+      # A real database for the daemons started below; see the job env for why.
+      - name: Start a real PostgreSQL
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends postgresql
+          sudo systemctl start postgresql
+          for _ in $(seq 1 30); do
+            pg_isready -h 127.0.0.1 -p 5432 && break
+            sleep 1
+          done
+          pg_isready -h 127.0.0.1 -p 5432 || { echo "::error::PostgreSQL did not become ready"; exit 1; }
+          sudo -u postgres psql -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE containarium LOGIN PASSWORD 'lane-only-secret-not-a-credential'" \
+            -c "CREATE DATABASE containarium OWNER containarium"
+
       - name: Create an encrypted container through the daemon and its flags
         env:
           JWT_SECRET: lane-only-secret-not-a-credential
@@ -310,12 +324,9 @@ jobs:
           sudo -E env "PATH=$PATH" go build -o /tmp/containarium ./cmd/containariumd
           sudo mkdir -p /etc/containarium/keys
 
-          # --standalone skips the core LXCs (Caddy, ...) but not the daemon's
-          # own core-postgres provisioning; the job-level
-          # CONTAINARIUM_POSTGRES_URL skips that, so the daemon proceeds with
-          # its Postgres-backed services disabled, none on the encrypted-create
-          # path.
-          sudo --preserve-env=CONTAINARIUM_POSTGRES_URL,CONTAINARIUM_STARTUP_POSTGRES_TIMEOUT \
+          # --standalone skips the core LXCs (Caddy, ...). Postgres comes from
+          # the runner via CONTAINARIUM_POSTGRES_URL (see the job env).
+          sudo --preserve-env=CONTAINARIUM_POSTGRES_URL \
             /tmp/containarium daemon --standalone --rest \
             --jwt-secret "$JWT_SECRET" \
             --zfs-keys-dir=/etc/containarium/keys \
@@ -386,7 +397,7 @@ jobs:
             echo "::error::daemon did not exit before the timezone restart check"
             exit 1
           fi
-          sudo --preserve-env=CONTAINARIUM_POSTGRES_URL,CONTAINARIUM_STARTUP_POSTGRES_TIMEOUT \
+          sudo --preserve-env=CONTAINARIUM_POSTGRES_URL \
             /tmp/containarium daemon --standalone --rest \
             --jwt-secret "$JWT_SECRET" \
             --zfs-keys-dir=/etc/containarium/keys \
@@ -444,7 +455,7 @@ jobs:
           JWT_SECRET: lane-only-secret-not-a-credential
         run: |
           set -euo pipefail
-          sudo --preserve-env=CONTAINARIUM_POSTGRES_URL,CONTAINARIUM_STARTUP_POSTGRES_TIMEOUT \
+          sudo --preserve-env=CONTAINARIUM_POSTGRES_URL \
             /tmp/containarium daemon --standalone --rest \
             --jwt-secret "$JWT_SECRET" > /tmp/daemon-nokeys.log 2>&1 &
 
@@ -502,7 +513,6 @@ jobs:
             exit 1
           fi
           sudo env "CONTAINARIUM_POSTGRES_URL=$CONTAINARIUM_POSTGRES_URL" \
-            "CONTAINARIUM_STARTUP_POSTGRES_TIMEOUT=$CONTAINARIUM_STARTUP_POSTGRES_TIMEOUT" \
             CONTAINARIUM_BACKUP_DIR="$backup_dir" \
             CONTAINARIUM_BACKUP_VERIFY_IMAGE=lane-box \
             /tmp/containarium daemon --standalone --rest --jwt-secret "$JWT_SECRET" \
