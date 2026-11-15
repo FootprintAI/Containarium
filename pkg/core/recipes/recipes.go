@@ -87,6 +87,9 @@ type recipeDef struct {
 	GuardrailGate     *guardrailGateDef `yaml:"-"`
 	// Context is the live-context declaration (#3726); nil = no context directory.
 	Context *contextDef `yaml:"context,omitempty"`
+	// WorkspaceDir is the agent's workspace, relative to its owner's home
+	// (#3679); see the proto field for semantics.
+	WorkspaceDir string `yaml:"workspace_dir,omitempty"`
 }
 
 // UnmarshalYAML uses the callback form to retain the parent decoder's
@@ -203,6 +206,7 @@ func (r *recipeDef) ToProto() *pb.Recipe {
 		PostStart:   r.PostStart,
 
 		ModelGatewayProvider: r.ModelGatewayProvider,
+		WorkspaceDir:         r.WorkspaceDir,
 	}
 	if r.GuardrailGate != nil {
 		kinds, _ := guardrailKindsFromYAML(r.GuardrailGate.RequireKinds) // validate refused unknown names
@@ -379,6 +383,9 @@ func validate(r *recipeDef) error {
 	if err := validateContext(r); err != nil {
 		return err
 	}
+	if err := validateWorkspaceDir(r); err != nil {
+		return err
+	}
 	if n := r.GuardrailGateNode; n.Kind != 0 {
 		// The key is present: that is a gate declaration, so an empty or
 		// null value is an incomplete gate, never "no gate".
@@ -399,6 +406,32 @@ func validate(r *recipeDef) error {
 		return validateGuardrailGate(r.ID, r.GuardrailGate)
 	}
 	return nil
+}
+
+// WorkspaceOwnerParam is the parameter naming the workspace's owner when the
+// box has no run user configured (#3679).
+const WorkspaceOwnerParam = "box_user"
+
+// workspaceDirName is one plain path component: the daemon splices it into a
+// path it exports to a root post_start, so nothing that could leave the
+// owner's home or need quoting.
+var workspaceDirName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// validateWorkspaceDir checks workspace_dir (#3679): one plain directory name,
+// and a box_user parameter to own it when no run user is configured.
+func validateWorkspaceDir(r *recipeDef) error {
+	if r.WorkspaceDir == "" {
+		return nil
+	}
+	if !workspaceDirName.MatchString(r.WorkspaceDir) || r.WorkspaceDir == "." || r.WorkspaceDir == ".." {
+		return fmt.Errorf("recipe %q workspace_dir %q must be one plain directory name under the owner's home", r.ID, r.WorkspaceDir)
+	}
+	for _, p := range r.Parameters {
+		if p.Name == WorkspaceOwnerParam {
+			return nil
+		}
+	}
+	return fmt.Errorf("recipe %q has workspace_dir but no %s parameter to own it", r.ID, WorkspaceOwnerParam)
 }
 
 // List returns all loaded recipes.

@@ -268,12 +268,13 @@ recipes:
   # fetches are the only network the recipe needs.
   #
   # Layout: the deck tree (slides/<id>/, themes/, assets/) and the agent files
-  # (AGENTS.md, .claude/skills) live on the box disk under the box user's
-  # ~/slides, bind-mounted into the container at /workspace and owned by the
-  # box user, so an idle-stop and restart resumes the deck and Claude Code
+  # (AGENTS.md, .claude/skills) live on the box disk under the workspace
+  # user's ~/slides (the run user when the deploy configures one, else the box
+  # user; workspace_dir, #3679), bind-mounted into the container at /workspace
+  # and owned by that user, so an idle-stop and restart resumes the deck and Claude Code
   # edits the same files the dev server hot-reloads. node_modules, package.json
   # and open-slide.config.ts stay in the image. The container runs on the box's
-  # host network as the box user: the dev server binds 127.0.0.1:5173 and the
+  # host network as the workspace user: the dev server binds 127.0.0.1:5173 and the
   # proxy is the only listener on the box address (:8080, exposed as
   # <name>-workspace).
   #
@@ -301,9 +302,14 @@ recipes:
   # slides_image overrides the reference for mirrors and rehearsals.
   - id: slides-agent
     name: Slides agent (open-slide + Claude Code)
-    description: Coding-agent box plus a prebaked open-slide dev server (Node, pinned framework, headless Chromium) behind an in-box auth proxy; decks persist under the box user's ~/slides.
+    description: Coding-agent box plus a prebaked open-slide dev server (Node, pinned framework, headless Chromium) behind an in-box auth proxy; decks persist under ~/slides of the run user when one is configured, else of the box user.
     image: images:ubuntu/24.04
     requires_gpu: false
+    # The deck tree (#3679): in the run user's home when the deploy configures
+    # one (tool_access), so a platform run as that user can write it; else in
+    # the box user's ~/slides. The daemon exports the owner and path as
+    # CONTAINARIUM_WORKSPACE_USER / _PATH and reports the path to the caller.
+    workspace_dir: slides
     resources:
       cpu: "4"
       memory: 8GB
@@ -377,13 +383,15 @@ recipes:
           "$CONTAINARIUM_PARAM_AUTH_USER" "$WS_HASH" "${CONTAINARIUM_PARAM_ALLOWED_HOSTS:-}" > "$WSAUTH/env"
         chmod 600 "$WSAUTH/env"
       - |
-        # The deck tree on the box disk, owned by the box user; the container
-        # runs as that user so Claude Code and the dev server share the files.
-        BOX_UID="$(id -u "$CONTAINARIUM_PARAM_BOX_USER")"
-        BOX_GID="$(id -g "$CONTAINARIUM_PARAM_BOX_USER")"
-        SLIDES_HOME="$BOX_HOME/slides"
-        # The box user owns $BOX_HOME, so refuse a symlink planted at slides
-        # rather than let root chown through it (#3670).
+        # The deck tree on the box disk, owned by the workspace user (the run
+        # user when one is configured, else the box user, #3679); the
+        # container runs as that user so the agent and the dev server share
+        # the files. The daemon resolves both and reports the path.
+        BOX_UID="$(id -u "$CONTAINARIUM_WORKSPACE_USER")"
+        BOX_GID="$(id -g "$CONTAINARIUM_WORKSPACE_USER")"
+        SLIDES_HOME="$CONTAINARIUM_WORKSPACE_PATH"
+        # The workspace user owns the home it is in, so refuse a symlink
+        # planted at slides rather than let root chown through it (#3670).
         [ ! -L "$SLIDES_HOME" ] || { echo "slides: $SLIDES_HOME is a symlink; refusing" >&2; exit 1; }
         mkdir -p "$SLIDES_HOME"
         chown -h "$BOX_UID:$BOX_GID" "$SLIDES_HOME"

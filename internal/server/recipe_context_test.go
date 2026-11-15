@@ -129,10 +129,10 @@ func TestBuildPostStartScript_NoContextIsUnchanged(t *testing.T) {
 	if got := contextSetupScript(plain, map[string]string{"box_user": "dev"}, "/x"); got != "" {
 		t.Errorf("prelude for a recipe with no context = %q, want empty", got)
 	}
-	if s := buildPostStartScript(plain, map[string]string{}, ""); strings.Contains(s, "CONTAINARIUM_CONTEXT_DIR") {
+	if s := buildPostStartScript(plain, map[string]string{}, "", recipeWorkspace{}); strings.Contains(s, "CONTAINARIUM_CONTEXT_DIR") {
 		t.Errorf("post_start mentions the context variable for a recipe with no context:\n%s", s)
 	}
-	if s := buildPostStartScript(docsRecipe(), map[string]string{"box_user": "dev"}, ""); !strings.Contains(s, "CONTAINARIUM_CONTEXT_DIR") {
+	if s := buildPostStartScript(docsRecipe(), map[string]string{"box_user": "dev"}, "", recipeWorkspace{}); !strings.Contains(s, "CONTAINARIUM_CONTEXT_DIR") {
 		t.Errorf("post_start for a recipe with a context does not export the variable:\n%s", s)
 	}
 }

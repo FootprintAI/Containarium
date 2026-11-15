@@ -79,6 +79,9 @@ scripts/install-agent-runtime.sh	curl	df796b6e4b47	curl -fsSL "$1" -o "${tmp}" <
 scripts/install-agent-runtime.sh	npm ci	bdbe93167d9c	npm ci --omit=dev )
 scripts/install-buf.sh	curl	c7f76bed5dfe	curl --fail --location --silent --show-error --retry 3 "https://github
 scripts/install-lab-phase-b.sh	curl	54ebe4065cdf	curl -fsSL https://pkgs.zabbly.com/key.asc | gpg --dearmor -o /etc/apt
+scripts/install-sdlc-skills.sh	curl	1b24f45467fd	curl -fsSL "${from}/sdlc-skills.manifest" -o "$tmp/manifest.signed" </
+scripts/install-sdlc-skills.sh	curl	b61f7cc7fa12	curl -fsSL "${from}/sdlc-skills.manifest.sig" -o "$tmp/manifest.sig" <
+scripts/install-sdlc-skills.sh	curl	56086dffc568	curl -fsSL "${SKILLS_BASE_URL}/${SKILLS_VERSION}/sdlc-skills.tar.gz" -
 scripts/install-sdlc-skills.sh	curl	36cefc91790e	curl -fsSL "${ARTIFACT_BASE_URL}/sdlc-skills.tar.gz" -o "$tmp/sdlc-ski
 scripts/install-sdlc-skills.sh	curl	57ccb9e2751d	curl -fsSL "${ARTIFACT_BASE_URL}/sdlc-skills.tar.gz.sha256" -o "$tmp/s
 scripts/install-sdlc-skills.sh	curl	c93c04c35a74	curl -fsSL "$lock_url" -o "$tmp/sdlc-skills.lock" </dev/null; then
