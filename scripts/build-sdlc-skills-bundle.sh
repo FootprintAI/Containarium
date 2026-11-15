@@ -77,7 +77,7 @@ stage="$tmp/stage"
 mkdir -p "$stage" "$OUT"
 
 # Role skills: <ns>/<name>.md -> <ns>-<name>/SKILL.md. Top-level files (README,
-# CONTRIBUTING) and dot-dirs are not skills; _shared/ is read at runtime by the
+# CONTRIBUTING), docs/ and dot-dirs are not skills; _shared/ is read at runtime by the
 # skills and is copied as-is. Inspect every source even when building only one:
 # otherwise two sources could silently publish the same namespace and the last
 # one installed would win.
@@ -103,7 +103,8 @@ for source in "${SOURCES[@]}"; do
   source_count=0
   for d in "$src"/*/; do
     ns="$(basename "$d")"
-    [[ "$ns" == _shared ]] && continue
+    # _shared/ is copied below; docs/ holds contributor notes, not skills (open-sdlc-skills#29).
+    [[ "$ns" == _shared || "$ns" == docs ]] && continue
     if [[ -n "${namespace_owner[$ns]:-}" ]]; then
       echo "build-sdlc-skills-bundle: namespace '$ns' is present in sources '${namespace_owner[$ns]}' and '$source'" >&2
       exit 1
