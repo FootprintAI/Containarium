@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.138.0] - 2026-11-16
+
+
+### Added
+
+- **Recipes can declare a live context directory for the box's agents** (#3726, first slice). A recipe with a `context: {files: [...]}` block gets `~<box_user>/.containarium/context/<recipe-id>/` inside the box at deploy, owned by the box user and mode 0755, with `CONTAINARIUM_CONTEXT_DIR` exported to post_start and to later login shells. The app writes its files there; any agent on the box can read them. A recipe that declares nothing is unchanged. The directory lives inside the box, so it covers a recipe whose app and agent share a container (such as `slides-agent`); sharing across separate containers, and the MCP read tool, are not in this slice.
+- **The SDLC skills installer can take a signed skills release** (#3729). With
+  `SDLC_SKILLS_BASE_URL` set, `scripts/install-sdlc-skills.sh` verifies a
+  detached signature over the release's manifest with `openssl`, then the
+  bundle's digest against the signed manifest, and installs nothing if either
+  fails. It records the skills version it installed and keeps a box on it
+  until `SDLC_SKILLS_VERSION` asks for another one. Off by default: without
+  the base URL the installer takes the release asset as before, and no signing
+  key is built in yet (`SDLC_SKILLS_TRUSTED_KEYS_FILE` supplies your own). See
+  `docs/design/sdlc-skills-option-b.md`.
+- **A box moves to another skills release only when asked, per box**
+  (#3730). `containarium code skill-sets <box> --skill-sets <ids>
+  --skills-version <version|latest>` moves one box to a signed skills release
+  (an earlier version moves it back) and prints the release the box is on.
+  Without `--skills-version` a box stays on the skills release it has. The same
+  field is `skills_version` on `ApplyBoxSkillSets` and on the
+  `apply_box_skill_sets` MCP tool; `code install` takes `--skills-base-url`
+  and `--skills-version`, and the `coding-agent` and `slides-agent` recipes
+  take `skills_base_url` and `skills_version`. The daemon reads where signed
+  skills releases are published from `CONTAINARIUM_SDLC_SKILLS_BASE_URL`;
+  without it nothing changes. See `docs/design/sdlc-skills-option-b.md`.
+- **The air-gapped bundle can carry a pinned, verified skills release**
+  (#3731). With `SDLC_SKILLS_BASE_URL` and `SDLC_SKILLS_VERSION` set,
+  `scripts/bundle/download-deps.sh` fetches that signed skills release and
+  caches it only if its signature and digest verify; `build-bundle.sh` verifies
+  it again and ships it as `sdlc-skills/` with the installer beside it, so a
+  box user on an air-gapped host installs it with no network. `latest` is
+  refused: a bundle pins the version it carries. New
+  `scripts/install-sdlc-skills.sh --fetch-only <dir>` does the fetch and
+  verification. Without the two variables the bundle is unchanged. See
+  `scripts/bundle/README.md`.
+
+### Fixed
+
+- **Re-deploying a cluster's autoscaler credential now restarts the autoscaler** (#3718). The deploy used to leave a running autoscaler on the credential it loaded at start, so a re-minted credential was written to disk but not presented. The bootstrap now restarts the unit when the credential, cloud-config or unit changed (or the unit is not running), and leaves an unchanged one alone. Autoscalers that were re-minted before this fix pick up the new credential on the next deploy or restart.
+- **Clusters deployed before the autoscaler restart fix are re-deployed once** (#3720). A cluster that already carried the id-bearing autoscaler credential, but was last deployed before the bootstrap restarted the autoscaler on a credential change, is re-deployed once so the running autoscaler picks up its credential. A failed re-deploy is logged and retried; the cluster stays ready.
+
 ## [0.137.1] - 2026-11-14
 
 
