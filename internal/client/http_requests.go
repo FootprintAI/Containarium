@@ -260,6 +260,9 @@ type deployRecipeRequest struct {
 	// SSHKeys are authorized at create time (#3514); omitted when empty so a
 	// key-less deploy's body is unchanged.
 	SSHKeys []string `json:"ssh_keys,omitempty"`
+	// ToolAccess is recorded before post_start (#3679); the gateway decodes
+	// the enum's number. Omitted when UNSPECIFIED.
+	ToolAccess pb.BoxToolAccess `json:"tool_access,omitempty"`
 }
 
 // provisionSkillBoxRequest is POST /v1/agent-skills/{skill_id}/provision-box

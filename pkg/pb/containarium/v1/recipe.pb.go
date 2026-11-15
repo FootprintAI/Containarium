@@ -433,6 +433,15 @@ type Recipe struct {
 	// dataset_path, and only then runs post_start. The recipe decides whether
 	// a gate applies; a caller cannot opt out by leaving guardrail_input out.
 	GuardrailGate *GuardrailGate `protobuf:"bytes,13,opt,name=guardrail_gate,json=guardrailGate,proto3" json:"guardrail_gate,omitempty"`
+	// The directory, relative to its owner's home, where the recipe keeps the
+	// workspace the agent writes to (e.g. "slides"). Empty: no workspace. The
+	// owner is the box's run user when one is configured (a tool-access level
+	// is recorded, #2944), else the user named by the recipe's box_user
+	// parameter. The daemon creates nothing itself: it exports the owner and
+	// the absolute path to post_start as CONTAINARIUM_WORKSPACE_USER and
+	// CONTAINARIUM_WORKSPACE_PATH, and reports the path as
+	// DeployRecipeResponse.workspace_path (#3679).
+	WorkspaceDir  string `protobuf:"bytes,14,opt,name=workspace_dir,json=workspaceDir,proto3" json:"workspace_dir,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -556,6 +565,13 @@ func (x *Recipe) GetGuardrailGate() *GuardrailGate {
 		return x.GuardrailGate
 	}
 	return nil
+}
+
+func (x *Recipe) GetWorkspaceDir() string {
+	if x != nil {
+		return x.WorkspaceDir
+	}
+	return ""
 }
 
 // GuardrailGate is a recipe's guardrail precondition
@@ -892,7 +908,13 @@ type DeployRecipeRequest struct {
 	// public key). An invalid or over-bound key refuses the whole deploy with
 	// INVALID_ARGUMENT before any container is created. Empty keeps the
 	// key-less behaviour: add keys later with AddSSHKey / SetSSHKeys.
-	SshKeys       []string `protobuf:"bytes,11,rep,name=ssh_keys,json=sshKeys,proto3" json:"ssh_keys,omitempty"`
+	SshKeys []string `protobuf:"bytes,11,rep,name=ssh_keys,json=sshKeys,proto3" json:"ssh_keys,omitempty"`
+	// The tool-access level to record on the new box before post_start runs
+	// (#2944), the same level SetContainerToolAccess records. A recorded level
+	// configures the box's unprivileged run user, so a recipe with a workspace
+	// creates it in the run user's home, owned by the run user (#3679).
+	// UNSPECIFIED records nothing: the workspace stays in the box user's home.
+	ToolAccess    BoxToolAccess `protobuf:"varint,12,opt,name=tool_access,json=toolAccess,proto3,enum=containarium.v1.BoxToolAccess" json:"tool_access,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1004,6 +1026,13 @@ func (x *DeployRecipeRequest) GetSshKeys() []string {
 	return nil
 }
 
+func (x *DeployRecipeRequest) GetToolAccess() BoxToolAccess {
+	if x != nil {
+		return x.ToolAccess
+	}
+	return BoxToolAccess_BOX_TOOL_ACCESS_UNSPECIFIED
+}
+
 // DeployRecipeResponse is the result of a recipe deployment.
 type DeployRecipeResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1012,7 +1041,13 @@ type DeployRecipeResponse struct {
 	// Public URL of the first exposed port, if any.
 	Url string `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
 	// Human-readable status message.
-	Message       string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	Message string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	// Absolute path on the box of the recipe's workspace (Recipe.workspace_dir),
+	// so a caller can name it in the agent's authoring contract: under the run
+	// user's home when a run user is configured, else under the box user's
+	// home (e.g. /home/ubuntu/slides). Empty for a recipe with no workspace.
+	// Set on an async deploy too: the path is resolved before post_start runs.
+	WorkspacePath string `protobuf:"bytes,4,opt,name=workspace_path,json=workspacePath,proto3" json:"workspace_path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1064,6 +1099,13 @@ func (x *DeployRecipeResponse) GetUrl() string {
 func (x *DeployRecipeResponse) GetMessage() string {
 	if x != nil {
 		return x.Message
+	}
+	return ""
+}
+
+func (x *DeployRecipeResponse) GetWorkspacePath() string {
+	if x != nil {
+		return x.WorkspacePath
 	}
 	return ""
 }
@@ -1203,7 +1245,7 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x12\n" +
 	"\x04type\x18\x04 \x01(\tR\x04type\x12\x18\n" +
 	"\adefault\x18\x05 \x01(\tR\adefault\x12\x1a\n" +
-	"\brequired\x18\x06 \x01(\bR\brequired\"\xf9\x04\n" +
+	"\brequired\x18\x06 \x01(\bR\brequired\"\x9e\x05\n" +
 	"\x06Recipe\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
@@ -1221,7 +1263,8 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\n" +
 	"post_start\x18\v \x03(\tR\tpostStart\x124\n" +
 	"\x16model_gateway_provider\x18\f \x01(\tR\x14modelGatewayProvider\x12E\n" +
-	"\x0eguardrail_gate\x18\r \x01(\v2\x1e.containarium.v1.GuardrailGateR\rguardrailGate\x1a6\n" +
+	"\x0eguardrail_gate\x18\r \x01(\v2\x1e.containarium.v1.GuardrailGateR\rguardrailGate\x12#\n" +
+	"\rworkspace_dir\x18\x0e \x01(\tR\fworkspaceDir\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"w\n" +
@@ -1238,7 +1281,7 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\x10GetRecipeRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"D\n" +
 	"\x11GetRecipeResponse\x12/\n" +
-	"\x06recipe\x18\x01 \x01(\v2\x17.containarium.v1.RecipeR\x06recipe\"\xf5\x04\n" +
+	"\x06recipe\x18\x01 \x01(\v2\x17.containarium.v1.RecipeR\x06recipe\"\xb6\x05\n" +
 	"\x13DeployRecipeRequest\x12\x1b\n" +
 	"\trecipe_id\x18\x01 \x01(\tR\brecipeId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x10\n" +
@@ -1254,17 +1297,20 @@ const file_containarium_v1_recipe_proto_rawDesc = "" +
 	"\x05async\x18\t \x01(\bR\x05async\x12L\n" +
 	"\x0fguardrail_input\x18\n" +
 	" \x01(\v2#.containarium.v1.GuardrailGateInputR\x0eguardrailInput\x12\x19\n" +
-	"\bssh_keys\x18\v \x03(\tR\asshKeys\x1a=\n" +
+	"\bssh_keys\x18\v \x03(\tR\asshKeys\x12?\n" +
+	"\vtool_access\x18\f \x01(\x0e2\x1e.containarium.v1.BoxToolAccessR\n" +
+	"toolAccess\x1a=\n" +
 	"\x0fParametersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"|\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa3\x01\n" +
 	"\x14DeployRecipeResponse\x128\n" +
 	"\tcontainer\x18\x01 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"/\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\x12%\n" +
+	"\x0eworkspace_path\x18\x04 \x01(\tR\rworkspacePath\"/\n" +
 	"\x19GetWorkspaceAccessRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"D\n" +
 	"\x1aGetWorkspaceAccessResponse\x12\x14\n" +
@@ -1321,7 +1367,8 @@ var file_containarium_v1_recipe_proto_goTypes = []any{
 	(RouteProtocol)(0),                 // 19: containarium.v1.RouteProtocol
 	(GuardrailKind)(0),                 // 20: containarium.v1.GuardrailKind
 	(*GuardrailAttestation)(nil),       // 21: containarium.v1.GuardrailAttestation
-	(*Container)(nil),                  // 22: containarium.v1.Container
+	(BoxToolAccess)(0),                 // 22: containarium.v1.BoxToolAccess
+	(*Container)(nil),                  // 23: containarium.v1.Container
 }
 var file_containarium_v1_recipe_proto_depIdxs = []int32{
 	19, // 0: containarium.v1.RecipePort.protocol:type_name -> containarium.v1.RouteProtocol
@@ -1340,20 +1387,21 @@ var file_containarium_v1_recipe_proto_depIdxs = []int32{
 	1,  // 13: containarium.v1.DeployRecipeRequest.resource_overrides:type_name -> containarium.v1.RecipeResources
 	18, // 14: containarium.v1.DeployRecipeRequest.labels:type_name -> containarium.v1.DeployRecipeRequest.LabelsEntry
 	7,  // 15: containarium.v1.DeployRecipeRequest.guardrail_input:type_name -> containarium.v1.GuardrailGateInput
-	22, // 16: containarium.v1.DeployRecipeResponse.container:type_name -> containarium.v1.Container
-	14, // 17: containarium.v1.RecipeService.GetWorkspaceAccess:input_type -> containarium.v1.GetWorkspaceAccessRequest
-	8,  // 18: containarium.v1.RecipeService.ListRecipes:input_type -> containarium.v1.ListRecipesRequest
-	10, // 19: containarium.v1.RecipeService.GetRecipe:input_type -> containarium.v1.GetRecipeRequest
-	12, // 20: containarium.v1.RecipeService.DeployRecipe:input_type -> containarium.v1.DeployRecipeRequest
-	15, // 21: containarium.v1.RecipeService.GetWorkspaceAccess:output_type -> containarium.v1.GetWorkspaceAccessResponse
-	9,  // 22: containarium.v1.RecipeService.ListRecipes:output_type -> containarium.v1.ListRecipesResponse
-	11, // 23: containarium.v1.RecipeService.GetRecipe:output_type -> containarium.v1.GetRecipeResponse
-	13, // 24: containarium.v1.RecipeService.DeployRecipe:output_type -> containarium.v1.DeployRecipeResponse
-	21, // [21:25] is the sub-list for method output_type
-	17, // [17:21] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	22, // 16: containarium.v1.DeployRecipeRequest.tool_access:type_name -> containarium.v1.BoxToolAccess
+	23, // 17: containarium.v1.DeployRecipeResponse.container:type_name -> containarium.v1.Container
+	14, // 18: containarium.v1.RecipeService.GetWorkspaceAccess:input_type -> containarium.v1.GetWorkspaceAccessRequest
+	8,  // 19: containarium.v1.RecipeService.ListRecipes:input_type -> containarium.v1.ListRecipesRequest
+	10, // 20: containarium.v1.RecipeService.GetRecipe:input_type -> containarium.v1.GetRecipeRequest
+	12, // 21: containarium.v1.RecipeService.DeployRecipe:input_type -> containarium.v1.DeployRecipeRequest
+	15, // 22: containarium.v1.RecipeService.GetWorkspaceAccess:output_type -> containarium.v1.GetWorkspaceAccessResponse
+	9,  // 23: containarium.v1.RecipeService.ListRecipes:output_type -> containarium.v1.ListRecipesResponse
+	11, // 24: containarium.v1.RecipeService.GetRecipe:output_type -> containarium.v1.GetRecipeResponse
+	13, // 25: containarium.v1.RecipeService.DeployRecipe:output_type -> containarium.v1.DeployRecipeResponse
+	22, // [22:26] is the sub-list for method output_type
+	18, // [18:22] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_recipe_proto_init() }

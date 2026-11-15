@@ -1998,6 +1998,7 @@ func (c *HTTPClient) DeployRecipe(recipeID, name string, opts DeployRecipeOption
 		Pool:       opts.Pool,
 		Parameters: opts.Parameters,
 		SSHKeys:    opts.SSHKeys,
+		ToolAccess: opts.ToolAccess,
 	}
 	if opts.GuardrailInput != nil {
 		raw, err := protojson.Marshal(opts.GuardrailInput)

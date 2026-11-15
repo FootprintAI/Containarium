@@ -34,7 +34,7 @@ func runPostStartEcho(t *testing.T, params map[string]string) (daemon, caller st
 	recipe := &pb.Recipe{Id: "r", PostStart: []string{
 		`printf 'daemon=%s\ncaller=%s\n' "$` + recipes.ReleaseEnvName + `" "${` + recipes.ParamEnvName("release") + `:-}"`,
 	}}
-	out, err := exec.Command("bash", "-c", buildPostStartScript(recipe, params, "")).CombinedOutput() //nolint:gosec // test-built script
+	out, err := exec.Command("bash", "-c", buildPostStartScript(recipe, params, "", recipeWorkspace{})).CombinedOutput() //nolint:gosec // test-built script
 	if err != nil {
 		t.Fatalf("post_start: %v\n%s", err, out)
 	}
@@ -92,7 +92,7 @@ func TestBuildPostStartScript_RecipeEnvCannotOverrideRelease(t *testing.T) {
 		Env:       map[string]string{recipes.ReleaseEnvName: "v6.6.6"},
 		PostStart: []string{`printf '%s' "$` + recipes.ReleaseEnvName + `"`},
 	}
-	out, err := exec.Command("bash", "-c", buildPostStartScript(recipe, nil, "")).CombinedOutput() //nolint:gosec // test-built script
+	out, err := exec.Command("bash", "-c", buildPostStartScript(recipe, nil, "", recipeWorkspace{})).CombinedOutput() //nolint:gosec // test-built script
 	if err != nil {
 		t.Fatalf("post_start: %v\n%s", err, out)
 	}

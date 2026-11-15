@@ -23,7 +23,22 @@ var (
 	recipeDeployGuardrailAttestation string
 
 	recipeDeploySSHKeys []string
+
+	recipeDeployToolAccess string
 )
+
+// recipeToolAccess maps --tool-access to the level recorded on the new box
+// before post_start (#3679). Empty: none, so the box has no run user.
+func recipeToolAccess(s string) (pb.BoxToolAccess, error) {
+	if s == "" {
+		return pb.BoxToolAccess_BOX_TOOL_ACCESS_UNSPECIFIED, nil
+	}
+	level, err := parseToolAccess(s)
+	if err != nil {
+		return level, fmt.Errorf("--tool-access: %w", err)
+	}
+	return level, nil
+}
 
 // recipeSSHKeys reads each --ssh-key public-key file (a leading ~/ is the
 // home directory) and returns the contents in flag order, the way
@@ -107,6 +122,8 @@ func init() {
 		"Guardrail-gated recipes: the attestation 'guardrail apply' wrote for that dataset")
 	recipeDeployCmd.Flags().StringArrayVar(&recipeDeploySSHKeys, "ssh-key", nil,
 		"Path to an SSH public key file to authorize on the new box at create time (repeatable; optional)")
+	recipeDeployCmd.Flags().StringVar(&recipeDeployToolAccess, "tool-access", "",
+		"Tool-access level to record before post_start (none, build-tools or full-sudo); configures the box's run user, which then owns the recipe's workspace")
 }
 
 func runRecipeDeploy(cmd *cobra.Command, args []string) error {
@@ -121,6 +138,10 @@ func runRecipeDeploy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	sshKeys, err := recipeSSHKeys(recipeDeploySSHKeys)
+	if err != nil {
+		return err
+	}
+	toolAccess, err := recipeToolAccess(recipeDeployToolAccess)
 	if err != nil {
 		return err
 	}
@@ -139,6 +160,7 @@ func runRecipeDeploy(cmd *cobra.Command, args []string) error {
 		Parameters:     params,
 		GuardrailInput: guardrailInput,
 		SSHKeys:        sshKeys,
+		ToolAccess:     toolAccess,
 	})
 	if err != nil {
 		return err
@@ -147,6 +169,9 @@ func runRecipeDeploy(cmd *cobra.Command, args []string) error {
 	fmt.Printf("\n✓ %s\n", resp.Message)
 	if resp.Url != "" {
 		fmt.Printf("  URL: %s\n", resp.Url)
+	}
+	if resp.WorkspacePath != "" {
+		fmt.Printf("  Workspace: %s\n", resp.WorkspacePath)
 	}
 	if resp.Container != nil {
 		fmt.Printf("  Container: %s (%s)\n", resp.Container.Name, resp.Container.State)
