@@ -574,3 +574,19 @@ jobs:
           sudo journalctl -u incus.service --no-pager -n 200 || true
           sudo zfs list -r -t all || true
           sudo dmesg | tail -50 || true
+          # THROWAWAY DIAGNOSTIC: what is a stuck backup-verify container doing?
+          for v in $(sudo incus list --format csv -c n | grep '^backup-verify-' || true); do
+            echo "=== verifier $v: processes ==="
+            timeout 30 sudo incus exec "$v" -- ps -eo pid,ppid,etime,stat,cmd --forest || true
+            echo "=== verifier $v: cloud-init status ==="
+            timeout 30 sudo incus exec "$v" -- cloud-init status --long || true
+            echo "=== verifier $v: apt term.log tail ==="
+            timeout 30 sudo incus exec "$v" -- tail -n 40 /var/log/apt/term.log || true
+            echo "=== verifier $v: apt history.log tail ==="
+            timeout 30 sudo incus exec "$v" -- tail -n 20 /var/log/apt/history.log || true
+            echo "=== verifier $v: postgres cluster ==="
+            timeout 30 sudo incus exec "$v" -- pg_lsclusters || true
+            timeout 30 sudo incus exec "$v" -- tail -n 30 /var/log/postgresql/postgresql-16-main.log || true
+            echo "=== verifier $v: network ==="
+            timeout 30 sudo incus exec "$v" -- sh -c 'ip -brief addr; getent hosts azure.archive.ubuntu.com || echo "dns: no answer"' || true
+          done
