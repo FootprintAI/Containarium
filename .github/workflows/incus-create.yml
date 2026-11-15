@@ -266,7 +266,7 @@ jobs:
       - name: Create a container through the daemon's own Create()
         run: |
           set -euo pipefail
-          sudo -E env "PATH=$PATH" go test -tags=incus -v -count=1 -timeout 40m \
+          sudo -E env "PATH=$PATH" go test -tags=incus -v -count=1 -p 1 -timeout 40m \
             ./pkg/core/box/lxc/ ./pkg/core/incus/ ./internal/server/ ./pkg/core/network/ \
             -run 'TestIntegrationIncus|TestIntegrationHairpin' | tee incus-test.log
 
