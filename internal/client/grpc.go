@@ -991,6 +991,9 @@ type DeployRecipeOptions struct {
 	// SSHKeys are public keys authorized on the new box at create time
 	// (#3514), under CreateContainer's validation and limits. Empty: none.
 	SSHKeys []string
+	// ToolAccess is recorded on the new box before post_start (#3679), which
+	// configures its run user. UNSPECIFIED: none.
+	ToolAccess pb.BoxToolAccess
 }
 
 // DeployRecipe provisions a new dedicated container from a recipe via gRPC.
@@ -1007,6 +1010,7 @@ func (c *GRPCClient) DeployRecipe(recipeID, name string, opts DeployRecipeOption
 		Parameters:     opts.Parameters,
 		GuardrailInput: opts.GuardrailInput,
 		SshKeys:        opts.SSHKeys,
+		ToolAccess:     opts.ToolAccess,
 	}
 	resp, err := c.recipeClient.DeployRecipe(ctx, req)
 	if err != nil {

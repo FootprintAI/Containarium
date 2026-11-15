@@ -22,6 +22,7 @@ import (
 	"github.com/footprintai/containarium/internal/guardrailstage"
 	"github.com/footprintai/containarium/internal/limitio"
 	"github.com/footprintai/containarium/internal/modelgateway"
+	"github.com/footprintai/containarium/internal/toolaccess"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	"github.com/footprintai/containarium/pkg/core/recipes"
@@ -489,6 +490,14 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 		return nil, err
 	}
 
+	// Tool access (#3679): an unknown level refuses the deploy before the
+	// container exists. A known one is recorded before post_start, so the
+	// box's run user is configured when the workspace is placed.
+	toolAccessValue, recordToolAccess := toolaccess.ConfigValue(req.ToolAccess)
+	if !recordToolAccess && req.ToolAccess != pb.BoxToolAccess_BOX_TOOL_ACCESS_UNSPECIFIED {
+		return nil, status.Errorf(codes.InvalidArgument, "unknown tool_access %d", req.ToolAccess)
+	}
+
 	// Guardrail gate (#2368): verified BEFORE the container exists, so a
 	// refused deploy leaves nothing behind. dataset is the verified
 	// snapshot; it is what gets copied into the box below.
@@ -565,6 +574,20 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 		markErr = markPostStartPending(s.boxOps(), containerName)
 	}
 
+	// Record the requested tool-access level, then place the workspace: in
+	// the run user's home when a level is recorded, else in the box user's
+	// (#3679). Either failure stops the deploy before post_start; the box is
+	// kept, marked not prepared.
+	if recordToolAccess {
+		if err := s.boxOps().SetConfig(containerName, incus.ToolAccessKey, toolAccessValue); err != nil {
+			return nil, status.Errorf(codes.Internal, "could not record tool_access on %s: %v", containerName, err)
+		}
+	}
+	workspace, err := resolveRecipeWorkspace(s.boxOps(), recipe, containerName, params, recordToolAccess)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "could not place the workspace on %s: %v", containerName, err)
+	}
+
 	// Gated: place exactly the verified bytes at dataset_path before
 	// post_start. (Async is refused for a gated recipe, so this always
 	// precedes post_start.)
@@ -596,7 +619,7 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 			defer unlock()
 			bg := context.WithoutCancel(ctx)
 			if len(recipe.PostStart) > 0 {
-				script := buildPostStartScript(recipe, params, gatewayEnv)
+				script := buildPostStartScript(recipe, params, gatewayEnv, workspace)
 				if err := completePostStart(s.boxOps(), containerName, script); err != nil {
 					note := ""
 					if len(recipe.Ports) > 0 {
@@ -621,13 +644,13 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 			// The outcome is not known yet, so say what it means if it fails.
 			msg += "; warning: " + unmarkedNote(containerName, markErr)
 		}
-		return &pb.DeployRecipeResponse{Container: container, Message: msg}, nil
+		return &pb.DeployRecipeResponse{Container: container, Message: msg, WorkspacePath: workspace.path}, nil
 	}
 
 	// 2. Run the recipe's post_start commands inside the container, with env
 	//    and parameters exported. Same trust level as a stack's post_install.
 	if len(recipe.PostStart) > 0 {
-		script := buildPostStartScript(recipe, params, gatewayEnv)
+		script := buildPostStartScript(recipe, params, gatewayEnv, workspace)
 		if err := completePostStart(s.boxOps(), containerName, script); err != nil {
 			if markErr != nil {
 				return nil, status.Errorf(codes.Internal, "post_start failed on %s: %v; %s", containerName, err, unmarkedNote(containerName, markErr))
@@ -657,7 +680,7 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 		st := boxlxc.StatusFromInfo(info)
 		container = toProtoContainer(&st)
 	}
-	return &pb.DeployRecipeResponse{Container: container, Url: url, Message: msg}, nil
+	return &pb.DeployRecipeResponse{Container: container, Url: url, Message: msg, WorkspacePath: workspace.path}, nil
 }
 
 // markPostStartPending sets the post_start-pending mark on a box (#3546). A
@@ -781,8 +804,14 @@ func (s *RecipeServer) rerunPendingPostStart(ctx context.Context, recipeID, name
 		}
 		return reread(), nil
 	}
+	// The workspace follows the level recorded on the box now, as the first
+	// deploy's did (#3679).
+	workspace, err := resolveRecipeWorkspace(s.boxOps(), recipe, containerName, params, info.ToolAccess != "")
+	if err != nil {
+		return nil, notPrepared("its workspace could not be placed: %v", err)
+	}
 	provider, keyOwner := resolveRecipeGatewayProvider(recipe, name, params, nil)
-	script := buildPostStartScript(recipe, params, s.gatewayEnvForRecipe(recipe, name, provider, keyOwner))
+	script := buildPostStartScript(recipe, params, s.gatewayEnvForRecipe(recipe, name, provider, keyOwner), workspace)
 	log.Printf("[recipe] %q was not fully prepared by an earlier run; running post_start again", containerName)
 	if err := completePostStart(s.boxOps(), containerName, script); err != nil {
 		return nil, notPrepared("running it again failed: %v", err)
@@ -864,7 +893,10 @@ func resourceLimits(recipe *pb.Recipe, override *pb.RecipeResources) *pb.Resourc
 // (gatewayEnvForRecipe) prepended before the recipe's own env so post_start
 // sees CONTAINARIUM_MODEL_GATEWAY_URL/_TOKEN. The daemon's release tag is
 // exported as recipes.ReleaseEnvName.
-func buildPostStartScript(recipe *pb.Recipe, params map[string]string, gatewayEnv string) string {
+//
+// ws, when it names a workspace (#3679), is exported after the recipe's env
+// for the same reason as the release: no recipe env can stand in for it.
+func buildPostStartScript(recipe *pb.Recipe, params map[string]string, gatewayEnv string, ws recipeWorkspace) string {
 	var b strings.Builder
 	b.WriteString("set -euo pipefail\n")
 	if gatewayEnv != "" {
@@ -880,6 +912,7 @@ func buildPostStartScript(recipe *pb.Recipe, params map[string]string, gatewayEn
 	// deploy supplies can stand in for it. Always exported, empty on a
 	// non-release build, so `set -u` steps can test it.
 	fmt.Fprintf(&b, "export %s=%s\n", recipes.ReleaseEnvName, shellSingleQuote(version.ReleaseTag()))
+	b.WriteString(ws.env())
 	for _, line := range recipe.PostStart {
 		b.WriteString(line)
 		b.WriteString("\n")

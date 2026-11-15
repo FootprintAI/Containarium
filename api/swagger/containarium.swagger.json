@@ -14994,6 +14994,10 @@
             "type": "string"
           },
           "description": "SSH public keys to authorize (optional, can be added later).\nForwarded unchanged to the inner CreateContainer; same validation and\nlimits (at most 32 keys, each at most 8 KiB, each a well-formed OpenSSH\npublic key). An invalid or over-bound key refuses the whole deploy with\nINVALID_ARGUMENT before any container is created. Empty keeps the\nkey-less behaviour: add keys later with AddSSHKey / SetSSHKeys."
+        },
+        "toolAccess": {
+          "$ref": "#/definitions/BoxToolAccess",
+          "description": "The tool-access level to record on the new box before post_start runs\n(#2944), the same level SetContainerToolAccess records. A recorded level\nconfigures the box's unprivileged run user, so a recipe with a workspace\ncreates it in the run user's home, owned by the run user (#3679).\nUNSPECIFIED records nothing: the workspace stays in the box user's home."
         }
       },
       "description": "DeployRecipeRequest provisions a new dedicated container from a recipe."
@@ -15012,6 +15016,10 @@
         "message": {
           "type": "string",
           "description": "Human-readable status message."
+        },
+        "workspacePath": {
+          "type": "string",
+          "description": "Absolute path on the box of the recipe's workspace (Recipe.workspace_dir),\nso a caller can name it in the agent's authoring contract: under the run\nuser's home when a run user is configured, else under the box user's\nhome (e.g. /home/ubuntu/slides). Empty for a recipe with no workspace.\nSet on an async deploy too: the path is resolved before post_start runs."
         }
       },
       "description": "DeployRecipeResponse is the result of a recipe deployment."
@@ -20404,6 +20412,10 @@
         "guardrailGate": {
           "$ref": "#/definitions/GuardrailGate",
           "description": "When set, every deploy of this recipe is gated on a guardrail\nattestation (#2368): DeployRecipe verifies the dataset the request\nstages against the server guardrail policy and its trusted signers\nBEFORE the container is created, copies exactly the verified bytes to\ndataset_path, and only then runs post_start. The recipe decides whether\na gate applies; a caller cannot opt out by leaving guardrail_input out."
+        },
+        "workspaceDir": {
+          "type": "string",
+          "description": "The directory, relative to its owner's home, where the recipe keeps the\nworkspace the agent writes to (e.g. \"slides\"). Empty: no workspace. The\nowner is the box's run user when one is configured (a tool-access level\nis recorded, #2944), else the user named by the recipe's box_user\nparameter. The daemon creates nothing itself: it exports the owner and\nthe absolute path to post_start as CONTAINARIUM_WORKSPACE_USER and\nCONTAINARIUM_WORKSPACE_PATH, and reports the path as\nDeployRecipeResponse.workspace_path (#3679)."
         }
       },
       "description": "Recipe is a declarative definition of a GPU/app workload that Containarium\ncan provision as a new dedicated container. The container is an LXC system\ncontainer; the recipe's image runs inside it via Podman (post_start),\nmirroring how the kubeflow stack runs k3s inside an LXC."

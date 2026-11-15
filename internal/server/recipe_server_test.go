@@ -153,7 +153,7 @@ func TestRecipeServer_GatewayEnv_SeedsTokenAndURL(t *testing.T) {
 	}
 
 	// The env is prepended into the post_start script.
-	script := buildPostStartScript(recipe, map[string]string{}, env)
+	script := buildPostStartScript(recipe, map[string]string{}, env, recipeWorkspace{})
 	if !strings.Contains(script, "CONTAINARIUM_MODEL_GATEWAY_URL=") {
 		t.Errorf("post_start script missing gateway env:\n%s", script)
 	}
@@ -275,7 +275,7 @@ func TestRecipeServer_GatewayEnv_InferenceProviderOverride_NoKeyDegrades(t *test
 
 	// The post_start script then carries no gateway env at all, so post_start's
 	// own "no gateway seeded" fallback runs — never a real provider key.
-	script := buildPostStartScript(recipe, map[string]string{}, env)
+	script := buildPostStartScript(recipe, map[string]string{}, env, recipeWorkspace{})
 	if strings.Contains(script, "CONTAINARIUM_MODEL_GATEWAY_URL") || strings.Contains(script, "CONTAINARIUM_GATEWAY_TOKEN") {
 		t.Errorf("post_start script should carry no gateway env on the degrade path:\n%s", script)
 	}
