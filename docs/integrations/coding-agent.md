@@ -189,3 +189,19 @@ Skills the installer wrote are listed in `~/.claude/skills/.sdlc-skills-manifest
 and `.sdlc-skills-version` records the release and digest; an update removes only
 what the previous install owned. Anything else in `~/.claude/skills` is untouched. End-to-end check:
 `scripts/coding-agent-recipe-e2e.sh`.
+
+**Signed skills releases (opt-in).** The installer can also take the skills from
+a signed skills release instead of this repository's release asset
+(`docs/design/sdlc-skills-option-b.md`). Set `SDLC_SKILLS_BASE_URL` to where the
+releases are published; a release is `<base>/<version>/` holding
+`sdlc-skills.tar.gz`, `sdlc-skills.manifest` and `sdlc-skills.manifest.sig`. The
+installer verifies the manifest's signature with `openssl` against its trusted
+public keys (none are built in yet; `SDLC_SKILLS_TRUSTED_KEYS_FILE` supplies
+your own), then the bundle's digest against the signed manifest, and reads the
+skill sets from the manifest. It installs nothing if any of that fails, or if
+the manifest's contract is newer than the installer supports. The version
+installed is recorded as `skills=<version>` in `.sdlc-skills-version`, and a box
+keeps it: a later run without `SDLC_SKILLS_VERSION` installs the recorded
+version again, a box whose skills came from a release asset stays on that
+asset, and only a box with nothing recorded takes `latest`. Set
+`SDLC_SKILLS_VERSION=<version>` (or `latest`) to move a box, forward or back.

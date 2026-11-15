@@ -90,6 +90,7 @@ check with a checksum for each download.
 | `.github/workflows/k8s-e2e.yml` | curl | kind v0.24.0 binary | version + sha256 (`KIND_SHA256`, from the published `kind-linux-amd64.sha256sum`) |
 | `.github/workflows/helm-install-upgrade.yml` | curl | kind v0.24.0 binary | version + sha256 |
 | `.github/workflows/workflow-lint.yml` | curl | actionlint and zizmor release tarballs | version + sha256 |
+| `scripts/install-sdlc-skills.sh` | curl | signed skills release (only with `SDLC_SKILLS_BASE_URL`): `sdlc-skills.manifest`, its `.sig`, then `sdlc-skills.tar.gz` | the manifest's detached signature is verified against the trusted public keys in the installer before it is read; the tarball's sha256 must equal the signed manifest's; a manifest for another version than the one asked for is refused |
 | `scripts/install-sdlc-skills.sh` | curl | skills tarball and its `.sha256` from the same release | sha256 verified against the release sidecar file (integrity, not independent authenticity) |
 | `scripts/install-sdlc-skills.sh` | curl | `pkg/core/sdlcskills/sdlc-skills.lock` at the release tag, only when an explicit `SKILL_SETS` list is given | its `sha256=` must equal the digest of the already-verified tarball, else nothing is installed; it only maps set ids to namespaces |
 | `scripts/redeploy-workhorse.sh` | curl | release binary and `SHA256SUMS.txt` | sha256 verified against the release's sums file when it is published |
