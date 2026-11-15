@@ -20416,9 +20416,26 @@
         "workspaceDir": {
           "type": "string",
           "description": "The directory, relative to its owner's home, where the recipe keeps the\nworkspace the agent writes to (e.g. \"slides\"). Empty: no workspace. The\nowner is the box's run user when one is configured (a tool-access level\nis recorded, #2944), else the user named by the recipe's box_user\nparameter. The daemon creates nothing itself: it exports the owner and\nthe absolute path to post_start as CONTAINARIUM_WORKSPACE_USER and\nCONTAINARIUM_WORKSPACE_PATH, and reports the path as\nDeployRecipeResponse.workspace_path (#3679)."
+        },
+        "context": {
+          "$ref": "#/definitions/RecipeContext",
+          "description": "Live context the app publishes for the box's agents (#3726). When set,\npost_start creates ~\u003cbox_user\u003e/.containarium/context/\u003cid\u003e/ inside the box,\nexports CONTAINARIUM_CONTEXT_DIR to it, and an agent on the box can read\nthe files the app writes there. Absent means no directory and no env var."
         }
       },
       "description": "Recipe is a declarative definition of a GPU/app workload that Containarium\ncan provision as a new dedicated container. The container is an LXC system\ncontainer; the recipe's image runs inside it via Podman (post_start),\nmirroring how the kubeflow stack runs k3s inside an LXC."
+    },
+    "RecipeContext": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "File names the app publishes (e.g. \"current.json\"). Plain names only: no\npath separators, no \".\" or \"..\"."
+        }
+      },
+      "description": "RecipeContext declares the files a recipe's app publishes as live context.\nThe files are app-defined JSON written with write-to-temp-then-rename; the\ndirectory is created empty and consumers must re-read them on every use."
     },
     "RecipeParam": {
       "type": "object",

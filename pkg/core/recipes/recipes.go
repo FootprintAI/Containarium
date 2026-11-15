@@ -85,6 +85,8 @@ type recipeDef struct {
 	// loading as an ungated recipe; validate decodes it into GuardrailGate.
 	GuardrailGateNode yaml.Node         `yaml:"guardrail_gate,omitempty"`
 	GuardrailGate     *guardrailGateDef `yaml:"-"`
+	// Context is the live-context declaration (#3726); nil = no context directory.
+	Context *contextDef `yaml:"context,omitempty"`
 	// WorkspaceDir is the agent's workspace, relative to its owner's home
 	// (#3679); see the proto field for semantics.
 	WorkspaceDir string `yaml:"workspace_dir,omitempty"`
@@ -117,6 +119,55 @@ type guardrailGateDef struct {
 	DatasetPath  string   `yaml:"dataset_path"`
 	RequireKinds []string `yaml:"require_kinds,omitempty"`
 }
+
+// contextDef is the YAML shape of pb.RecipeContext (#3726).
+type contextDef struct {
+	Files []string `yaml:"files"`
+}
+
+// maxContextFiles bounds how many files a recipe may declare as context.
+const maxContextFiles = 16
+
+var (
+	contextIDPattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	contextFilePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+)
+
+// validateContext checks a recipe's context declaration (#3726). The recipe
+// id becomes a directory name, and each file name is written by the app into
+// that directory, so both are restricted to plain names. The box user, whose
+// home holds the directory, must be a recipe parameter.
+func validateContext(r *recipeDef) error {
+	if r.Context == nil {
+		return nil
+	}
+	if !contextIDPattern.MatchString(r.ID) {
+		return fmt.Errorf("recipe %q: context needs an id of lower-case letters, digits and '-' (it names the context directory)", r.ID)
+	}
+	if n := len(r.Context.Files); n == 0 || n > maxContextFiles {
+		return fmt.Errorf("recipe %q context.files must list 1 to %d file names, got %d", r.ID, maxContextFiles, n)
+	}
+	seen := map[string]bool{}
+	for _, f := range r.Context.Files {
+		if !contextFilePattern.MatchString(f) {
+			return fmt.Errorf("recipe %q context.files entry %q must be a plain file name (no path separators, no leading dot)", r.ID, f)
+		}
+		if seen[f] {
+			return fmt.Errorf("recipe %q context.files lists %q twice", r.ID, f)
+		}
+		seen[f] = true
+	}
+	for _, p := range r.Parameters {
+		if p.Name == ContextUserParam {
+			return nil
+		}
+	}
+	return fmt.Errorf("recipe %q declares context but has no %q parameter (the context directory lives in that user's home)", r.ID, ContextUserParam)
+}
+
+// ContextUserParam is the recipe parameter naming the box user whose home
+// holds a recipe's context directory (#3726).
+const ContextUserParam = "box_user"
 
 // guardrailKindsFromYAML maps require_kinds names to enum values; ok is
 // false for an unknown name.
@@ -160,6 +211,9 @@ func (r *recipeDef) ToProto() *pb.Recipe {
 	if r.GuardrailGate != nil {
 		kinds, _ := guardrailKindsFromYAML(r.GuardrailGate.RequireKinds) // validate refused unknown names
 		out.GuardrailGate = &pb.GuardrailGate{DatasetPath: r.GuardrailGate.DatasetPath, RequireKinds: kinds}
+	}
+	if r.Context != nil {
+		out.Context = &pb.RecipeContext{Files: append([]string(nil), r.Context.Files...)}
 	}
 	if r.Resources != nil {
 		out.Resources = &pb.RecipeResources{
@@ -325,6 +379,9 @@ func validate(r *recipeDef) error {
 			return fmt.Errorf("recipe %q port %d has unsupported role %q (must be auth_proxy or empty)",
 				r.ID, p.ContainerPort, p.Role)
 		}
+	}
+	if err := validateContext(r); err != nil {
+		return err
 	}
 	if err := validateWorkspaceDir(r); err != nil {
 		return err
