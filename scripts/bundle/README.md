@@ -50,6 +50,43 @@ Override at build time:
 GO_VERSION=1.26.0 make bundle-download-deps OS=linux ARCH=amd64
 ```
 
+## SDLC skills release
+
+A coding-agent box takes its role skills from a signed skills release
+(`docs/design/sdlc-skills-option-b.md`). An air-gapped box cannot fetch one,
+so the bundle can carry one, pinned at bundle-build time:
+
+```bash
+SDLC_SKILLS_BASE_URL=<where skills releases are published> \
+SDLC_SKILLS_VERSION=<version name> \
+  scripts/bundle/download-deps.sh        # or DEPS_ONLY=skills for this step alone
+```
+
+`download-deps.sh` runs `scripts/install-sdlc-skills.sh --fetch-only`, which
+verifies the release exactly as an install does (the manifest's signature
+against the installer's trusted keys, then the bundle's digest against the
+signed manifest) and caches it under `dist/bundle-cache/sdlc-skills/` only if
+it verifies. `latest` is refused: a bundle pins the version it carries.
+`build-bundle.sh` verifies the cached release again and ships it as
+`sdlc-skills/` with the installer beside it. With neither variable set the
+bundle carries no skills release, as before.
+
+No signing key is built into the installer yet, so until one is, pass
+`SDLC_SKILLS_TRUSTED_KEYS_FILE=<pem>` to both scripts and to the install
+below.
+
+On the air-gapped host, as the box user (no network is used; the release is
+verified once more):
+
+```bash
+SDLC_SKILLS_BASE_URL=file://<bundle>/sdlc-skills SDLC_SKILLS_VERSION=<version name> \
+  bash <bundle>/sdlc-skills/install-sdlc-skills.sh
+```
+
+Not wired yet: `containarium code install` and the daemon still fetch the
+installer from the network, so on an air-gapped host the command above is run
+by hand (or by the operator's own provisioning).
+
 ## APT package handling
 
 `download-deps.sh` asks apt's own resolver for the install set

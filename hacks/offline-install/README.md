@@ -81,6 +81,10 @@ containarium-bundle-vX.Y.Z-linux-amd64/
     golangci-lint-2.x-linux-amd64.tar.gz
   apt/
     *.deb
+  sdlc-skills/                        # only when the build pinned a skills release
+    install-sdlc-skills.sh
+    <version>/sdlc-skills.{tar.gz,manifest,manifest.sig}
+    latest/sdlc-skills.{manifest,manifest.sig}
   images/
     containarium-base-vX.Y.Z.tar.gz   # may be absent in v0
   docs/

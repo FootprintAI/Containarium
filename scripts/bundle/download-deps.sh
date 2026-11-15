@@ -22,9 +22,19 @@
 #   BUF_VERSION     pinned in scripts/buf-version.env (not overridden)
 #   GOLANGCI_LINT_VERSION
 #   RUNNER_VERSION
-#   DEPS_ONLY      all (default) | toolchains | apt — run only one half,
-#                  e.g. toolchains on a non-Debian laptop, apt on an Ubuntu
-#                  builder
+#   DEPS_ONLY      all (default) | toolchains | apt | skills — run only one
+#                  part, e.g. toolchains on a non-Debian laptop, apt on an
+#                  Ubuntu builder
+#   SDLC_SKILLS_BASE_URL, SDLC_SKILLS_VERSION
+#                  the signed SDLC skills release the bundle carries: where
+#                  skills releases are published and the version to pin (a
+#                  version name; "latest" is not a pin). Set both or neither.
+#                  With neither, the bundle carries no skills release (and
+#                  DEPS_ONLY=skills fails). The release's signature and the
+#                  bundle's digest are verified before anything is cached.
+#   SDLC_SKILLS_TRUSTED_KEYS_FILE
+#                  PEM public keys to verify that release with, instead of the
+#                  keys built into scripts/install-sdlc-skills.sh
 #   APT_PACKAGES   space-separated packages to bundle with their dependency
 #                  closure (default: the list below)
 #   APT_BATCH_SIZE packages per `apt-get download` call (1-500, default 25;
@@ -42,6 +52,8 @@
 #   toolchains/golangci-lint-${GOLANGCI_LINT_VERSION}-${OS}-${ARCH}.tar.gz
 #   bin/actions-runner-${OS}-${runner_arch}-${RUNNER_VERSION}.tar.gz
 #   apt/*.deb
+#   sdlc-skills/<version>/{sdlc-skills.tar.gz,sdlc-skills.manifest,sdlc-skills.manifest.sig}
+#   sdlc-skills/latest/{sdlc-skills.manifest,sdlc-skills.manifest.sig}
 #
 # Idempotent — re-runs skip already-downloaded files (checks file
 # existence; does NOT re-validate checksums beyond what curl returns).
@@ -69,8 +81,8 @@ RUNNER_VERSION="${RUNNER_VERSION:-2.319.1}"
 
 DEPS_ONLY="${DEPS_ONLY:-all}"
 case "$DEPS_ONLY" in
-  all|toolchains|apt) ;;
-  *) echo "DEPS_ONLY must be all, toolchains or apt (got: $DEPS_ONLY)" >&2; exit 1 ;;
+  all|toolchains|apt|skills) ;;
+  *) echo "DEPS_ONLY must be all, toolchains, apt or skills (got: $DEPS_ONLY)" >&2; exit 1 ;;
 esac
 
 # Fail fast, never silently fall back: an out-of-range value is a typo or a
@@ -207,6 +219,34 @@ download_actions_runner() {
   local file="actions-runner-${OS}-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz"
   fetch "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${file}" \
         "$STAGING_DIR/bin/${file}"
+}
+
+# ---- SDLC skills release ----
+# The bundle carries one pinned, signed skills release
+# (docs/design/sdlc-skills-option-b.md). The installer's own --fetch-only does
+# the work, so the checks are exactly the ones a box runs at install: the
+# manifest's signature, then the bundle's digest against the signed manifest.
+# $1 = required: fail when nothing is configured (DEPS_ONLY=skills).
+download_sdlc_skills() {
+  local required="$1" base="${SDLC_SKILLS_BASE_URL:-}" version="${SDLC_SKILLS_VERSION:-}"
+  if [ -z "$base" ] && [ -z "$version" ]; then
+    if [ "$required" = 1 ]; then
+      log_error "DEPS_ONLY=skills needs SDLC_SKILLS_BASE_URL and SDLC_SKILLS_VERSION"
+      return 1
+    fi
+    log_info "SDLC skills: not configured (SDLC_SKILLS_BASE_URL + SDLC_SKILLS_VERSION); the bundle will carry no skills release"
+    return 0
+  fi
+  if [ -z "$base" ] || [ -z "$version" ] || [ "$version" = latest ]; then
+    log_error "SDLC skills: set both SDLC_SKILLS_BASE_URL and SDLC_SKILLS_VERSION, the version by name ('latest' is not a pin); got base '${base}' version '${version}'"
+    return 1
+  fi
+  log_info "fetch: SDLC skills release $version from $base"
+  if ! bash "$(dirname "$0")/../install-sdlc-skills.sh" --fetch-only "$STAGING_DIR/sdlc-skills"; then
+    log_error "SDLC skills release $version did not fetch or verify; nothing cached"
+    return 1
+  fi
+  log_success "fetched and verified: SDLC skills release $version"
 }
 
 # ---- apt packages ----
@@ -408,7 +448,9 @@ main() {
       download_buf
       download_golangci_lint
       download_actions_runner
+      download_sdlc_skills 0
       ;;
+    skills) download_sdlc_skills 1 ;;
   esac
   case "$DEPS_ONLY" in
     all|apt) download_apt_packages ;;

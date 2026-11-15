@@ -57,6 +57,18 @@
 #   SDLC_SKILLS_OVERLAY_DIR  optional: a directory of skill dirs copied OVER the
 #                      public set after install (the second copy wins), so a team
 #                      can layer its own overrides without forking the public skills
+#
+# Usage: install-sdlc-skills.sh                      install (everything above)
+#        install-sdlc-skills.sh --fetch-only <dir>   fetch and verify, install nothing
+#
+#   --fetch-only <dir>  for a build that has to carry the skills with it (the
+#       air-gapped bundle): fetch the signed skills release SDLC_SKILLS_VERSION
+#       from SDLC_SKILLS_BASE_URL, verify it exactly as an install does, and
+#       write <dir>/<version>/ (bundle, manifest, signature) and <dir>/latest/
+#       (manifest and signature). <dir> is then a base a box can install from
+#       with no network: SDLC_SKILLS_BASE_URL=file://<dir>. The version must be
+#       named ("latest" is not a pin). Nothing under SKILLS_DIR is read or
+#       written, and nothing is written to <dir> unless everything verified.
 # skill-sets: v1
 # (marker read by the recipe and `code install` to tell an installer that honours
 #  SKILL_SETS from an older one; do not remove or reword)
@@ -83,6 +95,16 @@ DEFAULT_SKILLS_BASE_URL=""
 
 die() { echo "install-sdlc-skills: $*; nothing installed" >&2; exit 1; }
 
+FETCH_ONLY_DIR=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --fetch-only)
+      [[ $# -ge 2 && -n "$2" ]] || { echo "install-sdlc-skills: --fetch-only needs a directory" >&2; exit 2; }
+      FETCH_ONLY_DIR="$2"; shift 2 ;;
+    *) echo "install-sdlc-skills: unknown argument: $1 (usage: install-sdlc-skills.sh [--fetch-only <dir>])" >&2; exit 2 ;;
+  esac
+done
+
 REPO="${REPO:-FootprintAI/Containarium}"
 RELEASE="${RELEASE:-}"
 SKILLS_BASE_URL="${SDLC_SKILLS_BASE_URL:-$DEFAULT_SKILLS_BASE_URL}"
@@ -96,6 +118,12 @@ if [[ -n "$SKILLS_VERSION" ]]; then
   fi
   if [[ -z "$SKILLS_BASE_URL" ]]; then
     echo "install-sdlc-skills: SDLC_SKILLS_VERSION=$SKILLS_VERSION needs SDLC_SKILLS_BASE_URL (where signed skills releases are published); nothing installed" >&2; exit 2
+  fi
+fi
+if [[ -n "$FETCH_ONLY_DIR" ]]; then
+  [[ -n "$SKILLS_BASE_URL" ]] || { echo "install-sdlc-skills: --fetch-only needs SDLC_SKILLS_BASE_URL (where signed skills releases are published)" >&2; exit 2; }
+  if [[ -z "$SKILLS_VERSION" || "$SKILLS_VERSION" == latest ]]; then
+    echo "install-sdlc-skills: --fetch-only needs SDLC_SKILLS_VERSION set to a version name: a build pins the skills release it carries, and 'latest' is not a pin" >&2; exit 2
   fi
 fi
 if [[ -z "$SKILLS_BASE_URL" && -z "${ARTIFACT_BASE_URL:-}" ]]; then
@@ -123,7 +151,7 @@ case "$SKILL_SETS" in
     ;;
 esac
 
-mkdir -p "$SKILLS_DIR"
+[[ -n "$FETCH_ONLY_DIR" ]] || mkdir -p "$SKILLS_DIR"
 manifest="$SKILLS_DIR/.sdlc-skills-manifest"
 
 # Drop directories a previous install owned that the new selection no longer has.
@@ -137,7 +165,7 @@ prune_dropped() {
   done < "$manifest"
 }
 
-if [[ "$SKILL_SETS" == none ]]; then
+if [[ "$SKILL_SETS" == none && -z "$FETCH_ONLY_DIR" ]]; then
   new=()
   prune_dropped
   : > "$manifest"
@@ -156,7 +184,7 @@ sha256_of() {
 
 # What a previous run recorded for this box.
 rec_release=""; rec_skills=""
-if [[ -f "$SKILLS_DIR/.sdlc-skills-version" ]]; then
+if [[ -z "$FETCH_ONLY_DIR" && -f "$SKILLS_DIR/.sdlc-skills-version" ]]; then
   read -r -a rec < "$SKILLS_DIR/.sdlc-skills-version" || true
   for tok in "${rec[@]+"${rec[@]}"}"; do
     case "$tok" in
@@ -296,6 +324,18 @@ while IFS= read -r entry; do
     /*|*..*) echo "install-sdlc-skills: unsafe path in archive: $entry; nothing installed" >&2; exit 1 ;;
   esac
 done < <(tar -tzf "$tmp/sdlc-skills.tar.gz")
+
+if [[ -n "$FETCH_ONLY_DIR" ]]; then
+  # Everything verified: only now is anything written to the output directory.
+  mkdir -p "$FETCH_ONLY_DIR/$SKILLS_VERSION" "$FETCH_ONLY_DIR/latest"
+  cp "$tmp/sdlc-skills.tar.gz" "$FETCH_ONLY_DIR/$SKILLS_VERSION/sdlc-skills.tar.gz"
+  for d in "$SKILLS_VERSION" latest; do
+    cp "$tmp/manifest.sig" "$FETCH_ONLY_DIR/$d/sdlc-skills.manifest.sig"
+    cp "$tmp/manifest.signed" "$FETCH_ONLY_DIR/$d/sdlc-skills.manifest"
+  done
+  echo "==> fetched and verified SDLC skills release ${SKILLS_VERSION} into $FETCH_ONLY_DIR (sha256 $got)"
+  exit 0
+fi
 mkdir -p "$tmp/x"
 
 if [[ "${#sets[@]}" -eq 0 ]]; then

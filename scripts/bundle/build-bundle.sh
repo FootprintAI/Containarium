@@ -133,6 +133,31 @@ if [ -d "$CACHE_DIR/toolchains" ]; then
   cp -r "$CACHE_DIR/toolchains/." "$STAGING/toolchains/"
 fi
 
+# ---- 5b. SDLC skills release (from cache) ----
+# download-deps.sh cached one pinned, signed skills release. It is verified
+# again here, by the installer's own --fetch-only reading the cache as a
+# file:// base, so what ships is what verifies: a cache that was edited or
+# only half written fails the build. The installer ships beside it, because
+# an air-gapped box cannot fetch it:
+#   SDLC_SKILLS_BASE_URL=file://<bundle>/sdlc-skills SDLC_SKILLS_VERSION=<v> \
+#     bash <bundle>/sdlc-skills/install-sdlc-skills.sh      (as the box user)
+if [ -d "$CACHE_DIR/sdlc-skills" ]; then
+  skills_version="$(sed -n 's/^version=//p' "$CACHE_DIR/sdlc-skills/latest/sdlc-skills.manifest" 2>/dev/null | head -n1)"
+  if [ -z "$skills_version" ]; then
+    log_error "$CACHE_DIR/sdlc-skills holds no latest/sdlc-skills.manifest naming a version; re-run download-deps.sh"
+    exit 1
+  fi
+  log_info "Verifying and copying SDLC skills release $skills_version"
+  if ! SDLC_SKILLS_BASE_URL="file://$CACHE_DIR/sdlc-skills" SDLC_SKILLS_VERSION="$skills_version" \
+       bash "$SCRIPT_DIR/../install-sdlc-skills.sh" --fetch-only "$STAGING/sdlc-skills"; then
+    log_error "the SDLC skills release in $CACHE_DIR/sdlc-skills does not verify; not building a bundle around it"
+    exit 1
+  fi
+  install -m 0755 "$SCRIPT_DIR/../install-sdlc-skills.sh" "$STAGING/sdlc-skills/install-sdlc-skills.sh"
+else
+  log_info "No SDLC skills release in the cache; the bundle carries none"
+fi
+
 # ---- 6. APT packages ----
 # Only .deb files are copied, and an apt/ without one fails the build (#3061):
 # a release once shipped an empty apt/, and the installer then had nothing to
