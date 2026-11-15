@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -64,11 +65,25 @@ func (m *Manager) CreateBackupVerifier(tenant string) (name, password string, cl
 	// such as 127.0.0.1 unquoted, which PostgreSQL rejects as a syntax error
 	// and then refuses to start (#3028). On a failed restart the cluster log
 	// tail goes to stderr so the cause reaches the caller.
+	//
+	// Every step that waits on cloud-init or the network is bounded: the verify
+	// RPC carries no deadline of its own, so an unbounded wait is a request
+	// that hangs until the client gives up, with nothing logged to say where.
+	// The three limits sum to under ten minutes, the longest a client waits.
 	script := `set -eu
-if command -v cloud-init >/dev/null 2>&1; then cloud-init status --wait; fi
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq postgresql-16
+bounded() {
+  limit=$1; what=$2; shift 2
+  echo "backup-verifier: $what" >&2
+  rc=0
+  timeout "$limit" "$@" || rc=$?
+  if [ "$rc" = 124 ]; then echo "backup-verifier: $what timed out after ${limit}s" >&2; fi
+  return "$rc"
+}
+if command -v cloud-init >/dev/null 2>&1; then bounded 120 "cloud-init status --wait" cloud-init status --wait; fi
+apt_opts="-o Acquire::Retries=3 -o Acquire::http::Timeout=30"
+bounded 120 "apt-get update" apt-get $apt_opts update -qq
+bounded 300 "apt-get install postgresql-16" apt-get $apt_opts install -y -qq postgresql-16
 printf '%s\n' "listen_addresses = '127.0.0.1'" > /etc/postgresql/16/main/conf.d/containarium-backup-verifier.conf
 if ! pg_ctlcluster 16 main restart; then
   tail -n 20 /var/log/postgresql/postgresql-16-main.log >&2 || true
@@ -77,9 +92,14 @@ fi
 pg_isready -q
 runuser -u postgres -- psql -v ON_ERROR_STOP=1 -c "ALTER USER postgres PASSWORD '` + password + `'"
 `
+	started := time.Now()
+	log.Printf("[backup] verifier %s: provisioning started", name)
 	_, stderr, exitCode, execErr := m.incus.ExecWithExitCode(name, []string{"sh", "-c", script})
 	if execErr != nil || exitCode != 0 {
 		err = fmt.Errorf("provision backup verifier %s (exit %d): %v: %s", name, exitCode, execErr, stderr)
+		log.Printf("[backup] verifier %s: provisioning failed after %s (exit %d)", name, time.Since(started).Round(time.Second), exitCode)
+		return
 	}
+	log.Printf("[backup] verifier %s: provisioning finished in %s", name, time.Since(started).Round(time.Second))
 	return
 }
