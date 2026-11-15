@@ -81,7 +81,13 @@ concurrency:
 jobs:
   incus-create:
     name: Daemon Create() against real Incus on ZFS
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: this lane installs ZFS and Incus on the runner
+    # and runs a real Incus daemon with systemd containers, so it is sensitive
+    # to the host's kernel, apparmor and systemd. ubuntu-latest moved to 26.04
+    # (kernel 7.0) on 2026-11-14 and every run since has failed in a different
+    # step; the last green run was on 24.04. Move the pin deliberately, in its
+    # own change, when the lane has been shown to pass on the newer image.
+    runs-on: ubuntu-24.04
     # Generous: the create path pulls a distro image and then runs a real
     # in-container package install, which is the work it does in production.
     timeout-minutes: 45
