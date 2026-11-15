@@ -52,6 +52,35 @@ func SkillSetsFromIDs(ids []string) SkillSets {
 // predates SKILL_SETS would ignore it and install everything, so a narrowed
 // selection against one fails instead.
 func InstallScript(repo, release string, sets SkillSets) string {
+	return InstallScriptFrom(repo, release, sets, SkillsSource{})
+}
+
+// InstallScriptFrom is InstallScript with a signed skills source
+// (docs/design/sdlc-skills-option-b.md): the installer is told where signed
+// skills releases are published and, when src names a version, to move the
+// box to it. src comes from NewSkillsSource, so its values are safe inside
+// the double-quoted assignments. With the zero src it is exactly
+// InstallScript.
+//
+// An installer that predates signed skills releases would ignore both
+// values. That is harmless when no version is asked for (the box takes the
+// release's own bundle, as before), and wrong when one is: the caller would
+// be told the box moved when it did not. So a requested version against such
+// an installer, or against a release with no installer, fails.
+func InstallScriptFrom(repo, release string, sets SkillSets, src SkillsSource) string {
+	sourceEnv, sourceGuard, noInstaller := "", "", ""
+	if src.Signed() {
+		sourceEnv = `SDLC_SKILLS_BASE_URL="` + src.BaseURL() + `" SDLC_SKILLS_VERSION="` + src.Version() + `" `
+	}
+	if src.Version() != "" {
+		refusal := `cannot move the box to skills release ` + src.Version()
+		sourceGuard = `
+    if ! grep -q '^# skills-source: v1$' "$tmp"; then
+      echo "release ` + release + `'s SDLC skills installer predates signed skills releases; ` + refusal + `" >&2; exit 1
+    fi`
+		noInstaller = `
+    echo "release ` + release + ` has no SDLC skills installer; ` + refusal + `" >&2; exit 1`
+	}
 	return `set -e
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
@@ -65,9 +94,9 @@ case "$code" in
         none) echo "release ` + release + `'s SDLC skills installer predates skill sets; nothing to remove, skipping" >&2; exit 0 ;;
         *) echo "release ` + release + `'s SDLC skills installer predates skill sets; cannot apply SKILL_SETS=` + sets.String() + `" >&2; exit 1 ;;
       esac
-    fi
-    SKILL_SETS="` + sets.String() + `" RELEASE="` + release + `" REPO="` + repo + `" bash "$tmp" ;;
-  404)
+    fi` + sourceGuard + `
+    ` + sourceEnv + `SKILL_SETS="` + sets.String() + `" RELEASE="` + release + `" REPO="` + repo + `" bash "$tmp" ;;
+  404)` + noInstaller + `
     case "` + sets.String() + `" in
       all|none) echo "release ` + release + ` has no SDLC skills installer; skipping" >&2 ;;
       *) echo "release ` + release + ` has no SDLC skills installer; cannot apply SKILL_SETS=` + sets.String() + `" >&2; exit 1 ;;

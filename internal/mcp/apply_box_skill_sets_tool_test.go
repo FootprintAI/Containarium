@@ -163,3 +163,39 @@ func TestApplyBoxSkillSetsTool_SchemaAndScope(t *testing.T) {
 		t.Error("apply_box_skill_sets is not registered")
 	}
 }
+
+// skills_version is the MCP form of --skills-version: sent as given, refused
+// before any request when it is not a version name.
+func TestApplyBoxSkillSetsTool_SkillsVersion(t *testing.T) {
+	var body map[string]interface{}
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		_, _ = w.Write([]byte(`{"skillSets":["qa"],"unchanged":true,"release":"v0.89.0","skillsVersion":"2026.11.0"}`))
+	}))
+	defer srv.Close()
+	out, err := handleApplyBoxSkillSets(NewClient(srv.URL, "tok"), map[string]interface{}{
+		"box": "alice", "skill_sets": []interface{}{"qa"}, "skills_version": "2026.11.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["skillsVersion"] != "2026.11.0" {
+		t.Errorf("body = %v, want skillsVersion sent", body)
+	}
+	if !strings.Contains(out, "skills release 2026.11.0") {
+		t.Errorf("output %q does not name the skills release", out)
+	}
+	before := calls
+	if _, err := handleApplyBoxSkillSets(NewClient(srv.URL, "tok"), map[string]interface{}{
+		"box": "alice", "skill_sets": []interface{}{"qa"}, "skills_version": "1;rm -rf /",
+	}); err == nil || calls != before {
+		t.Errorf("err = %v, calls %d -> %d; want a refusal before any request", err, before, calls)
+	}
+	props := applyBoxSkillSetsTool().InputSchema["properties"].(map[string]interface{})
+	if _, ok := props["skills_version"]; !ok {
+		t.Error("the tool schema has no skills_version")
+	}
+}

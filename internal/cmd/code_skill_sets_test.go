@@ -78,7 +78,7 @@ func TestCodeSkillSets(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := &fakeSkillSetApplier{resp: tt.resp}
 			var out bytes.Buffer
-			if err := codeApplySkillSets(f, "alice", tt.value, tt.release, &out); err != nil {
+			if err := codeApplySkillSets(f, "alice", tt.value, tt.release, "", &out); err != nil {
 				t.Fatal(err)
 			}
 			if f.got.GetUsername() != "alice" || strings.Join(f.got.GetSkillSets(), ",") != tt.wantSets || f.got.GetRelease() != tt.wantRelease {
@@ -137,7 +137,7 @@ func TestCodeSkillSets_Errors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := &fakeSkillSetApplier{err: tt.err}
-			err := codeApplySkillSets(f, "alice", tt.value, tt.release, &bytes.Buffer{})
+			err := codeApplySkillSets(f, "alice", tt.value, tt.release, "", &bytes.Buffer{})
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("err = %v, want %q", err, tt.wantErr)
 			}
@@ -169,5 +169,27 @@ func TestCodeSkillSets_DocumentedFromInstall(t *testing.T) {
 	}
 	if f := codeSkillSetsCmd.Flags().Lookup("skill-sets"); f == nil || f.Annotations[cobra.BashCompOneRequiredFlag] == nil {
 		t.Error("--skill-sets must be required: the list is the whole request")
+	}
+}
+
+// --skills-version reaches the daemon, and the output names the skills
+// release the box is on afterwards.
+func TestCodeApplySkillSets_SkillsVersion(t *testing.T) {
+	f := &fakeSkillSetApplier{resp: &pb.ApplyBoxSkillSetsResponse{SkillSets: []string{"qa"}, Unchanged: true, Release: "v1", SkillsVersion: "2026.12.0"}}
+	var out bytes.Buffer
+	if err := codeApplySkillSets(f, "alice", "qa", "", "latest", &out); err != nil {
+		t.Fatal(err)
+	}
+	if f.got.GetSkillsVersion() != "latest" {
+		t.Errorf("request skills_version = %q, want latest", f.got.GetSkillsVersion())
+	}
+	if !strings.Contains(out.String(), "skills release 2026.12.0") {
+		t.Errorf("output %q does not name the resolved skills release", out.String())
+	}
+	if err := codeApplySkillSets(f, "alice", "qa", "", "not a version", &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "--skills-version") {
+		t.Errorf("err = %v, want a refusal naming --skills-version", err)
+	}
+	if flag := codeSkillSetsCmd.Flags().Lookup("skills-version"); flag == nil || flag.DefValue != "" {
+		t.Error("`code skill-sets` must have --skills-version, empty by default")
 	}
 }

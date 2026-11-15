@@ -214,6 +214,9 @@ type ContainerServer struct {
 	// a temp home. boxSkillSetLocks is the per-box gate (boxSkillSetGate): an
 	// apply holds it for writing, a run start for reading (#3510).
 	boxSkillSetsInstall boxSkillSetsInstallFunc
+	// sdlcSkillsBaseURL overrides where signed skills releases are read from
+	// (tests); nil means the environment, then the built-in default.
+	sdlcSkillsBaseURL *string
 	// boxBootstrapExec is ApplyBoxBootstrap's exec seam (#3694,
 	// box_bootstrap_apply.go): production is `su - <user>` through the
 	// container manager, keeping the bundle script's exit code.

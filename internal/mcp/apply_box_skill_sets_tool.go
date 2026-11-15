@@ -16,7 +16,7 @@ import (
 
 // applySkillSetsFn is that shared function. A variable only so a test can
 // check it is the CLI's.
-var applySkillSetsFn = client.ApplySkillSets
+var applySkillSetsFn = client.ApplySkillSetsWith
 
 // newSkillSetsAPI builds the CLI's typed HTTP client from this MCP client's
 // transport, base URL and current token. A variable so a test can fake it.
@@ -32,13 +32,13 @@ var newSkillSetsAPI = func(c *Client) (*client.HTTPClient, error) {
 }
 
 // ApplyBoxSkillSets runs the shared apply over this client.
-func (c *Client) ApplyBoxSkillSets(box string, skillSets []string, release string) (*pb.ApplyBoxSkillSetsResponse, error) {
+func (c *Client) ApplyBoxSkillSets(a client.SkillSetsApply) (*pb.ApplyBoxSkillSetsResponse, error) {
 	hc, err := newSkillSetsAPI(c)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = hc.Close() }()
-	return applySkillSetsFn(hc, box, skillSets, release)
+	return applySkillSetsFn(hc, a)
 }
 
 func applyBoxSkillSetsTool() Tool {
@@ -72,6 +72,10 @@ func applyBoxSkillSetsTool() Tool {
 					"type":        "string",
 					"description": "Containarium release tag whose installer, lock and skills bundle to use (for example v0.89.0). Default: the daemon's own. Mirrors --release.",
 				},
+				"skills_version": map[string]interface{}{
+					"type":        "string",
+					"description": "Move this box to a signed skills release: a version name (for example 2026.11.0) or \"latest\". Omit to keep the box on the skills release it has; a box never changes skills release otherwise. Needs a daemon configured with a skills base URL. Mirrors --skills-version.",
+				},
 			},
 			"required": []string{"box", "skill_sets"},
 		},
@@ -81,9 +85,10 @@ func applyBoxSkillSetsTool() Tool {
 
 // applySkillSetsArgs is the tool's decoded, validated arguments.
 type applySkillSetsArgs struct {
-	Box       string
-	SkillSets []string
-	Release   string
+	Box           string
+	SkillSets     []string
+	Release       string
+	SkillsVersion string
 }
 
 // parseApplySkillSetsArgs validates the arguments before any request is made.
@@ -91,14 +96,18 @@ type applySkillSetsArgs struct {
 // keeps every refusal ahead of the transport.
 func parseApplySkillSetsArgs(args map[string]interface{}) (applySkillSetsArgs, error) {
 	out := applySkillSetsArgs{
-		Box:     getStringArg(args, "box", ""),
-		Release: getStringArg(args, "release", ""),
+		Box:           getStringArg(args, "box", ""),
+		Release:       getStringArg(args, "release", ""),
+		SkillsVersion: getStringArg(args, "skills_version", ""),
 	}
 	if err := client.ValidateBoxName(out.Box); err != nil {
 		return out, err
 	}
 	if out.Release != "" && !sdlcskills.ValidReleaseTag(out.Release) {
 		return out, fmt.Errorf("release %q is not a release tag (expected something like v0.89.0)", out.Release)
+	}
+	if v := out.SkillsVersion; v != "" && v != sdlcskills.LatestVersion && !sdlcskills.ValidSkillsVersion(v) {
+		return out, fmt.Errorf("skills_version %q is not a skills release version (letters, digits and ._-, or %q)", v, sdlcskills.LatestVersion)
 	}
 	raw, ok := args["skill_sets"].([]interface{})
 	if !ok {
@@ -126,7 +135,7 @@ func handleApplyBoxSkillSets(api API, args map[string]interface{}) (string, erro
 	if err != nil {
 		return "", err
 	}
-	resp, err := api.ApplyBoxSkillSets(p.Box, p.SkillSets, p.Release)
+	resp, err := api.ApplyBoxSkillSets(client.SkillSetsApply{Box: p.Box, Target: p.SkillSets, Release: p.Release, SkillsVersion: p.SkillsVersion})
 	if status.Code(err) == codes.Unimplemented {
 		return "", fmt.Errorf("this daemon does not support re-applying skill sets (ApplyBoxSkillSets); upgrade it")
 	}

@@ -125,6 +125,12 @@ func runSDLCSkillsScript(t *testing.T, status string) (out string, ok bool, ran 
 // runSDLCSkillsScriptSets is the same with a chosen selection and installer body.
 func runSDLCSkillsScriptSets(t *testing.T, status, sets, installerBody string) (out string, ok bool, ran bool) {
 	t.Helper()
+	return runSDLCSkillsScriptFrom(t, status, sets, installerBody, sdlcskills.SkillsSource{})
+}
+
+// runSDLCSkillsScriptFrom is the same with a signed skills source.
+func runSDLCSkillsScriptFrom(t *testing.T, status, sets, installerBody string, src sdlcskills.SkillsSource) (out string, ok bool, ran bool) {
+	t.Helper()
 	for _, tool := range []string{"bash", "mktemp"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s not available", tool)
@@ -147,7 +153,7 @@ func runSDLCSkillsScriptSets(t *testing.T, status, sets, installerBody string) (
 	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(fakeCurl), 0o700); err != nil { //nolint:gosec // test-only stand-in
 		t.Fatal(err)
 	}
-	cmd := exec.Command("bash", "-c", sdlcSkillsInstallScript("v9.9.9", parsed)) //nolint:gosec // generated script under test
+	cmd := exec.Command("bash", "-c", sdlcSkillsInstallScript("v9.9.9", parsed, src)) //nolint:gosec // generated script under test
 	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "HOME="+dir)
 	b, err := cmd.CombinedOutput()
 	_, statErr := os.Stat(marker)
@@ -210,5 +216,75 @@ func TestInstallSDLCSkills_CarriesTheSkillSetsMarker(t *testing.T) {
 	}
 	if !strings.Contains("\n"+string(b), "\n# skill-sets: v1\n") {
 		t.Error("install-sdlc-skills.sh lacks the '# skill-sets: v1' marker line")
+	}
+}
+
+// A skills version is a request to move the box. An installer that predates
+// signed skills releases would ignore it, so the script refuses instead of
+// reporting a move that did not happen.
+func TestSDLCSkillsInstallScript_SkillsVersionNeedsAnInstallerThatKnowsIt(t *testing.T) {
+	const marked = "# skill-sets: v1\n# skills-source: v1\n"
+	const report = "echo \"got=$SDLC_SKILLS_VERSION@$SDLC_SKILLS_BASE_URL\"\n"
+	source := func(version string) sdlcskills.SkillsSource {
+		src, err := sdlcskills.NewSkillsSource("https://skills.example.com/sdlc", version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return src
+	}
+	cases := []struct {
+		name, status, body string
+		src                sdlcskills.SkillsSource
+		wantOK, wantRan    bool
+		wantMsg            string
+	}{
+		{"version, installer knows signed releases: runs with both values", "200", marked + report, source("2026.11.0"), true, true, "got=2026.11.0@https://skills.example.com/sdlc"},
+		{"latest by name: passed through", "200", marked + report, source("latest"), true, true, "got=latest@https://skills.example.com/sdlc"},
+		{"version, older installer: refused", "200", "# skill-sets: v1\n", source("2026.11.0"), false, false, "predates signed skills releases"},
+		{"version, no installer at all: refused", "404", "", source("2026.11.0"), false, false, "cannot move the box to skills release 2026.11.0"},
+		{"base URL only, older installer: runs as before", "200", "# skill-sets: v1\n", source(""), true, true, ""},
+		{"base URL only, installer knows it: the URL is passed, no version", "200", marked + report, source(""), true, true, "got=@https://skills.example.com/sdlc"},
+		{"base URL only, no installer: skipped as before", "404", "", source(""), true, false, "has no SDLC skills installer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, ok, ran := runSDLCSkillsScriptFrom(t, tc.status, "all", tc.body, tc.src)
+			if ok != tc.wantOK || ran != tc.wantRan {
+				t.Errorf("ok=%v ran=%v, want ok=%v ran=%v\n%s", ok, ran, tc.wantOK, tc.wantRan, out)
+			}
+			if tc.wantMsg != "" && !strings.Contains(out, tc.wantMsg) {
+				t.Errorf("output %q does not mention %q", out, tc.wantMsg)
+			}
+		})
+	}
+}
+
+func TestCodeInstallSkillsSource(t *testing.T) {
+	set := func(base, version, env string) {
+		t.Helper()
+		oldBase, oldVersion := codeSkillsBaseURL, codeSkillsVersion
+		t.Cleanup(func() { codeSkillsBaseURL, codeSkillsVersion = oldBase, oldVersion })
+		codeSkillsBaseURL, codeSkillsVersion = base, version
+		t.Setenv(skillsBaseURLEnv, env)
+	}
+	set("", "", "")
+	if src, err := codeInstallSkillsSource(); err != nil || src.Signed() {
+		t.Errorf("nothing set: %+v, %v; want the release's own bundle", src, err)
+	}
+	set("", "2026.11.0", "")
+	if _, err := codeInstallSkillsSource(); err == nil || !strings.Contains(err.Error(), "--skills-base-url") {
+		t.Errorf("a version with no base URL: err = %v", err)
+	}
+	set("", "2026.11.0", "https://skills.example.com/env")
+	if src, err := codeInstallSkillsSource(); err != nil || src.BaseURL() != "https://skills.example.com/env" || src.Version() != "2026.11.0" {
+		t.Errorf("base URL from the environment: %+v, %v", src, err)
+	}
+	set("https://skills.example.com/flag", "latest", "https://skills.example.com/env")
+	if src, err := codeInstallSkillsSource(); err != nil || src.BaseURL() != "https://skills.example.com/flag" {
+		t.Errorf("the flag wins over the environment: %+v, %v", src, err)
+	}
+	set("https://skills.example.com/flag", "1;rm", "")
+	if _, err := codeInstallSkillsSource(); err == nil {
+		t.Error("a version with shell syntax was accepted")
 	}
 }

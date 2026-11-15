@@ -77,3 +77,68 @@ func TestInstallScript(t *testing.T) {
 		t.Errorf("an empty selection must be SKILL_SETS=none, never all:\n%s", none)
 	}
 }
+
+func TestNewSkillsSource(t *testing.T) {
+	ok := []struct{ base, version string }{
+		{"", ""},
+		{"https://skills.example.com/sdlc", ""},
+		{"https://skills.example.com/sdlc/", "2026.11.0"},
+		{"http://mirror.internal:8080/skills", "latest"},
+	}
+	for _, c := range ok {
+		src, err := NewSkillsSource(c.base, c.version)
+		if err != nil {
+			t.Errorf("NewSkillsSource(%q, %q): %v", c.base, c.version, err)
+			continue
+		}
+		if src.Version() != c.version || src.Signed() != (c.base != "") {
+			t.Errorf("NewSkillsSource(%q, %q) = %+v", c.base, c.version, src)
+		}
+	}
+	if src, _ := NewSkillsSource("https://skills.example.com/sdlc/", ""); src.BaseURL() != "https://skills.example.com/sdlc" {
+		t.Errorf("trailing slash kept: %q", src.BaseURL())
+	}
+	bad := []struct{ base, version, want string }{
+		{"", "2026.11.0", "base URL"},
+		{"ftp://skills.example.com", "", "http"},
+		{"https://skills.example.com/$(id)", "", "base URL"},
+		{`https://skills.example.com/"x`, "", "base URL"},
+		{"https://skills.example.com/a b", "", "base URL"},
+		{"https://", "", "base URL"},
+		{"https://skills.example.com", "1;rm", "version"},
+		{"https://skills.example.com", "../1", "version"},
+		{"https://skills.example.com", "$(id)", "version"},
+	}
+	for _, c := range bad {
+		_, err := NewSkillsSource(c.base, c.version)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("NewSkillsSource(%q, %q) err = %v, want one mentioning %q", c.base, c.version, err, c.want)
+		}
+	}
+}
+
+// With a signed source the script hands the base URL and version to the
+// installer, and refuses to ask an installer that would ignore them.
+func TestInstallScriptFrom(t *testing.T) {
+	sets := SkillSetsFromIDs([]string{"qa"})
+	if got, want := InstallScriptFrom(DefaultRepo, "v1.2.3", sets, SkillsSource{}), InstallScript(DefaultRepo, "v1.2.3", sets); got != want {
+		t.Errorf("no source must be the plain script:\n%s", got)
+	}
+	src, err := NewSkillsSource("https://skills.example.com/sdlc", "2026.11.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := InstallScriptFrom(DefaultRepo, "v1.2.3", sets, src)
+	for _, want := range []string{
+		`SDLC_SKILLS_BASE_URL="https://skills.example.com/sdlc" SDLC_SKILLS_VERSION="2026.11.0" SKILL_SETS="qa" RELEASE="v1.2.3" REPO="FootprintAI/Containarium" bash "$tmp"`,
+		`grep -q '^# skills-source: v1$'`,
+		`cannot move the box to skills release 2026.11.0`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("script lacks %q:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "sudo") {
+		t.Error("the installer runs as the box user; no sudo")
+	}
+}

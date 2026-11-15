@@ -66,16 +66,45 @@ func ValidateBoxName(name string) error {
 	return nil
 }
 
+// SkillSetsApply is one request to re-apply a box's skill sets.
+type SkillSetsApply struct {
+	// Box is the box owner's username.
+	Box string
+	// Target is the complete list of set ids the box should have; empty
+	// removes every set.
+	Target []string
+	// Release is the Containarium release whose installer to use; empty is
+	// the daemon's own.
+	Release string
+	// SkillsVersion moves the box to a signed skills release: a version
+	// name or "latest". Empty keeps the box on the release it has.
+	SkillsVersion string
+}
+
 // ApplySkillSets makes box's installed skill sets exactly target (an empty
-// target removes every set). The release tag is validated here, before any
-// request. A typed refusal comes back as *SkillSetsRefusedError; an
-// Unimplemented status (a daemon without the RPC) is returned as is, so the
-// caller can add its own hint.
+// target removes every set), leaving the box on the skills release it has.
+// It is ApplySkillSetsWith without a skills version.
 func ApplySkillSets(c BoxSkillSetApplier, box string, target []string, release string) (*pb.ApplyBoxSkillSetsResponse, error) {
-	if release = strings.TrimSpace(release); release != "" && !sdlcskills.ValidReleaseTag(release) {
+	return ApplySkillSetsWith(c, SkillSetsApply{Box: box, Target: target, Release: release})
+}
+
+// ApplySkillSetsWith makes a box's installed skill sets exactly a.Target and,
+// when a.SkillsVersion is set, moves the box to that skills release. The
+// release tag and the skills version are validated here, before any request.
+// A typed refusal comes back as *SkillSetsRefusedError; an Unimplemented
+// status (a daemon without the RPC) is returned as is, so the caller can add
+// its own hint.
+func ApplySkillSetsWith(c BoxSkillSetApplier, a SkillSetsApply) (*pb.ApplyBoxSkillSetsResponse, error) {
+	box := a.Box
+	release := strings.TrimSpace(a.Release)
+	if release != "" && !sdlcskills.ValidReleaseTag(release) {
 		return nil, fmt.Errorf("--release %q is not a release tag (expected something like v0.89.0)", release)
 	}
-	resp, err := c.ApplyBoxSkillSets(&pb.ApplyBoxSkillSetsRequest{Username: box, SkillSets: target, Release: release})
+	version := strings.TrimSpace(a.SkillsVersion)
+	if version != "" && version != sdlcskills.LatestVersion && !sdlcskills.ValidSkillsVersion(version) {
+		return nil, fmt.Errorf("--skills-version %q is not a skills release version (letters, digits and ._-, or %q)", version, sdlcskills.LatestVersion)
+	}
+	resp, err := c.ApplyBoxSkillSets(&pb.ApplyBoxSkillSetsRequest{Username: box, SkillSets: a.Target, Release: release, SkillsVersion: version})
 	if err != nil {
 		if status.Code(err) == codes.Unimplemented {
 			return nil, err
@@ -84,6 +113,11 @@ func ApplySkillSets(c BoxSkillSetApplier, box string, target []string, release s
 			return nil, &SkillSetsRefusedError{Box: box, Reason: reason, Message: status.Convert(err).Message()}
 		}
 		return nil, fmt.Errorf("apply skill sets on %s: %w", box, err)
+	}
+	// A daemon that predates skills_version ignores the field and answers
+	// without one. Reporting success would say the box moved when it did not.
+	if version != "" && resp.GetSkillsVersion() == "" && len(a.Target) > 0 {
+		return nil, fmt.Errorf("apply skill sets on %s: the daemon did not report a skills release after being asked for %q; it predates per-box skills versions (upgrade it) and the box was left on its release's bundle", box, version)
 	}
 	return resp, nil
 }
@@ -125,11 +159,16 @@ func RenderSkillSetsApply(box string, resp *pb.ApplyBoxSkillSetsResponse) string
 		sets = strings.Join(resp.GetSkillSets(), ", ")
 	}
 	var b strings.Builder
+	// The signed skills release the box is on now, when it is on one.
+	from := resp.GetRelease()
+	if v := resp.GetSkillsVersion(); v != "" {
+		from += ", skills release " + v
+	}
 	if resp.GetUnchanged() {
-		fmt.Fprintf(&b, "%s: skill sets unchanged (%s); nothing installed or removed, files refreshed from %s\n", box, sets, resp.GetRelease())
+		fmt.Fprintf(&b, "%s: skill sets unchanged (%s); nothing installed or removed, files refreshed from %s\n", box, sets, from)
 		return b.String()
 	}
-	fmt.Fprintf(&b, "%s: skill sets now %s (from %s)\n", box, sets, resp.GetRelease())
+	fmt.Fprintf(&b, "%s: skill sets now %s (from %s)\n", box, sets, from)
 	for _, c := range resp.GetInstalled() {
 		fmt.Fprintf(&b, "  installed %s: %s\n", c.GetSkillSet(), strings.Join(c.GetSkills(), ", "))
 	}

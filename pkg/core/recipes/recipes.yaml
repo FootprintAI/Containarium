@@ -194,6 +194,16 @@ recipes:
         label: Skill sets
         description: 'Which pinned open-sdlc-skills sets to install into the box user''s ~/.claude/skills: a comma-separated list of set ids (the control plane sends sdlc and qa), "all", or the literal "none" (empty means unset, so none cannot be spelled as empty). Empty falls back to sdlc_skills, whose default installs everything. An unknown id fails the step and names the known ids; narrowing the list on a redeploy removes the dropped sets. Which namespaces a set covers is defined in pkg/core/sdlcskills/sdlc-skills.lock.'
         type: string
+      - &coding_agent_param_skills_base_url
+        name: skills_base_url
+        label: Skills base URL
+        description: 'Where signed skills releases are published (docs/design/sdlc-skills-option-b.md). Empty: the skills come from the bundle of the Containarium release named by release. Set: the installer takes a signed skills release from this URL and verifies its signature before installing anything.'
+        type: string
+      - &coding_agent_param_skills_version
+        name: skills_version
+        label: Skills release
+        description: 'The signed skills release to put this box on: a version name, or "latest". Needs skills_base_url. Empty keeps the box on the skills release it already has (a redeploy never moves it); a box with none takes the newest one once. A release whose installer predates signed skills releases fails the step when a version is asked for.'
+        type: string
     post_start:
       - &coding_agent_step_install_runtime 'curl -fsSL "https://raw.githubusercontent.com/FootprintAI/Containarium/$CONTAINARIUM_PARAM_RELEASE/scripts/install-agent-runtime.sh" | RELEASE="$CONTAINARIUM_PARAM_RELEASE" PREFIX=/usr/local/bin bash -s -- --no-agent-runtime'
       - &coding_agent_step_box_home 'BOX_HOME="$(getent passwd "$CONTAINARIUM_PARAM_BOX_USER" | cut -d: -f6)"; [ -n "$BOX_HOME" ] || { echo "box user $CONTAINARIUM_PARAM_BOX_USER not found" >&2; exit 1; }'
@@ -219,7 +229,12 @@ recipes:
           fi
         fi
         # shellcheck disable=SC2016  # the inner script is single-quoted on purpose
-        runuser -u "$CONTAINARIUM_PARAM_BOX_USER" -- env HOME="$BOX_HOME" RELEASE="$CONTAINARIUM_PARAM_RELEASE" SETS="$SETS" bash -c '
+        # A signed skills source (skills_base_url) and, optionally, the skills
+        # release to move this box to (skills_version). Both are passed to the
+        # installer as they are; it validates them. A version asked of an
+        # installer that would ignore it fails here rather than reporting a
+        # move that did not happen.
+        runuser -u "$CONTAINARIUM_PARAM_BOX_USER" -- env HOME="$BOX_HOME" RELEASE="$CONTAINARIUM_PARAM_RELEASE" SETS="$SETS" SKILLS_BASE_URL="${CONTAINARIUM_PARAM_SKILLS_BASE_URL:-}" SKILLS_VERSION="${CONTAINARIUM_PARAM_SKILLS_VERSION:-}" bash -c '
           set -euo pipefail
           tmp="$(mktemp)"
           code="$(curl -sSL -o "$tmp" -w "%{http_code}" "https://raw.githubusercontent.com/FootprintAI/Containarium/$RELEASE/scripts/install-sdlc-skills.sh")"
@@ -233,8 +248,14 @@ recipes:
                   *) echo "release $RELEASE SDLC skills installer predates skill sets; cannot apply skill_sets=$SETS" >&2; exit 1 ;;
                 esac
               fi
-              SKILL_SETS="$SETS" bash "$tmp" ;;
+              if [ -n "${SKILLS_VERSION:-}" ] && ! grep -q "^# skills-source: v1$" "$tmp"; then
+                echo "release $RELEASE SDLC skills installer predates signed skills releases; cannot move the box to skills release $SKILLS_VERSION" >&2; exit 1
+              fi
+              SDLC_SKILLS_BASE_URL="${SKILLS_BASE_URL:-}" SDLC_SKILLS_VERSION="${SKILLS_VERSION:-}" SKILL_SETS="$SETS" bash "$tmp" ;;
             404)
+              if [ -n "${SKILLS_VERSION:-}" ]; then
+                echo "release $RELEASE has no SDLC skills installer; cannot move the box to skills release $SKILLS_VERSION" >&2; exit 1
+              fi
               case "$SETS" in
                 all|none) echo "release $RELEASE has no SDLC skills installer; skipping" >&2 ;;
                 *) echo "release $RELEASE has no SDLC skills installer; cannot apply skill_sets=$SETS" >&2; exit 1 ;;
@@ -325,6 +346,8 @@ recipes:
       - *coding_agent_param_bootstrap_url
       - *coding_agent_param_box_user
       - *coding_agent_param_skill_sets
+      - *coding_agent_param_skills_base_url
+      - *coding_agent_param_skills_version
       - name: auth_password
         label: Workspace password
         description: Password for the in-box basic-auth proxy in front of the slides dev server. Required; the box is never exposed without it.

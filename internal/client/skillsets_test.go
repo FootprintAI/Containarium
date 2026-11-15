@@ -162,3 +162,40 @@ func TestValidateBoxName(t *testing.T) {
 		}
 	}
 }
+
+// A skills version is passed to the daemon as asked, validated first, and a
+// daemon that ignored it is not reported as having moved the box.
+func TestApplySkillSetsWith_SkillsVersion(t *testing.T) {
+	f := &fakeApplier{resp: &pb.ApplyBoxSkillSetsResponse{SkillSets: []string{"qa"}, Release: "v1", SkillsVersion: "2026.11.0"}}
+	resp, err := ApplySkillSetsWith(f, SkillSetsApply{Box: "alice", Target: []string{"qa"}, SkillsVersion: " 2026.11.0 "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.got.GetSkillsVersion() != "2026.11.0" || resp.GetSkillsVersion() != "2026.11.0" {
+		t.Errorf("sent %q, got back %q", f.got.GetSkillsVersion(), resp.GetSkillsVersion())
+	}
+	if out := RenderSkillSetsApply("alice", resp); !strings.Contains(out, "skills release 2026.11.0") {
+		t.Errorf("output %q does not name the skills release", out)
+	}
+
+	for _, bad := range []string{"1;rm -rf /", "../1", "$(id)", "a b"} {
+		g := &fakeApplier{resp: &pb.ApplyBoxSkillSetsResponse{}}
+		if _, err := ApplySkillSetsWith(g, SkillSetsApply{Box: "alice", Target: []string{"qa"}, SkillsVersion: bad}); err == nil || g.calls != 0 {
+			t.Errorf("%q: err = %v, calls = %d; want a refusal before any request", bad, err, g.calls)
+		}
+	}
+
+	// A daemon from before skills_version drops the field and answers without one.
+	old := &fakeApplier{resp: &pb.ApplyBoxSkillSetsResponse{SkillSets: []string{"qa"}, Release: "v1"}}
+	_, err = ApplySkillSetsWith(old, SkillSetsApply{Box: "alice", Target: []string{"qa"}, SkillsVersion: "2026.11.0"})
+	if err == nil || !strings.Contains(err.Error(), "predates per-box skills versions") {
+		t.Errorf("err = %v, want the older-daemon refusal", err)
+	}
+	// With no version asked for, an answer without one is normal.
+	if _, err := ApplySkillSetsWith(old, SkillSetsApply{Box: "alice", Target: []string{"qa"}}); err != nil {
+		t.Errorf("no version asked: %v", err)
+	}
+	if out := RenderSkillSetsApply("alice", old.resp); strings.Contains(out, "skills release") {
+		t.Errorf("output %q names a skills release the box is not on", out)
+	}
+}

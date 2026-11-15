@@ -601,6 +601,15 @@ message ApplyBoxSkillSetsRequest {
   // The Containarium release whose installer, lock and skills bundle to use
   // (a v-prefixed tag). Empty means the daemon's own release.
   string release = 3;
+  // The signed skills release to move the box to: a version name, or
+  // "latest". Empty keeps the box on the skills release it has (a box with
+  // none recorded takes the newest one once, when the daemon has a skills
+  // base URL configured). This is the only way a box changes skills release:
+  // a daemon upgrade or a change of skill_sets alone never does. A value
+  // needs a daemon configured with a skills base URL (FAILED_PRECONDITION
+  // otherwise) and a release whose installer knows signed skills releases;
+  // a value that is not a version name is INVALID_ARGUMENT.
+  string skills_version = 4;
 }
 
 message ApplyBoxSkillSetsResponse {
@@ -622,6 +631,10 @@ message ApplyBoxSkillSetsResponse {
   bool unchanged = 4;
   // The release the skills came from (the request's, or the daemon's own).
   string release = 5;
+  // The signed skills release the box now records, as its installer wrote
+  // it. Empty when the box's skills came from a Containarium release asset
+  // (no signed skills release), or when the call removed every set.
+  string skills_version = 6;
 }
 
 // Applying a bootstrap bundle to an existing box (#3694). `containarium code
