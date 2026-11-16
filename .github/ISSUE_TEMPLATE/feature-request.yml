@@ -1,0 +1,70 @@
+name: Feature request
+description: Propose a feature. These answers become the inputs to the PRD.
+title: "[Feature] "
+labels: ["enhancement", "product"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Whoever writes the PRD from this issue asks at most **one** batched
+        round of questions, each with a default. Every field you fill in here
+        is a question they won't have to ask.
+
+  - type: textarea
+    id: user-and-goal
+    attributes:
+      label: Who is this for, and what are they trying to do?
+      description: The role of the target user and the job they're doing. Name a role, not "users".
+      placeholder: "A platform engineer at a 20-person team trying to give each developer an isolated preview environment per PR."
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-workaround
+    attributes:
+      label: What do they do today, and what does it cost them?
+      description: The current workaround and its cost in time, money, risk or errors.
+      placeholder: "They share one staging box. Two PRs collide about twice a week and each collision costs about an hour."
+    validations:
+      required: true
+
+  - type: textarea
+    id: why-now
+    attributes:
+      label: Why now?
+      description: What changed, or what this blocks, that makes it worth doing now and not later.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Links, quotes, issue numbers or data that show the problem is real. If you have none, say so in the box below.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: evidence-none
+    attributes:
+      label: No evidence yet
+      options:
+        - label: "No evidence yet: this is an assumption to validate."
+          required: false
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Must not change / out of scope
+      description: Behaviour, APIs or constraints this feature must leave alone, and anything you explicitly don't want in the first version.
+    validations:
+      required: true
+
+  - type: textarea
+    id: success
+    attributes:
+      label: How will we know it works?
+      description: An observable outcome. This becomes the acceptance criteria for the work.
+      placeholder: "A developer can open a PR and get a working preview URL within 5 minutes, without asking ops."
+    validations:
+      required: true
