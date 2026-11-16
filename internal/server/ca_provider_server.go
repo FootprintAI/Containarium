@@ -92,8 +92,8 @@ func (s *CAProviderServer) boundCluster(ctx context.Context, owner, name, id str
 	if err != nil {
 		return nil, storeErr(err)
 	}
-	if id != "" && c.ID != id {
-		return nil, status.Errorf(codes.PermissionDenied, "certificate was issued for a previous cluster named %q", name)
+	if c.ID != id {
+		return nil, status.Error(codes.PermissionDenied, "the certificate was issued for a previous cluster of this name; re-issue it")
 	}
 	return c, nil
 }
@@ -113,6 +113,12 @@ func (s *CAProviderServer) caIdentity(ctx context.Context) (owner, name, id stri
 	owner, name, id, err = parseCASubject(subject)
 	if err != nil {
 		return "", "", "", status.Error(codes.PermissionDenied, "malformed cluster machine identity")
+	}
+	// A name-only subject predates the cluster id (#3689). It is refused: the
+	// cluster's autoscaler credential must be re-issued. The message names no
+	// owner, cluster or subject.
+	if id == "" {
+		return "", "", "", status.Error(codes.PermissionDenied, "the cluster's autoscaler credential predates the cluster id; re-issue it")
 	}
 	return owner, name, id, nil
 }

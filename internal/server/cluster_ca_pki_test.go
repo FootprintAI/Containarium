@@ -63,11 +63,23 @@ func dialWithCert(t *testing.T, pki *ClusterPKI, addr string, certPEM, keyPEM []
 	return capb.NewCloudProviderClient(conn)
 }
 
+// clusterIDOf returns the immutable id of a cluster the test created. A
+// cluster machine certificate carries it (#3689): a name-only certificate is
+// refused since stage 3b.
+func clusterIDOf(t *testing.T, srv *ClusterServer, owner, name string) string {
+	t.Helper()
+	c, err := srv.Store().Get(context.Background(), owner, name)
+	if err != nil {
+		t.Fatalf("load cluster %s/%s: %v", owner, name, err)
+	}
+	return c.ID
+}
+
 func TestCAMTLS_CertCNIsTheIdentity(t *testing.T) {
 	pki, addr, srv, _ := mtlsRig(t)
 	mustCreate(t, srv, tenantCtx("alice"), "demo")
 
-	cert, key, err := pki.MintClientCert("alice", "demo", "")
+	cert, key, err := pki.MintClientCert("alice", "demo", clusterIDOf(t, srv, "alice", "demo"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,10 +98,12 @@ func TestCAMTLS_CertCNIsTheIdentity(t *testing.T) {
 func TestCAMTLS_WrongClusterCertIsRefused(t *testing.T) {
 	pki, addr, srv, _ := mtlsRig(t)
 	mustCreate(t, srv, tenantCtx("alice"), "demo")
+	mustCreate(t, srv, tenantCtx("alice"), "other")
 
-	// A valid cert for a DIFFERENT cluster passes the handshake but
-	// cannot touch demo's node groups.
-	cert, key, err := pki.MintClientCert("alice", "other", "")
+	// A valid, id-bearing cert for a DIFFERENT cluster passes the handshake
+	// but cannot touch demo's node groups. It carries a real id, so the
+	// refusal is the cluster mismatch and not the name-only refusal.
+	cert, key, err := pki.MintClientCert("alice", "other", clusterIDOf(t, srv, "alice", "other"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,6 +111,30 @@ func TestCAMTLS_WrongClusterCertIsRefused(t *testing.T) {
 	_, err = client.NodeGroupTargetSize(context.Background(), &capb.NodeGroupTargetSizeRequest{Id: "alice/demo/small"})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("wrong-cluster cert = %v, want PermissionDenied", err)
+	}
+}
+
+// Stage 3b of #3689: a certificate with no cluster id is refused outright,
+// even though it names a real cluster and passes the handshake. The message
+// tells the operator what to do.
+func TestCAMTLS_NameOnlyCertIsRefused(t *testing.T) {
+	pki, addr, srv, _ := mtlsRig(t)
+	mustCreate(t, srv, tenantCtx("alice"), "demo")
+
+	cert, key, err := pki.MintClientCert("alice", "demo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := dialWithCert(t, pki, addr, cert, key)
+	_, err = client.NodeGroups(context.Background(), &capb.NodeGroupsRequest{})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("name-only cert = %v, want PermissionDenied", err)
+	}
+	if !strings.Contains(err.Error(), "re-issue") {
+		t.Fatalf("refusal should say to re-issue the credential, got %q", err)
+	}
+	if strings.Contains(err.Error(), "demo") || strings.Contains(err.Error(), "alice") {
+		t.Fatalf("refusal must not echo the owner or cluster name, got %q", err)
 	}
 }
 
