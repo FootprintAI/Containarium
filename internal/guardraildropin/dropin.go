@@ -42,7 +42,9 @@ const (
 	// many results one after another (PostToolBatch) can exceed it, and
 	// the client then kills the hook and blocks.
 	DefaultHookTimeout = 15 * time.Second
-	// DefaultEngineAddr is where the engine service listens in a box.
+	// DefaultEngineAddr is where a separately packaged engine service
+	// listens in a box: the default address for an operator's unit. The
+	// built-in engine has its own, ReferenceEngineAddr.
 	DefaultEngineAddr = "unix:///run/containarium-engine/engine.sock"
 	// DefaultMinClientVersion is the oldest Claude Code the check accepts.
 	// 2.1.326 is the only version the drop-in's behaviour was tested on; the

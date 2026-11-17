@@ -101,6 +101,7 @@ guardrail hook
 guardrail dropin coverage
 guardrail dropin disable
 guardrail dropin enable
+guardrail engine serve
 guardrail keygen
 guardrail policy get
 guardrail policy set

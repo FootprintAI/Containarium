@@ -164,10 +164,10 @@ func init() {
 		"Oldest Claude Code version the guardrail hook coverage check accepts; an older client is reported as not covered")
 	daemonCmd.Flags().DurationVar(&daemonGuardrailHook.HookTimeout, "guardrail-hook-timeout", guardraildropin.DefaultHookTimeout,
 		"Per-hook timeout written into the guardrail hook drop-in (whole seconds); a hook that exceeds it blocks the tool call. Keep it above the engine service's per-scan deadline")
-	daemonCmd.Flags().StringVar(&daemonGuardrailHook.EngineUnit, "guardrail-hook-engine-unit", guardraildropin.DefaultEngineUnit,
-		"systemd unit of the engine service inside a box, checked for coverage; \"none\" skips the unit check")
-	daemonCmd.Flags().StringVar(&daemonGuardrailHook.EngineAddr, "guardrail-hook-engine", guardraildropin.DefaultEngineAddr,
-		"Address of the engine service inside a box, passed to every hook as --engine: unix://<absolute path> or a loopback host:port. \"none\" passes none, and the hook scans with its in-process reference rules")
+	daemonCmd.Flags().StringVar(&daemonGuardrailHook.EngineUnit, "guardrail-hook-engine-unit", guardraildropin.EngineBuiltin,
+		"Engine service inside a box. \"builtin\" = the daemon installs the in-tree reference engine as "+guardraildropin.ReferenceEngineUnit+", starts it, adds the box user to the socket's group, and removes the unit when the hook is switched off. Any other value names a systemd unit you provide: the daemon installs none and only checks that it is active. \"none\" skips the unit check")
+	daemonCmd.Flags().StringVar(&daemonGuardrailHook.EngineAddr, "guardrail-hook-engine", "",
+		"Address of the engine service inside a box, passed to every hook as --engine: unix://<absolute path> or a loopback host:port. Empty = the built-in engine's socket ("+guardraildropin.ReferenceEngineAddr+"), or "+guardraildropin.DefaultEngineAddr+" when --guardrail-hook-engine-unit names your own unit. It cannot be set to anything else with the built-in engine. \"none\" passes none, and the hook scans with its in-process reference rules")
 	daemonCmd.Flags().StringVar(&daemonGuardrailHook.HookBinary, "guardrail-hook-binary", "",
 		"Host path of the containarium binary copied into boxes as the hook command. It must be statically linked (CGO_ENABLED=0), as the released client binary is. Empty = this daemon's own executable, which is refused if it is dynamically linked")
 	daemonCmd.Flags().DurationVar(&daemonGuardrailHook.ExecTimeout, "guardrail-hook-exec-timeout", guardraildropin.DefaultExecTimeout,
