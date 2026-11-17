@@ -169,6 +169,53 @@ func TestStartContainer_ExplicitStartLiftsTheHold(t *testing.T) {
 	}
 }
 
+// Only an operator releases a hold (#3721): a tenant-level token starting a
+// held box is refused with PermissionDenied, the box stays stopped and the
+// hold stays in place.
+func TestStartContainer_TenantCannotReleaseHold(t *testing.T) {
+	b := newHoldTestBox("alice", "Stopped", map[string]string{
+		incus.HoldKey:              "true",
+		incus.HoldPrevAutostartKey: "true",
+		incus.BootAutostartKey:     "false",
+	})
+	_, err := b.server().StartContainer(ctxAs("alice", false), &pb.StartContainerRequest{Username: "alice"})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("code = %v (err %v), want PermissionDenied", status.Code(err), err)
+	}
+	if msg := status.Convert(err).Message(); !strings.Contains(msg, "held") || !strings.Contains(msg, "only an operator") {
+		t.Errorf("message %q does not name the hold and that only an operator can release it", msg)
+	}
+	if b.starts != 0 || b.state() != "Stopped" {
+		t.Errorf("starts = %d, state = %q; a tenant must not start a held box", b.starts, b.state())
+	}
+	if b.cfg[incus.HoldKey] != "true" || b.cfg[incus.BootAutostartKey] != "false" {
+		t.Errorf("the refused tenant start changed the hold: config = %v", b.cfg)
+	}
+}
+
+// An operator-level (admin role) token still releases the hold by starting
+// the box, and the release is logged.
+func TestStartContainer_OperatorReleasesHold(t *testing.T) {
+	b := newHoldTestBox("alice", "Stopped", map[string]string{
+		incus.HoldKey:              "true",
+		incus.HoldPrevAutostartKey: "true",
+		incus.BootAutostartKey:     "false",
+	})
+	logs := captureLogs(t)
+	if _, err := b.server().StartContainer(ctxAs("ops", true), &pb.StartContainerRequest{Username: "alice"}); err != nil {
+		t.Fatalf("StartContainer: %v", err)
+	}
+	if b.starts != 1 || b.state() != "Running" {
+		t.Errorf("starts = %d, state = %q; want the box started once", b.starts, b.state())
+	}
+	if _, held := b.cfg[incus.HoldKey]; held {
+		t.Error("the hold was not cleared by an operator start")
+	}
+	if !strings.Contains(logs.String(), `[hold] released box="alice"`) {
+		t.Errorf("release was not logged:\n%s", logs.String())
+	}
+}
+
 // A start that respects the hold is refused and changes nothing.
 func TestStartContainer_RespectHoldRefusesHeldBox(t *testing.T) {
 	b := newHoldTestBox("alice", "Stopped", map[string]string{incus.HoldKey: "true", incus.BootAutostartKey: "false"})

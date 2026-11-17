@@ -1015,8 +1015,9 @@ type Container struct {
 	// Whether an operator hold is on the box (#3721). A held box is kept
 	// stopped: the daemon does not start it on a host or Incus restart, on an
 	// HTTP wake, or for a skill or crew run. Set by StopContainer with
-	// hold = true and cleared only by a StartContainer that does not set
-	// respect_hold. Read-only; backed by the user.containarium.hold Incus
+	// hold = true and cleared only by an operator-level (admin role)
+	// StartContainer that does not set respect_hold. Read-only; backed by the
+	// user.containarium.hold Incus
 	// config key, so it survives a daemon restart.
 	Held          bool `protobuf:"varint,33,opt,name=held,proto3" json:"held,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -2587,10 +2588,12 @@ type StartContainerRequest struct {
 	ReadyTimeoutSeconds int32 `protobuf:"varint,3,opt,name=ready_timeout_seconds,json=readyTimeoutSeconds,proto3" json:"ready_timeout_seconds,omitempty"`
 	// When true, a held box (see StopContainerRequest.hold) is not started:
 	// the call fails with FAILED_PRECONDITION and the hold stays. When false
-	// (the default) the start is the operator's explicit start, which lifts
-	// the hold. Callers that start a box on someone else's behalf (the
-	// daemon's wake-on-HTTP path, a scheduler) set this so they cannot
-	// release a hold (#3721).
+	// (the default) the start is an explicit start: from an operator-level
+	// caller (admin role) it lifts the hold; from a tenant-level caller it
+	// fails with PERMISSION_DENIED and the hold stays, because only an
+	// operator can release a hold. Callers that start a box on someone
+	// else's behalf (the daemon's wake-on-HTTP path, a scheduler) set this so
+	// they cannot release a hold (#3721).
 	RespectHold   bool `protobuf:"varint,4,opt,name=respect_hold,json=respectHold,proto3" json:"respect_hold,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2731,7 +2734,8 @@ type StopContainerRequest struct {
 	// Timeout in seconds for graceful shutdown (default: 30)
 	Timeout int32 `protobuf:"varint,3,opt,name=timeout,proto3" json:"timeout,omitempty"`
 	// Put an operator hold on the box (#3721): stop it and keep it stopped
-	// until a StartContainer lifts the hold. While held the daemon does not
+	// until an operator-level StartContainer lifts the hold (a tenant-level
+	// start is refused with PERMISSION_DENIED). While held the daemon does not
 	// start the box on its own (boot.autostart is turned off, HTTP wake is
 	// refused, skill and crew runs fail with FAILED_PRECONDITION). The hold is
 	// stored on the instance, so it survives a daemon or host restart. Valid

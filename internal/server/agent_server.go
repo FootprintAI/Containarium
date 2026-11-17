@@ -1215,7 +1215,7 @@ func (s *AgentSkillServer) provisionBoxOnly(ctx context.Context, skill *pb.Agent
 				// stays stopped and the run is refused.
 				if info.Held {
 					return "", nil, false, status.Errorf(codes.FailedPrecondition,
-						"agent box %s is held by the operator and was not started; start the box explicitly to lift the hold", name)
+						"agent box %s is held by the operator and was not started; only an operator can release the hold by starting the box", name)
 				}
 				if err := s.recipes.containers.manager.Start(name); err != nil {
 					return "", nil, false, status.Errorf(codes.Internal, "failed to start existing agent box %s: %v", name, err)

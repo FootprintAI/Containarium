@@ -22,7 +22,8 @@ var stopCmd = &cobra.Command{
 With --hold the box is put on an operator hold: the daemon will not start it
 on its own (not when the host or Incus restarts, not for an HTTP request to
 one of its routes, not for a skill or crew run) until it is started
-explicitly with 'containarium wake <box>', which lifts the hold. The hold is
+explicitly by an operator (admin role) with 'containarium wake <box>', which
+lifts the hold; a tenant token cannot start or release a held box. The hold is
 stored on the box, so it survives a daemon or host restart. --hold also works
 on a box that is already stopped.`,
 	Args: cobra.ExactArgs(1),

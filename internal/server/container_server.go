@@ -1945,16 +1945,25 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		return nil, err
 	}
 
-	// Operator hold (#3721). An explicit start lifts the hold; a start made
-	// on someone else's behalf (respect_hold: wake-on-HTTP) is refused and
-	// leaves it. Checked before the dataset is unlocked or anything starts.
-	// A box that is not on this backend is left to its own backend: the
-	// flag travels with the forwarded request.
+	// Operator hold (#3721). An explicit start by an operator-level caller
+	// (admin role) lifts the hold; a tenant-level start is refused, and a
+	// start made on someone else's behalf (respect_hold: wake-on-HTTP) is
+	// refused and leaves it. Checked before the dataset is unlocked or
+	// anything starts. A box that is not on this backend is left to its own
+	// backend: the flag and the caller's token travel with the forwarded
+	// request.
 	if _, isK8s := s.k8sBoxes(); !isK8s {
 		if cur, gerr := s.manager.Get(req.Username); gerr == nil && cur != nil && cur.Held {
 			if req.RespectHold {
 				return nil, status.Errorf(codes.FailedPrecondition,
 					"box %s is held by the operator and was not started; an explicit start lifts the hold", req.Username)
+			}
+			if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+				if status.Code(err) != codes.PermissionDenied {
+					return nil, err
+				}
+				return nil, status.Errorf(codes.PermissionDenied,
+					"box %s is held by the operator and was not started; only an operator can release the hold", req.Username)
 			}
 			if _, err := s.manager.Release(req.Username); err != nil {
 				return nil, status.Errorf(codes.Internal, "failed to lift the hold on %s, box not started: %v", req.Username, err)
