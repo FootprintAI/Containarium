@@ -673,6 +673,7 @@ const HoldPrevAutostartKey = "user.containarium.hold_prev_autostart"
 // BootAutostartKey is the Incus key that makes Incus start an instance when
 // the host or Incus itself restarts.
 const BootAutostartKey = "boot.autostart"
+
 // GuardrailHookKey is the Incus config key storing the per-box switch of the
 // managed guardrail hook drop-in (#3762; internal/guardraildropin).
 const GuardrailHookKey = "user.containarium.guardrail_hook"
