@@ -251,3 +251,30 @@ func must(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+// #3761: a private key is flagged through its END line, so redaction takes
+// the key material and not just the header. A header with no key after it
+// (in prose, or a truncated file) is still flagged on its own.
+func TestRulesEngine_PrivateKeyCoversTheWholeBlock(t *testing.T) {
+	const begin, end = "-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"
+	block := begin + "\nMIIEsynthetic+/0123\nabcdSYNTHETIC==\n" + end
+	for name, tc := range map[string]struct{ text, want string }{
+		"whole block":     {"key:\n" + block + "\ntail", block},
+		"header in prose": {"the line " + begin + " starts a key", begin},
+	} {
+		resp, err := (RulesEngine{}).Scan(context.Background(), &pb.GuardrailScanRequest{
+			Units: []*pb.GuardrailTextUnit{{UnitId: "u", Text: tc.text}},
+			Kinds: []pb.GuardrailKind{pb.GuardrailKind_GUARDRAIL_KIND_SECRET},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Findings) != 1 {
+			t.Fatalf("%s: %d findings, want 1", name, len(resp.Findings))
+		}
+		f := resp.Findings[0]
+		if got := string([]rune(tc.text)[f.Start:f.End]); got != tc.want {
+			t.Errorf("%s: flagged %q, want %q", name, got, tc.want)
+		}
+	}
+}

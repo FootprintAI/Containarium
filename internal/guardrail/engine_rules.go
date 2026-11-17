@@ -43,8 +43,11 @@ var referenceRules = []rule{
 		regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`), nil},
 	{pb.GuardrailKind_GUARDRAIL_KIND_PII, "CREDIT_CARD",
 		regexp.MustCompile(`\b(?:\d[ -]?){13,19}\b`), luhnOK},
+	// The header, and the body through the END line when it follows: with
+	// the header alone flagged, redaction would leave the key material in
+	// place (#3761).
 	{pb.GuardrailKind_GUARDRAIL_KIND_SECRET, "PRIVATE_KEY",
-		regexp.MustCompile(`-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----`), nil},
+		regexp.MustCompile(`-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----(?:[A-Za-z0-9+/=\s]*-----END (?:[A-Z]+ )?PRIVATE KEY-----)?`), nil},
 	{pb.GuardrailKind_GUARDRAIL_KIND_SECRET, "AWS_ACCESS_KEY_ID",
 		regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`), nil},
 
