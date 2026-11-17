@@ -58,6 +58,7 @@ func ListenStartup(addr, reason string) (*StartupListener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bind %s for the startup health endpoint: %w", addr, err)
 	}
+	lis = NewPeerTLSListener(lis, currentPeerTLSCert) // #3515
 	sl := &StartupListener{lis: lis, reason: reason, done: make(chan struct{})}
 	sl.srv = &http.Server{Handler: sl, ReadHeaderTimeout: 30 * time.Second}
 	go func() {

@@ -30,6 +30,8 @@ var (
 	sentinelProject                string
 	sentinelBackendAddr            string
 	sentinelHealthPort             int
+	sentinelBackendTLS             bool
+	sentinelBackendInsecureHTTP    bool
 	sentinelCheckInterval          time.Duration
 	sentinelHTTPPort               int
 	sentinelHTTPSPort              int
@@ -122,6 +124,10 @@ func init() {
 	sentinelCmd.Flags().StringVar(&sentinelProject, "project", "", "Cloud project ID (required for gcp provider)")
 	sentinelCmd.Flags().StringVar(&sentinelBackendAddr, "backend-addr", "", "Direct backend IP/host (for local testing with provider=none)")
 	sentinelCmd.Flags().IntVar(&sentinelHealthPort, "health-port", 8080, "TCP port to health-check on backend")
+	sentinelCmd.Flags().BoolVar(&sentinelBackendTLS, "backend-tls", false,
+		"Call backends' /certs, /authorized-keys, SSH authz and session ingest over TLS verified against the pool's peer CA (#3515)")
+	sentinelCmd.Flags().BoolVar(&sentinelBackendInsecureHTTP, "backend-insecure-http", false,
+		"Explicitly accept plain http to backends; required once TLS becomes the default. Every plaintext call logs a warning (#3515)")
 	sentinelCmd.Flags().DurationVar(&sentinelCheckInterval, "check-interval", 15*time.Second, "Health check interval")
 	sentinelCmd.Flags().IntVar(&sentinelHTTPPort, "http-port", 80, "Maintenance page HTTP port")
 	sentinelCmd.Flags().IntVar(&sentinelHTTPSPort, "https-port", 443, "Maintenance page HTTPS port")
@@ -339,7 +345,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 
 			config := sentinel.Config{
 				SSHUpstreamPolicy: sentinelUpstreamPolicy, SSHUpstreamState: sentinelUpstreamState, SSHUpstreamSocket: sentinelUpstreamSocket,
-				HealthPort:                sentinelHealthPort,
+				HealthPort: sentinelHealthPort, BackendTLS: sentinelBackendTLS, BackendInsecureHTTP: sentinelBackendInsecureHTTP,
 				CheckInterval:             sentinelCheckInterval,
 				HTTPPort:                  sentinelHTTPPort,
 				HTTPSPort:                 sentinelHTTPSPort,
@@ -453,7 +459,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 
 		config := sentinel.Config{
 			SSHUpstreamPolicy: sentinelUpstreamPolicy, SSHUpstreamState: sentinelUpstreamState, SSHUpstreamSocket: sentinelUpstreamSocket,
-			HealthPort:                sentinelHealthPort,
+			HealthPort: sentinelHealthPort, BackendTLS: sentinelBackendTLS, BackendInsecureHTTP: sentinelBackendInsecureHTTP,
 			CheckInterval:             sentinelCheckInterval,
 			HTTPPort:                  sentinelHTTPPort,
 			HTTPSPort:                 sentinelHTTPSPort,
@@ -543,7 +549,7 @@ func runSentinel(cmd *cobra.Command, args []string) error {
 
 	config := sentinel.Config{
 		SSHUpstreamPolicy: sentinelUpstreamPolicy, SSHUpstreamState: sentinelUpstreamState, SSHUpstreamSocket: sentinelUpstreamSocket,
-		HealthPort:                sentinelHealthPort,
+		HealthPort: sentinelHealthPort, BackendTLS: sentinelBackendTLS, BackendInsecureHTTP: sentinelBackendInsecureHTTP,
 		CheckInterval:             sentinelCheckInterval,
 		HTTPPort:                  sentinelHTTPPort,
 		HTTPSPort:                 sentinelHTTPSPort,
@@ -606,6 +612,7 @@ func startSSHSessionShipper(ctx context.Context, m *sentinel.Manager) func() {
 		Resolver:   m.SSHSessionBackendResolver(),
 		Tokens:     m.AuditIngestTokens(),
 		BackendURL: m.ShipperBackendURL,
+		HTTPClient: m.BackendHTTPClient(15 * time.Minute), // the typed client's default timeout
 	}, opts)
 
 	ctx, cancel := context.WithCancel(ctx)

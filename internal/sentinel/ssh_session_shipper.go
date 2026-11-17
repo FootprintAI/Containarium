@@ -2,6 +2,8 @@ package sentinel
 
 import (
 	"fmt"
+	"net/http"
+	"time"
 
 	"github.com/footprintai/containarium/internal/sentinel/sshsession"
 )
@@ -48,7 +50,8 @@ func (f FileAuditIngestTokens) Backends() ([]string, error) {
 
 // ShipperBackendURL is the REST base URL of a backend's daemon, the same
 // address keysync polls (backend IP + the sentinel's health port, where the
-// daemon's gateway also serves /v1/...). The shipper's client is built from it
+// daemon's gateway also serves /v1/...); https with --backend-tls, called
+// with BackendHTTPClient (#3515). The shipper's client is built from it
 // in internal/cmd, not here: this package must not import internal/client
 // (internal/client's tests import internal/server, which imports this
 // package — an import cycle in the test build).
@@ -57,7 +60,14 @@ func (m *Manager) ShipperBackendURL(backendID string) (string, error) {
 	if b == nil {
 		return "", fmt.Errorf("backend %q is not in the sentinel's pool", backendID)
 	}
-	return fmt.Sprintf("http://%s:%d", b.IP, m.config.HealthPort), nil
+	return orDefaultTransport(m.backendTransport).BaseURL(b.ID, b.IP, m.config.HealthPort)
+}
+
+// BackendHTTPClient is the client for calls to ShipperBackendURL: verified
+// TLS with --backend-tls, else plain http with a warning per call (#3515).
+// timeout 0 means none.
+func (m *Manager) BackendHTTPClient(timeout time.Duration) *http.Client {
+	return orDefaultTransport(m.backendTransport).Client(timeout)
 }
 
 // SSHSessionBackendResolver maps a record's login to the backend sshpiper

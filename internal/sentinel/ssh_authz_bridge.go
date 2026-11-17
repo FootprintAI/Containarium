@@ -61,7 +61,7 @@ func (m *Manager) startSSHAuthzBridge(path string) (func(), error) {
 		_ = ln.Close()
 		return nil, err
 	}
-	authorizer := &sshauthz.HTTPAuthorizer{BackendURL: m.ShipperBackendURL, Sign: SignRequest}
+	authorizer := &sshauthz.HTTPAuthorizer{BackendURL: m.ShipperBackendURL, Sign: SignRequest, Client: m.BackendHTTPClient(0)}
 	resolver := authzKeyStoreResolver{keyStoreResolver{ks: m.keyStore, pool: m.backends}}
 	srv := &http.Server{Handler: sshauthz.BridgeHandler(resolver, authorizer), ReadHeaderTimeout: time.Second, ReadTimeout: 5 * time.Second}
 	go func() { _ = srv.Serve(ln) }()

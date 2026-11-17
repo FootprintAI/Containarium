@@ -58,6 +58,11 @@ type Config struct {
 	UnhealthyThreshold int
 	BinaryPort         int           // port to serve containarium binary for spot VM downloads (0 = disabled)
 	RecoveryTimeout    time.Duration // warn if recovery takes longer than this (0 = no warning)
+	// BackendTLS (--backend-tls) verifies sentinel→backend gateway calls
+	// over TLS against the pool's peer CA; BackendInsecureHTTP
+	// (--backend-insecure-http) is the explicit plaintext opt-in (#3515).
+	BackendTLS          bool
+	BackendInsecureHTTP bool
 	// RecoveryBackoffInitial / RecoveryBackoffMax bound the periodic
 	// re-attempt of StartInstance while the backend is stuck down (e.g.
 	// spot capacity unavailable). Without this the sentinel attempts a
@@ -177,6 +182,8 @@ type Manager struct {
 	stopMaintenance func() // stops the HTTP/HTTPS maintenance servers
 	certStore       *CertStore
 	keyStore        *KeyStore
+	// backendTransport carries every sentinel→backend gateway call (#3515).
+	backendTransport *BackendTransport
 
 	// keyResyncGates serializes event-driven key resyncs per backend so a
 	// burst of container creates collapses into the minimum number of
@@ -456,6 +463,9 @@ func NewManager(config Config, provider CloudProvider) *Manager {
 		exitFn:     func() { os.Exit(1) },
 	}
 	m.certStore.SetScopeResolver(m.certScopeFor)
+	m.backendTransport = &BackendTransport{TLS: config.BackendTLS, InsecureHTTP: config.BackendInsecureHTTP, CAPEM: m.CACertPEM}
+	m.certStore.SetTransport(m.backendTransport)
+	m.keyStore.SetTransport(m.backendTransport)
 	if raw := os.Getenv(appconfig.EnvSentinelAuthSecret); raw != "" {
 		if len(raw) < auth.SentinelMinSecretLen {
 			// #nosec G706 -- both args are ints (len(raw) and a
@@ -1239,7 +1249,7 @@ func (m *Manager) switchToProxy(backend *Backend) error {
 		if err := m.keyStore.Sync(b.ID, b.IP, m.config.HealthPort); err != nil {
 			log.Printf("[sentinel] key sync for %q on proxy switch failed: %v", b.ID, err)
 		}
-		if err := m.keyStore.PushSentinelKey(b.IP, m.config.HealthPort); err != nil {
+		if err := m.keyStore.PushSentinelKey(b.ID, b.IP, m.config.HealthPort); err != nil {
 			log.Printf("[sentinel] push sentinel key for %q failed: %v", b.ID, err)
 		}
 	}

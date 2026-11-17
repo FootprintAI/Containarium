@@ -3402,6 +3402,9 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 			ds.peerPool.LogPlainHTTPOnce(err)
 		} else if ds.peerPool.PeerMTLSEnabled() {
 			ds.peerPool.StartCertRenewal(ctx)
+			// #3515: serve the peer leaf on the gateway port too, so a
+			// sentinel with --backend-tls can verify this backend.
+			gateway.SetPeerTLSCertificate(ds.peerPool.PeerTLSCertificate)
 		} else {
 			// Bootstrap skipped (no sentinel URL or HMAC secret): same
 			// plain-HTTP state, made visible instead of silent.

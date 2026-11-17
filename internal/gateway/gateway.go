@@ -1079,7 +1079,12 @@ func (gs *GatewayServer) Start(ctx context.Context) error {
 		// before the startup waits; take it over rather than rebinding.
 		return gs.startupListener.Serve(httpMux)
 	}
-	return http.ListenAndServe(addr, httpMux)
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	// #3515: TLS with the peer leaf on the same port, once peer PKI is up.
+	return http.Serve(NewPeerTLSListener(lis, currentPeerTLSCert), httpMux)
 }
 
 // errorBody is the JSON every /v1 REST error is served as. error and code are

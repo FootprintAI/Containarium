@@ -37,6 +37,10 @@ type CertStore struct {
 	// for. Nil means no backend is registered for anything.
 	scopeFor func(backendID string) CertScope
 
+	// transport carries the /certs call (#3515); nil means plain http
+	// with a warning.
+	transport *BackendTransport
+
 	lastSync    time.Time
 	lastSyncErr error
 	syncedCount int
@@ -72,6 +76,13 @@ func (cs *CertStore) SetScopeResolver(fn func(backendID string) CertScope) {
 	cs.scopeFor = fn
 }
 
+// SetTransport sets the sentinel→backend transport for /certs (#3515).
+func (cs *CertStore) SetTransport(t *BackendTransport) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.transport = t
+}
+
 func (cs *CertStore) scopeOf(backendID string) CertScope {
 	cs.mu.RLock()
 	fn := cs.scopeFor
@@ -89,11 +100,19 @@ func (cs *CertStore) scopeOf(backendID string) CertScope {
 func (cs *CertStore) Sync(backendID, backendIP string, httpPort int) error {
 	cs.mu.RLock()
 	gen := cs.dropGen[backendID]
+	tr := orDefaultTransport(cs.transport)
 	cs.mu.RUnlock()
 
-	url := fmt.Sprintf("http://%s:%d/certs", backendIP, httpPort)
+	base, err := tr.BaseURL(backendID, backendIP, httpPort)
+	if err != nil {
+		cs.mu.Lock()
+		cs.lastSyncErr = err
+		cs.mu.Unlock()
+		return fmt.Errorf("cert sync: %w", err)
+	}
+	url := base + "/certs"
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := tr.Client(10 * time.Second)
 	req, err := newSignedRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("cert sync: build request: %w", err)

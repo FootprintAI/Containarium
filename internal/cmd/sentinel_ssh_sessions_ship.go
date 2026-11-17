@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -48,6 +49,9 @@ type shipperSources struct {
 	Resolver   sshsession.BackendResolver
 	Tokens     sshsession.TokenSource
 	BackendURL func(backendID string) (string, error)
+	// HTTPClient carries the calls to BackendURL (#3515); nil means the
+	// typed client's default.
+	HTTPClient *http.Client
 }
 
 // inProcessShipConfig assembles the multi-backend shipper configuration. The
@@ -67,7 +71,7 @@ func inProcessShipConfig(src shipperSources, opts sentinelShipperOptions) sshses
 			if err != nil {
 				return nil, err
 			}
-			return client.NewHTTPClient(base, token)
+			return client.NewHTTPClient(base, token, client.WithHTTPClient(src.HTTPClient))
 		},
 		Rejected: client.IsIngestRejected,
 		Logf:     func(format string, args ...any) { log.Printf("[sentinel] ssh-session-shipper: "+format, args...) },
