@@ -45,9 +45,12 @@ var referenceRules = []rule{
 		regexp.MustCompile(`\b(?:\d[ -]?){13,19}\b`), luhnOK},
 	// The header, and the body through the END line when it follows: with
 	// the header alone flagged, redaction would leave the key material in
-	// place (#3761).
+	// place (#3761). The body may hold header lines (Proc-Type: 4,ENCRYPTED)
+	// and is matched lazily, and never across "-----", so two blocks stay
+	// two findings. With no END line (a truncated read) the header takes
+	// the key-like lines after it: base64, blank, or "Name: value".
 	{pb.GuardrailKind_GUARDRAIL_KIND_SECRET, "PRIVATE_KEY",
-		regexp.MustCompile(`-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----(?:[A-Za-z0-9+/=\s]*-----END (?:[A-Z]+ )?PRIVATE KEY-----)?`), nil},
+		regexp.MustCompile(`(?m)-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----(?:(?:[A-Za-z0-9+/=:,.\s]|-[A-Za-z0-9])*?-----END (?:[A-Z]+ )?PRIVATE KEY-----|(?:\r?\n(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z0-9-]*:[ \t][^\r\n]*)\r?$)*)`), nil},
 	{pb.GuardrailKind_GUARDRAIL_KIND_SECRET, "AWS_ACCESS_KEY_ID",
 		regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`), nil},
 

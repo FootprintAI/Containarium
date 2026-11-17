@@ -106,7 +106,7 @@ rotation and revocation" in `guardrail-inbound-and-server-policy.md`.
 
 With no `--engine`, the in-tree **reference rules engine** runs: a handful
 of regular expressions (email, US phone, SSN, IPv4, Luhn-checked card
-numbers, PEM private-key headers, one cloud access-key shape). It exists so
+numbers, PEM private-key blocks, one cloud access-key shape). It exists so
 the flow is runnable and testable on a fresh checkout. It is not a detector
 anyone should ship data on, and the CLI says so on stderr every time it is
 used.
