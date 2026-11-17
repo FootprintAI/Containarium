@@ -42,6 +42,8 @@ type GRPCClient struct {
 	modelGatewayClient pb.ModelGatewayServiceClient
 	// guardrailPolicyClient is the server-side guardrail policy (#2368).
 	guardrailPolicyClient pb.GuardrailPolicyServiceClient
+	// guardrailHookClient is the per-box managed hook drop-in (#3762).
+	guardrailHookClient pb.GuardrailHookServiceClient
 	// retentionClient is the retention policy and legal holds (#2875).
 	retentionClient pb.RetentionServiceClient
 }
@@ -133,6 +135,7 @@ func NewGRPCClient(serverAddr string, certsDir string, insecureConn bool) (*GRPC
 		modelGatewayClient:  modelGatewayClient,
 
 		guardrailPolicyClient: pb.NewGuardrailPolicyServiceClient(conn),
+		guardrailHookClient:   pb.NewGuardrailHookServiceClient(conn),
 		retentionClient:       pb.NewRetentionServiceClient(conn),
 	}, nil
 }
@@ -1503,6 +1506,42 @@ func (c *GRPCClient) GetGuardrailStatus() (*pb.GetGuardrailStatusResponse, error
 		return nil, fmt.Errorf("get guardrail status: %w", err)
 	}
 	return resp, nil
+}
+
+// SetGuardrailHook switches the managed guardrail hook drop-in for one box
+// via gRPC (#3762; admin only).
+func (c *GRPCClient) SetGuardrailHook(username string, enabled bool) (*pb.GuardrailHookBoxCoverage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	resp, err := c.guardrailHookClient.SetGuardrailHook(ctx, &pb.SetGuardrailHookRequest{Username: username, Enabled: enabled})
+	if err != nil {
+		return nil, fmt.Errorf("set guardrail hook: %w", err)
+	}
+	return resp.GetBox(), nil
+}
+
+// GetGuardrailHookCoverage reads one box's guardrail hook coverage via gRPC
+// (#3762).
+func (c *GRPCClient) GetGuardrailHookCoverage(username string) (*pb.GuardrailHookBoxCoverage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.guardrailHookClient.GetGuardrailHookCoverage(ctx, &pb.GetGuardrailHookCoverageRequest{Username: username})
+	if err != nil {
+		return nil, fmt.Errorf("get guardrail hook coverage: %w", err)
+	}
+	return resp.GetBox(), nil
+}
+
+// ListGuardrailHookCoverage reads coverage for every box with the hook
+// switched on via gRPC (#3762; admin only).
+func (c *GRPCClient) ListGuardrailHookCoverage() ([]*pb.GuardrailHookBoxCoverage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := c.guardrailHookClient.ListGuardrailHookCoverage(ctx, &pb.ListGuardrailHookCoverageRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("list guardrail hook coverage: %w", err)
+	}
+	return resp.GetBoxes(), nil
 }
 
 // SetGuardrailPolicy replaces the server-side guardrail policy via gRPC
