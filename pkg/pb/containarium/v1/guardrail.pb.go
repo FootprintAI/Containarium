@@ -379,6 +379,91 @@ func (GuardrailBaselineMode) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{5}
 }
 
+// GuardrailHookCoverage is whether a box's coding agent runs the guardrail
+// hook (#3762; docs/architecture/guardrail.md, "Managed hook drop-in"). The
+// daemon derives it from outside the box user's control, on a period. It is
+// tamper-evident, not tamper-proof: a box user with sudo can change things
+// between two checks.
+type GuardrailHookCoverage int32
+
+const (
+	GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_UNSPECIFIED GuardrailHookCoverage = 0
+	// The drop-in and hook binary are in place and unchanged, the engine is
+	// running, the client meets the minimum version, and no long-running
+	// client process is missing its hook stamp.
+	GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_COVERED GuardrailHookCoverage = 1
+	// The switch is off for this box; the drop-in is not installed.
+	GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_FEATURE_OFF GuardrailHookCoverage = 2
+	// The switch is on but the drop-in or the hook binary is missing.
+	GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_NOT_INSTALLED GuardrailHookCoverage = 3
+	// The coding agent in the box is older than the daemon's minimum version.
+	GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_CLIENT_TOO_OLD GuardrailHookCoverage = 4
+	// The detector engine service in the box is not running.
+	GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING GuardrailHookCoverage = 5
+	// A client process has run for longer than the grace period with no hook
+	// stamp since it started (for example, a higher-ranked managed settings
+	// source skipped the drop-in).
+	GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_HOOKS_NOT_FIRING GuardrailHookCoverage = 6
+	// The drop-in or hook binary differs from what the daemon installed, or
+	// another managed settings file sets disableAllHooks.
+	GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_TAMPERED GuardrailHookCoverage = 7
+	// The check has not run yet, the box is not running, or the check failed.
+	GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_UNKNOWN GuardrailHookCoverage = 8
+)
+
+// Enum value maps for GuardrailHookCoverage.
+var (
+	GuardrailHookCoverage_name = map[int32]string{
+		0: "GUARDRAIL_HOOK_COVERAGE_UNSPECIFIED",
+		1: "GUARDRAIL_HOOK_COVERAGE_COVERED",
+		2: "GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_FEATURE_OFF",
+		3: "GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_NOT_INSTALLED",
+		4: "GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_CLIENT_TOO_OLD",
+		5: "GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING",
+		6: "GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_HOOKS_NOT_FIRING",
+		7: "GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_TAMPERED",
+		8: "GUARDRAIL_HOOK_COVERAGE_UNKNOWN",
+	}
+	GuardrailHookCoverage_value = map[string]int32{
+		"GUARDRAIL_HOOK_COVERAGE_UNSPECIFIED":                    0,
+		"GUARDRAIL_HOOK_COVERAGE_COVERED":                        1,
+		"GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_FEATURE_OFF":        2,
+		"GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_NOT_INSTALLED":      3,
+		"GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_CLIENT_TOO_OLD":     4,
+		"GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING": 5,
+		"GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_HOOKS_NOT_FIRING":   6,
+		"GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_TAMPERED":           7,
+		"GUARDRAIL_HOOK_COVERAGE_UNKNOWN":                        8,
+	}
+)
+
+func (x GuardrailHookCoverage) Enum() *GuardrailHookCoverage {
+	p := new(GuardrailHookCoverage)
+	*p = x
+	return p
+}
+
+func (x GuardrailHookCoverage) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (GuardrailHookCoverage) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_guardrail_proto_enumTypes[6].Descriptor()
+}
+
+func (GuardrailHookCoverage) Type() protoreflect.EnumType {
+	return &file_containarium_v1_guardrail_proto_enumTypes[6]
+}
+
+func (x GuardrailHookCoverage) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use GuardrailHookCoverage.Descriptor instead.
+func (GuardrailHookCoverage) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{6}
+}
+
 // GuardrailTextUnit is one piece of text handed to an engine. Offsets in
 // the findings it produces are Unicode CODE POINT offsets into `text` —
 // not bytes, not UTF-16 units — so every engine, whatever its runtime's
@@ -1824,6 +1909,371 @@ func (x *SetGuardrailBaselineModeResponse) GetBaseline() *GuardrailBaselineSetti
 	return nil
 }
 
+// GuardrailHookBoxCoverage is one box's switch and last coverage result.
+type GuardrailHookBoxCoverage struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Username string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	// Whether the operator has the guardrail hook switched on for this box.
+	Enabled  bool                  `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Coverage GuardrailHookCoverage `protobuf:"varint,3,opt,name=coverage,proto3,enum=containarium.v1.GuardrailHookCoverage" json:"coverage,omitempty"`
+	// One human-readable sentence saying why. Never file contents.
+	Detail string `protobuf:"bytes,4,opt,name=detail,proto3" json:"detail,omitempty"`
+	// When the daemon last checked; unset when it never has.
+	CheckedAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=checked_at,json=checkedAt,proto3" json:"checked_at,omitempty"`
+	// The coding agent version last read in the box; empty when not read.
+	ClientVersion string `protobuf:"bytes,6,opt,name=client_version,json=clientVersion,proto3" json:"client_version,omitempty"`
+	// Whether the last check found a coding agent for the box user. A box
+	// that is COVERED with this false has the drop-in in place and nothing
+	// that would run without it; it has not shown hooks firing.
+	ClientInstalled bool `protobuf:"varint,7,opt,name=client_installed,json=clientInstalled,proto3" json:"client_installed,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *GuardrailHookBoxCoverage) Reset() {
+	*x = GuardrailHookBoxCoverage{}
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GuardrailHookBoxCoverage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GuardrailHookBoxCoverage) ProtoMessage() {}
+
+func (x *GuardrailHookBoxCoverage) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GuardrailHookBoxCoverage.ProtoReflect.Descriptor instead.
+func (*GuardrailHookBoxCoverage) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *GuardrailHookBoxCoverage) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *GuardrailHookBoxCoverage) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *GuardrailHookBoxCoverage) GetCoverage() GuardrailHookCoverage {
+	if x != nil {
+		return x.Coverage
+	}
+	return GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_UNSPECIFIED
+}
+
+func (x *GuardrailHookBoxCoverage) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+func (x *GuardrailHookBoxCoverage) GetCheckedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CheckedAt
+	}
+	return nil
+}
+
+func (x *GuardrailHookBoxCoverage) GetClientVersion() string {
+	if x != nil {
+		return x.ClientVersion
+	}
+	return ""
+}
+
+func (x *GuardrailHookBoxCoverage) GetClientInstalled() bool {
+	if x != nil {
+		return x.ClientInstalled
+	}
+	return false
+}
+
+type SetGuardrailHookRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	Enabled       bool                   `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetGuardrailHookRequest) Reset() {
+	*x = SetGuardrailHookRequest{}
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetGuardrailHookRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetGuardrailHookRequest) ProtoMessage() {}
+
+func (x *SetGuardrailHookRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetGuardrailHookRequest.ProtoReflect.Descriptor instead.
+func (*SetGuardrailHookRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *SetGuardrailHookRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *SetGuardrailHookRequest) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+type SetGuardrailHookResponse struct {
+	state         protoimpl.MessageState    `protogen:"open.v1"`
+	Box           *GuardrailHookBoxCoverage `protobuf:"bytes,1,opt,name=box,proto3" json:"box,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetGuardrailHookResponse) Reset() {
+	*x = SetGuardrailHookResponse{}
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetGuardrailHookResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetGuardrailHookResponse) ProtoMessage() {}
+
+func (x *SetGuardrailHookResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetGuardrailHookResponse.ProtoReflect.Descriptor instead.
+func (*SetGuardrailHookResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *SetGuardrailHookResponse) GetBox() *GuardrailHookBoxCoverage {
+	if x != nil {
+		return x.Box
+	}
+	return nil
+}
+
+type GetGuardrailHookCoverageRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetGuardrailHookCoverageRequest) Reset() {
+	*x = GetGuardrailHookCoverageRequest{}
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetGuardrailHookCoverageRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetGuardrailHookCoverageRequest) ProtoMessage() {}
+
+func (x *GetGuardrailHookCoverageRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetGuardrailHookCoverageRequest.ProtoReflect.Descriptor instead.
+func (*GetGuardrailHookCoverageRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *GetGuardrailHookCoverageRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+type GetGuardrailHookCoverageResponse struct {
+	state         protoimpl.MessageState    `protogen:"open.v1"`
+	Box           *GuardrailHookBoxCoverage `protobuf:"bytes,1,opt,name=box,proto3" json:"box,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetGuardrailHookCoverageResponse) Reset() {
+	*x = GetGuardrailHookCoverageResponse{}
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetGuardrailHookCoverageResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetGuardrailHookCoverageResponse) ProtoMessage() {}
+
+func (x *GetGuardrailHookCoverageResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetGuardrailHookCoverageResponse.ProtoReflect.Descriptor instead.
+func (*GetGuardrailHookCoverageResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *GetGuardrailHookCoverageResponse) GetBox() *GuardrailHookBoxCoverage {
+	if x != nil {
+		return x.Box
+	}
+	return nil
+}
+
+type ListGuardrailHookCoverageRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListGuardrailHookCoverageRequest) Reset() {
+	*x = ListGuardrailHookCoverageRequest{}
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListGuardrailHookCoverageRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListGuardrailHookCoverageRequest) ProtoMessage() {}
+
+func (x *ListGuardrailHookCoverageRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListGuardrailHookCoverageRequest.ProtoReflect.Descriptor instead.
+func (*ListGuardrailHookCoverageRequest) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{27}
+}
+
+type ListGuardrailHookCoverageResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Every box whose switch is on, or was on and is still being cleaned up.
+	Boxes         []*GuardrailHookBoxCoverage `protobuf:"bytes,1,rep,name=boxes,proto3" json:"boxes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListGuardrailHookCoverageResponse) Reset() {
+	*x = ListGuardrailHookCoverageResponse{}
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListGuardrailHookCoverageResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListGuardrailHookCoverageResponse) ProtoMessage() {}
+
+func (x *ListGuardrailHookCoverageResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_containarium_v1_guardrail_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListGuardrailHookCoverageResponse.ProtoReflect.Descriptor instead.
+func (*ListGuardrailHookCoverageResponse) Descriptor() ([]byte, []int) {
+	return file_containarium_v1_guardrail_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *ListGuardrailHookCoverageResponse) GetBoxes() []*GuardrailHookBoxCoverage {
+	if x != nil {
+		return x.Boxes
+	}
+	return nil
+}
+
 var File_containarium_v1_guardrail_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_guardrail_proto_rawDesc = "" +
@@ -1934,7 +2384,28 @@ const file_containarium_v1_guardrail_proto_rawDesc = "" +
 	"\x1fSetGuardrailBaselineModeRequest\x12:\n" +
 	"\x04mode\x18\x01 \x01(\x0e2&.containarium.v1.GuardrailBaselineModeR\x04mode\"i\n" +
 	" SetGuardrailBaselineModeResponse\x12E\n" +
-	"\bbaseline\x18\x01 \x01(\v2).containarium.v1.GuardrailBaselineSettingR\bbaseline*\xa7\x01\n" +
+	"\bbaseline\x18\x01 \x01(\v2).containarium.v1.GuardrailBaselineSettingR\bbaseline\"\xb9\x02\n" +
+	"\x18GuardrailHookBoxCoverage\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x18\n" +
+	"\aenabled\x18\x02 \x01(\bR\aenabled\x12B\n" +
+	"\bcoverage\x18\x03 \x01(\x0e2&.containarium.v1.GuardrailHookCoverageR\bcoverage\x12\x16\n" +
+	"\x06detail\x18\x04 \x01(\tR\x06detail\x129\n" +
+	"\n" +
+	"checked_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcheckedAt\x12%\n" +
+	"\x0eclient_version\x18\x06 \x01(\tR\rclientVersion\x12)\n" +
+	"\x10client_installed\x18\a \x01(\bR\x0fclientInstalled\"O\n" +
+	"\x17SetGuardrailHookRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x18\n" +
+	"\aenabled\x18\x02 \x01(\bR\aenabled\"W\n" +
+	"\x18SetGuardrailHookResponse\x12;\n" +
+	"\x03box\x18\x01 \x01(\v2).containarium.v1.GuardrailHookBoxCoverageR\x03box\"=\n" +
+	"\x1fGetGuardrailHookCoverageRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\"_\n" +
+	" GetGuardrailHookCoverageResponse\x12;\n" +
+	"\x03box\x18\x01 \x01(\v2).containarium.v1.GuardrailHookBoxCoverageR\x03box\"\"\n" +
+	" ListGuardrailHookCoverageRequest\"d\n" +
+	"!ListGuardrailHookCoverageResponse\x12?\n" +
+	"\x05boxes\x18\x01 \x03(\v2).containarium.v1.GuardrailHookBoxCoverageR\x05boxes*\xa7\x01\n" +
 	"\rGuardrailKind\x12\x1e\n" +
 	"\x1aGUARDRAIL_KIND_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12GUARDRAIL_KIND_PII\x10\x01\x12\x19\n" +
@@ -1964,7 +2435,17 @@ const file_containarium_v1_guardrail_proto_rawDesc = "" +
 	"\x15GuardrailBaselineMode\x12'\n" +
 	"#GUARDRAIL_BASELINE_MODE_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bGUARDRAIL_BASELINE_MODE_LOG\x10\x01\x12!\n" +
-	"\x1dGUARDRAIL_BASELINE_MODE_BLOCK\x10\x022o\n" +
+	"\x1dGUARDRAIL_BASELINE_MODE_BLOCK\x10\x02*\xd6\x03\n" +
+	"\x15GuardrailHookCoverage\x12'\n" +
+	"#GUARDRAIL_HOOK_COVERAGE_UNSPECIFIED\x10\x00\x12#\n" +
+	"\x1fGUARDRAIL_HOOK_COVERAGE_COVERED\x10\x01\x123\n" +
+	"/GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_FEATURE_OFF\x10\x02\x125\n" +
+	"1GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_NOT_INSTALLED\x10\x03\x126\n" +
+	"2GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_CLIENT_TOO_OLD\x10\x04\x12:\n" +
+	"6GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING\x10\x05\x128\n" +
+	"4GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_HOOKS_NOT_FIRING\x10\x06\x120\n" +
+	",GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_TAMPERED\x10\a\x12#\n" +
+	"\x1fGUARDRAIL_HOOK_COVERAGE_UNKNOWN\x10\b2o\n" +
 	"\x16GuardrailEngineService\x12U\n" +
 	"\x04Scan\x12%.containarium.v1.GuardrailScanRequest\x1a&.containarium.v1.GuardrailScanResponse2\xbc\x13\n" +
 	"\x16GuardrailPolicyService\x12\xe6\x03\n" +
@@ -1975,7 +2456,15 @@ const file_containarium_v1_guardrail_proto_rawDesc = "" +
 	"\x12SetGuardrailPolicy\x12*.containarium.v1.SetGuardrailPolicyRequest\x1a+.containarium.v1.SetGuardrailPolicyResponse\"\x80\x05\x92A\xdd\x04\n" +
 	"\tGuardrail\x12\x1fSet the server guardrail policy\x1a\xae\x04Replace the cluster-wide guardrail policy and trusted signers. Validated first (no unspecified or duplicate kind, max_residual >= 0, every signer key_id equal to the SHA-256 of its Ed25519 key, every revoked key with a reason and not also trusted); an invalid policy is INVALID_ARGUMENT and the stored policy is untouched. A request that drops or changes a stored revoked key is FAILED_PRECONDITION (revocation is permanent); an expected_revision that is not the stored revision is ABORTED. Increments the revision and writes an audit entry. Admin role only.\x82\xd3\xe4\x93\x02\x19:\x01*\x1a\x14/v1/guardrail/policy\x12\xe3\x06\n" +
 	"\x18SetGuardrailBaselineMode\x120.containarium.v1.SetGuardrailBaselineModeRequest\x1a1.containarium.v1.SetGuardrailBaselineModeResponse\"\xe1\x05\x92A\xbc\x05\n" +
-	"\tGuardrail\x12#Set the baseline response scan mode\x1a\x89\x05Switch the baseline response scan between LOG (default: stream unchanged, scan at the end, audit a match) and BLOCK (hold the response, block a match). Stored separately from the server policy, so it never turns the baseline off; it applies only while no policy is configured. UNSPECIFIED is INVALID_ARGUMENT. Increments the setting's revision. On a daemon with an audit store it writes an audit entry naming the caller, and if that write fails the switch fails with INTERNAL and the mode is unchanged; with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the switch succeeds and writes no entry. Admin role only.\x82\xd3\xe4\x93\x02\x1b:\x01*\x1a\x16/v1/guardrail/baselineBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\tGuardrail\x12#Set the baseline response scan mode\x1a\x89\x05Switch the baseline response scan between LOG (default: stream unchanged, scan at the end, audit a match) and BLOCK (hold the response, block a match). Stored separately from the server policy, so it never turns the baseline off; it applies only while no policy is configured. UNSPECIFIED is INVALID_ARGUMENT. Increments the setting's revision. On a daemon with an audit store it writes an audit entry naming the caller, and if that write fails the switch fails with INTERNAL and the mode is unchanged; with no audit store (no Postgres, REST disabled, or an audit store that failed to start) the switch succeeds and writes no entry. Admin role only.\x82\xd3\xe4\x93\x02\x1b:\x01*\x1a\x16/v1/guardrail/baseline2\x8c\n" +
+	"\n" +
+	"\x14GuardrailHookService\x12\xb2\x04\n" +
+	"\x10SetGuardrailHook\x12(.containarium.v1.SetGuardrailHookRequest\x1a).containarium.v1.SetGuardrailHookResponse\"\xc8\x03\x92A\x91\x03\n" +
+	"\tGuardrail\x12+Switch the guardrail hook drop-in for a box\x1a\xd6\x02On: the daemon installs a pinned hook binary and a root-owned Claude Code managed-settings drop-in into the box, now if it is running and at every later start. Off: both are removed; removal is the break-glass for a broken hook, because the hooks block on failure. Running sessions pick the change up at their next tool call. Admin role only.\x82\xd3\xe4\x93\x02-:\x01*\x1a(/v1/containers/{username}/guardrail-hook\x12\x83\x03\n" +
+	"\x18GetGuardrailHookCoverage\x120.containarium.v1.GetGuardrailHookCoverageRequest\x1a1.containarium.v1.GetGuardrailHookCoverageResponse\"\x81\x02\x92A\xcd\x01\n" +
+	"\tGuardrail\x12#Get a box's guardrail hook coverage\x1a\x9a\x01Return the switch and the result of the daemon's last periodic coverage check for one box. Tamper-evident, not tamper-proof. The box's tenant or an admin.\x82\xd3\xe4\x93\x02*\x12(/v1/containers/{username}/guardrail-hook\x12\xb8\x02\n" +
+	"\x19ListGuardrailHookCoverage\x121.containarium.v1.ListGuardrailHookCoverageRequest\x1a2.containarium.v1.ListGuardrailHookCoverageResponse\"\xb3\x01\x92A\x8c\x01\n" +
+	"\tGuardrail\x12\x1cList guardrail hook coverage\x1aaReturn the last coverage result for every box whose guardrail hook switch is on. Admin role only.\x82\xd3\xe4\x93\x02\x1d\x12\x1b/v1/guardrail/hook-coverageBKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_guardrail_proto_rawDescOnce sync.Once
@@ -1989,88 +2478,107 @@ func file_containarium_v1_guardrail_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_guardrail_proto_rawDescData
 }
 
-var file_containarium_v1_guardrail_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_containarium_v1_guardrail_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_containarium_v1_guardrail_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
+var file_containarium_v1_guardrail_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_containarium_v1_guardrail_proto_goTypes = []any{
-	(GuardrailKind)(0),                       // 0: containarium.v1.GuardrailKind
-	(CodeModelTrafficScanning)(0),            // 1: containarium.v1.CodeModelTrafficScanning
-	(GuardrailAction)(0),                     // 2: containarium.v1.GuardrailAction
-	(GuardrailVerdict)(0),                    // 3: containarium.v1.GuardrailVerdict
-	(GuardrailEffectivePolicy)(0),            // 4: containarium.v1.GuardrailEffectivePolicy
-	(GuardrailBaselineMode)(0),               // 5: containarium.v1.GuardrailBaselineMode
-	(*GuardrailTextUnit)(nil),                // 6: containarium.v1.GuardrailTextUnit
-	(*GuardrailFinding)(nil),                 // 7: containarium.v1.GuardrailFinding
-	(*GuardrailScanGap)(nil),                 // 8: containarium.v1.GuardrailScanGap
-	(*GuardrailScanRequest)(nil),             // 9: containarium.v1.GuardrailScanRequest
-	(*GuardrailScanResponse)(nil),            // 10: containarium.v1.GuardrailScanResponse
-	(*GuardrailRule)(nil),                    // 11: containarium.v1.GuardrailRule
-	(*GuardrailPolicy)(nil),                  // 12: containarium.v1.GuardrailPolicy
-	(*GuardrailKindCount)(nil),               // 13: containarium.v1.GuardrailKindCount
-	(*GuardrailAttestation)(nil),             // 14: containarium.v1.GuardrailAttestation
-	(*GuardrailTrustedSigner)(nil),           // 15: containarium.v1.GuardrailTrustedSigner
-	(*GuardrailRevokedKey)(nil),              // 16: containarium.v1.GuardrailRevokedKey
-	(*GuardrailTrustBundle)(nil),             // 17: containarium.v1.GuardrailTrustBundle
-	(*ServerGuardrailPolicy)(nil),            // 18: containarium.v1.ServerGuardrailPolicy
-	(*GetGuardrailPolicyRequest)(nil),        // 19: containarium.v1.GetGuardrailPolicyRequest
-	(*GetGuardrailPolicyResponse)(nil),       // 20: containarium.v1.GetGuardrailPolicyResponse
-	(*SetGuardrailPolicyRequest)(nil),        // 21: containarium.v1.SetGuardrailPolicyRequest
-	(*SetGuardrailPolicyResponse)(nil),       // 22: containarium.v1.SetGuardrailPolicyResponse
-	(*GetGuardrailStatusRequest)(nil),        // 23: containarium.v1.GetGuardrailStatusRequest
-	(*GetGuardrailStatusResponse)(nil),       // 24: containarium.v1.GetGuardrailStatusResponse
-	(*GuardrailBaselineSetting)(nil),         // 25: containarium.v1.GuardrailBaselineSetting
-	(*SetGuardrailBaselineModeRequest)(nil),  // 26: containarium.v1.SetGuardrailBaselineModeRequest
-	(*SetGuardrailBaselineModeResponse)(nil), // 27: containarium.v1.SetGuardrailBaselineModeResponse
-	(*timestamppb.Timestamp)(nil),            // 28: google.protobuf.Timestamp
+	(GuardrailKind)(0),                        // 0: containarium.v1.GuardrailKind
+	(CodeModelTrafficScanning)(0),             // 1: containarium.v1.CodeModelTrafficScanning
+	(GuardrailAction)(0),                      // 2: containarium.v1.GuardrailAction
+	(GuardrailVerdict)(0),                     // 3: containarium.v1.GuardrailVerdict
+	(GuardrailEffectivePolicy)(0),             // 4: containarium.v1.GuardrailEffectivePolicy
+	(GuardrailBaselineMode)(0),                // 5: containarium.v1.GuardrailBaselineMode
+	(GuardrailHookCoverage)(0),                // 6: containarium.v1.GuardrailHookCoverage
+	(*GuardrailTextUnit)(nil),                 // 7: containarium.v1.GuardrailTextUnit
+	(*GuardrailFinding)(nil),                  // 8: containarium.v1.GuardrailFinding
+	(*GuardrailScanGap)(nil),                  // 9: containarium.v1.GuardrailScanGap
+	(*GuardrailScanRequest)(nil),              // 10: containarium.v1.GuardrailScanRequest
+	(*GuardrailScanResponse)(nil),             // 11: containarium.v1.GuardrailScanResponse
+	(*GuardrailRule)(nil),                     // 12: containarium.v1.GuardrailRule
+	(*GuardrailPolicy)(nil),                   // 13: containarium.v1.GuardrailPolicy
+	(*GuardrailKindCount)(nil),                // 14: containarium.v1.GuardrailKindCount
+	(*GuardrailAttestation)(nil),              // 15: containarium.v1.GuardrailAttestation
+	(*GuardrailTrustedSigner)(nil),            // 16: containarium.v1.GuardrailTrustedSigner
+	(*GuardrailRevokedKey)(nil),               // 17: containarium.v1.GuardrailRevokedKey
+	(*GuardrailTrustBundle)(nil),              // 18: containarium.v1.GuardrailTrustBundle
+	(*ServerGuardrailPolicy)(nil),             // 19: containarium.v1.ServerGuardrailPolicy
+	(*GetGuardrailPolicyRequest)(nil),         // 20: containarium.v1.GetGuardrailPolicyRequest
+	(*GetGuardrailPolicyResponse)(nil),        // 21: containarium.v1.GetGuardrailPolicyResponse
+	(*SetGuardrailPolicyRequest)(nil),         // 22: containarium.v1.SetGuardrailPolicyRequest
+	(*SetGuardrailPolicyResponse)(nil),        // 23: containarium.v1.SetGuardrailPolicyResponse
+	(*GetGuardrailStatusRequest)(nil),         // 24: containarium.v1.GetGuardrailStatusRequest
+	(*GetGuardrailStatusResponse)(nil),        // 25: containarium.v1.GetGuardrailStatusResponse
+	(*GuardrailBaselineSetting)(nil),          // 26: containarium.v1.GuardrailBaselineSetting
+	(*SetGuardrailBaselineModeRequest)(nil),   // 27: containarium.v1.SetGuardrailBaselineModeRequest
+	(*SetGuardrailBaselineModeResponse)(nil),  // 28: containarium.v1.SetGuardrailBaselineModeResponse
+	(*GuardrailHookBoxCoverage)(nil),          // 29: containarium.v1.GuardrailHookBoxCoverage
+	(*SetGuardrailHookRequest)(nil),           // 30: containarium.v1.SetGuardrailHookRequest
+	(*SetGuardrailHookResponse)(nil),          // 31: containarium.v1.SetGuardrailHookResponse
+	(*GetGuardrailHookCoverageRequest)(nil),   // 32: containarium.v1.GetGuardrailHookCoverageRequest
+	(*GetGuardrailHookCoverageResponse)(nil),  // 33: containarium.v1.GetGuardrailHookCoverageResponse
+	(*ListGuardrailHookCoverageRequest)(nil),  // 34: containarium.v1.ListGuardrailHookCoverageRequest
+	(*ListGuardrailHookCoverageResponse)(nil), // 35: containarium.v1.ListGuardrailHookCoverageResponse
+	(*timestamppb.Timestamp)(nil),             // 36: google.protobuf.Timestamp
 }
 var file_containarium_v1_guardrail_proto_depIdxs = []int32{
 	0,  // 0: containarium.v1.GuardrailFinding.kind:type_name -> containarium.v1.GuardrailKind
-	6,  // 1: containarium.v1.GuardrailScanRequest.units:type_name -> containarium.v1.GuardrailTextUnit
+	7,  // 1: containarium.v1.GuardrailScanRequest.units:type_name -> containarium.v1.GuardrailTextUnit
 	0,  // 2: containarium.v1.GuardrailScanRequest.kinds:type_name -> containarium.v1.GuardrailKind
-	7,  // 3: containarium.v1.GuardrailScanResponse.findings:type_name -> containarium.v1.GuardrailFinding
-	8,  // 4: containarium.v1.GuardrailScanResponse.gaps:type_name -> containarium.v1.GuardrailScanGap
+	8,  // 3: containarium.v1.GuardrailScanResponse.findings:type_name -> containarium.v1.GuardrailFinding
+	9,  // 4: containarium.v1.GuardrailScanResponse.gaps:type_name -> containarium.v1.GuardrailScanGap
 	0,  // 5: containarium.v1.GuardrailRule.kind:type_name -> containarium.v1.GuardrailKind
 	2,  // 6: containarium.v1.GuardrailRule.action:type_name -> containarium.v1.GuardrailAction
-	11, // 7: containarium.v1.GuardrailPolicy.rules:type_name -> containarium.v1.GuardrailRule
+	12, // 7: containarium.v1.GuardrailPolicy.rules:type_name -> containarium.v1.GuardrailRule
 	0,  // 8: containarium.v1.GuardrailKindCount.kind:type_name -> containarium.v1.GuardrailKind
-	13, // 9: containarium.v1.GuardrailAttestation.found:type_name -> containarium.v1.GuardrailKindCount
-	13, // 10: containarium.v1.GuardrailAttestation.residual:type_name -> containarium.v1.GuardrailKindCount
+	14, // 9: containarium.v1.GuardrailAttestation.found:type_name -> containarium.v1.GuardrailKindCount
+	14, // 10: containarium.v1.GuardrailAttestation.residual:type_name -> containarium.v1.GuardrailKindCount
 	3,  // 11: containarium.v1.GuardrailAttestation.verdict:type_name -> containarium.v1.GuardrailVerdict
-	28, // 12: containarium.v1.GuardrailAttestation.attested_at:type_name -> google.protobuf.Timestamp
+	36, // 12: containarium.v1.GuardrailAttestation.attested_at:type_name -> google.protobuf.Timestamp
 	0,  // 13: containarium.v1.GuardrailAttestation.kinds_scanned:type_name -> containarium.v1.GuardrailKind
-	28, // 14: containarium.v1.GuardrailRevokedKey.revoked_at:type_name -> google.protobuf.Timestamp
-	15, // 15: containarium.v1.GuardrailTrustBundle.signers:type_name -> containarium.v1.GuardrailTrustedSigner
-	16, // 16: containarium.v1.GuardrailTrustBundle.revoked:type_name -> containarium.v1.GuardrailRevokedKey
-	12, // 17: containarium.v1.ServerGuardrailPolicy.policy:type_name -> containarium.v1.GuardrailPolicy
-	15, // 18: containarium.v1.ServerGuardrailPolicy.trusted_signers:type_name -> containarium.v1.GuardrailTrustedSigner
-	28, // 19: containarium.v1.ServerGuardrailPolicy.updated_at:type_name -> google.protobuf.Timestamp
-	16, // 20: containarium.v1.ServerGuardrailPolicy.revoked_signers:type_name -> containarium.v1.GuardrailRevokedKey
-	18, // 21: containarium.v1.GetGuardrailPolicyResponse.policy:type_name -> containarium.v1.ServerGuardrailPolicy
-	12, // 22: containarium.v1.SetGuardrailPolicyRequest.policy:type_name -> containarium.v1.GuardrailPolicy
-	15, // 23: containarium.v1.SetGuardrailPolicyRequest.trusted_signers:type_name -> containarium.v1.GuardrailTrustedSigner
-	16, // 24: containarium.v1.SetGuardrailPolicyRequest.revoked_signers:type_name -> containarium.v1.GuardrailRevokedKey
-	18, // 25: containarium.v1.SetGuardrailPolicyResponse.policy:type_name -> containarium.v1.ServerGuardrailPolicy
+	36, // 14: containarium.v1.GuardrailRevokedKey.revoked_at:type_name -> google.protobuf.Timestamp
+	16, // 15: containarium.v1.GuardrailTrustBundle.signers:type_name -> containarium.v1.GuardrailTrustedSigner
+	17, // 16: containarium.v1.GuardrailTrustBundle.revoked:type_name -> containarium.v1.GuardrailRevokedKey
+	13, // 17: containarium.v1.ServerGuardrailPolicy.policy:type_name -> containarium.v1.GuardrailPolicy
+	16, // 18: containarium.v1.ServerGuardrailPolicy.trusted_signers:type_name -> containarium.v1.GuardrailTrustedSigner
+	36, // 19: containarium.v1.ServerGuardrailPolicy.updated_at:type_name -> google.protobuf.Timestamp
+	17, // 20: containarium.v1.ServerGuardrailPolicy.revoked_signers:type_name -> containarium.v1.GuardrailRevokedKey
+	19, // 21: containarium.v1.GetGuardrailPolicyResponse.policy:type_name -> containarium.v1.ServerGuardrailPolicy
+	13, // 22: containarium.v1.SetGuardrailPolicyRequest.policy:type_name -> containarium.v1.GuardrailPolicy
+	16, // 23: containarium.v1.SetGuardrailPolicyRequest.trusted_signers:type_name -> containarium.v1.GuardrailTrustedSigner
+	17, // 24: containarium.v1.SetGuardrailPolicyRequest.revoked_signers:type_name -> containarium.v1.GuardrailRevokedKey
+	19, // 25: containarium.v1.SetGuardrailPolicyResponse.policy:type_name -> containarium.v1.ServerGuardrailPolicy
 	4,  // 26: containarium.v1.GetGuardrailStatusResponse.response_policy:type_name -> containarium.v1.GuardrailEffectivePolicy
 	0,  // 27: containarium.v1.GetGuardrailStatusResponse.inbound_block_kinds:type_name -> containarium.v1.GuardrailKind
-	25, // 28: containarium.v1.GetGuardrailStatusResponse.baseline:type_name -> containarium.v1.GuardrailBaselineSetting
+	26, // 28: containarium.v1.GetGuardrailStatusResponse.baseline:type_name -> containarium.v1.GuardrailBaselineSetting
 	5,  // 29: containarium.v1.GuardrailBaselineSetting.mode:type_name -> containarium.v1.GuardrailBaselineMode
-	28, // 30: containarium.v1.GuardrailBaselineSetting.updated_at:type_name -> google.protobuf.Timestamp
+	36, // 30: containarium.v1.GuardrailBaselineSetting.updated_at:type_name -> google.protobuf.Timestamp
 	5,  // 31: containarium.v1.SetGuardrailBaselineModeRequest.mode:type_name -> containarium.v1.GuardrailBaselineMode
-	25, // 32: containarium.v1.SetGuardrailBaselineModeResponse.baseline:type_name -> containarium.v1.GuardrailBaselineSetting
-	9,  // 33: containarium.v1.GuardrailEngineService.Scan:input_type -> containarium.v1.GuardrailScanRequest
-	23, // 34: containarium.v1.GuardrailPolicyService.GetGuardrailStatus:input_type -> containarium.v1.GetGuardrailStatusRequest
-	19, // 35: containarium.v1.GuardrailPolicyService.GetGuardrailPolicy:input_type -> containarium.v1.GetGuardrailPolicyRequest
-	21, // 36: containarium.v1.GuardrailPolicyService.SetGuardrailPolicy:input_type -> containarium.v1.SetGuardrailPolicyRequest
-	26, // 37: containarium.v1.GuardrailPolicyService.SetGuardrailBaselineMode:input_type -> containarium.v1.SetGuardrailBaselineModeRequest
-	10, // 38: containarium.v1.GuardrailEngineService.Scan:output_type -> containarium.v1.GuardrailScanResponse
-	24, // 39: containarium.v1.GuardrailPolicyService.GetGuardrailStatus:output_type -> containarium.v1.GetGuardrailStatusResponse
-	20, // 40: containarium.v1.GuardrailPolicyService.GetGuardrailPolicy:output_type -> containarium.v1.GetGuardrailPolicyResponse
-	22, // 41: containarium.v1.GuardrailPolicyService.SetGuardrailPolicy:output_type -> containarium.v1.SetGuardrailPolicyResponse
-	27, // 42: containarium.v1.GuardrailPolicyService.SetGuardrailBaselineMode:output_type -> containarium.v1.SetGuardrailBaselineModeResponse
-	38, // [38:43] is the sub-list for method output_type
-	33, // [33:38] is the sub-list for method input_type
-	33, // [33:33] is the sub-list for extension type_name
-	33, // [33:33] is the sub-list for extension extendee
-	0,  // [0:33] is the sub-list for field type_name
+	26, // 32: containarium.v1.SetGuardrailBaselineModeResponse.baseline:type_name -> containarium.v1.GuardrailBaselineSetting
+	6,  // 33: containarium.v1.GuardrailHookBoxCoverage.coverage:type_name -> containarium.v1.GuardrailHookCoverage
+	36, // 34: containarium.v1.GuardrailHookBoxCoverage.checked_at:type_name -> google.protobuf.Timestamp
+	29, // 35: containarium.v1.SetGuardrailHookResponse.box:type_name -> containarium.v1.GuardrailHookBoxCoverage
+	29, // 36: containarium.v1.GetGuardrailHookCoverageResponse.box:type_name -> containarium.v1.GuardrailHookBoxCoverage
+	29, // 37: containarium.v1.ListGuardrailHookCoverageResponse.boxes:type_name -> containarium.v1.GuardrailHookBoxCoverage
+	10, // 38: containarium.v1.GuardrailEngineService.Scan:input_type -> containarium.v1.GuardrailScanRequest
+	24, // 39: containarium.v1.GuardrailPolicyService.GetGuardrailStatus:input_type -> containarium.v1.GetGuardrailStatusRequest
+	20, // 40: containarium.v1.GuardrailPolicyService.GetGuardrailPolicy:input_type -> containarium.v1.GetGuardrailPolicyRequest
+	22, // 41: containarium.v1.GuardrailPolicyService.SetGuardrailPolicy:input_type -> containarium.v1.SetGuardrailPolicyRequest
+	27, // 42: containarium.v1.GuardrailPolicyService.SetGuardrailBaselineMode:input_type -> containarium.v1.SetGuardrailBaselineModeRequest
+	30, // 43: containarium.v1.GuardrailHookService.SetGuardrailHook:input_type -> containarium.v1.SetGuardrailHookRequest
+	32, // 44: containarium.v1.GuardrailHookService.GetGuardrailHookCoverage:input_type -> containarium.v1.GetGuardrailHookCoverageRequest
+	34, // 45: containarium.v1.GuardrailHookService.ListGuardrailHookCoverage:input_type -> containarium.v1.ListGuardrailHookCoverageRequest
+	11, // 46: containarium.v1.GuardrailEngineService.Scan:output_type -> containarium.v1.GuardrailScanResponse
+	25, // 47: containarium.v1.GuardrailPolicyService.GetGuardrailStatus:output_type -> containarium.v1.GetGuardrailStatusResponse
+	21, // 48: containarium.v1.GuardrailPolicyService.GetGuardrailPolicy:output_type -> containarium.v1.GetGuardrailPolicyResponse
+	23, // 49: containarium.v1.GuardrailPolicyService.SetGuardrailPolicy:output_type -> containarium.v1.SetGuardrailPolicyResponse
+	28, // 50: containarium.v1.GuardrailPolicyService.SetGuardrailBaselineMode:output_type -> containarium.v1.SetGuardrailBaselineModeResponse
+	31, // 51: containarium.v1.GuardrailHookService.SetGuardrailHook:output_type -> containarium.v1.SetGuardrailHookResponse
+	33, // 52: containarium.v1.GuardrailHookService.GetGuardrailHookCoverage:output_type -> containarium.v1.GetGuardrailHookCoverageResponse
+	35, // 53: containarium.v1.GuardrailHookService.ListGuardrailHookCoverage:output_type -> containarium.v1.ListGuardrailHookCoverageResponse
+	46, // [46:54] is the sub-list for method output_type
+	38, // [38:46] is the sub-list for method input_type
+	38, // [38:38] is the sub-list for extension type_name
+	38, // [38:38] is the sub-list for extension extendee
+	0,  // [0:38] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_guardrail_proto_init() }
@@ -2084,10 +2592,10 @@ func file_containarium_v1_guardrail_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_guardrail_proto_rawDesc), len(file_containarium_v1_guardrail_proto_rawDesc)),
-			NumEnums:      6,
-			NumMessages:   22,
+			NumEnums:      7,
+			NumMessages:   29,
 			NumExtensions: 0,
-			NumServices:   2,
+			NumServices:   3,
 		},
 		GoTypes:           file_containarium_v1_guardrail_proto_goTypes,
 		DependencyIndexes: file_containarium_v1_guardrail_proto_depIdxs,

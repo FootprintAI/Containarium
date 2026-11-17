@@ -605,6 +605,9 @@ type ContainerInfo struct {
 	// defaults to 15 when the key is missing or unparseable.
 	IdleThresholdMinutes int32
 
+	// GuardrailHook mirrors GuardrailHookKey (#3762).
+	GuardrailHook GuardrailHookSwitch
+
 	// LastStartedAt mirrors user.containarium.last_started_at, stamped by
 	// StartContainer. Zero value when the key is missing or unparseable.
 	// Consumed by the Phase 2 auto-sleep ticker for its anti-thrash window.
@@ -670,6 +673,29 @@ const HoldPrevAutostartKey = "user.containarium.hold_prev_autostart"
 // BootAutostartKey is the Incus key that makes Incus start an instance when
 // the host or Incus itself restarts.
 const BootAutostartKey = "boot.autostart"
+// GuardrailHookKey is the Incus config key storing the per-box switch of the
+// managed guardrail hook drop-in (#3762; internal/guardraildropin).
+const GuardrailHookKey = "user.containarium.guardrail_hook"
+
+// GuardrailHookInstalledKey records what the daemon last installed into the
+// box for the guardrail hook ("<binary sha256>:<drop-in sha256>"). It is on
+// the host, out of the box user's reach, and lets the coverage check tell
+// an earlier version of the daemon's own files from tampering (#3762).
+const GuardrailHookInstalledKey = "user.containarium.guardrail_hook_installed"
+
+// GuardrailHookSwitch is the value of GuardrailHookKey.
+type GuardrailHookSwitch string
+
+const (
+	// GuardrailHookOff is the absent key: the feature was never on, or its
+	// removal is complete.
+	GuardrailHookOff GuardrailHookSwitch = ""
+	// GuardrailHookOn: the daemon keeps the drop-in installed.
+	GuardrailHookOn GuardrailHookSwitch = "on"
+	// GuardrailHookRemoving: the feature was turned off while the box could
+	// not be reached; the drop-in is removed when the box next runs.
+	GuardrailHookRemoving GuardrailHookSwitch = "removing"
+)
 
 // AutoSleepEnabledKey is the Incus config key storing the per-container
 // auto-sleep opt-in flag (Phase 1 of the serverless feature).
@@ -1373,6 +1399,7 @@ func containerInfoFromInstance(inst *api.Instance) ContainerInfo {
 			MonitoringEnabled:         inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 			AutoSleepEnabled:          inst.Config[AutoSleepEnabledKey] == "true",
 			Held:                      inst.Config[HoldKey] == "true",
+			GuardrailHook:             GuardrailHookSwitch(inst.Config[GuardrailHookKey]),
 			IdleThresholdMinutes:      parseIdleThresholdMinutes(inst.Config),
 			LastStartedAt:             parseLastStartedAt(inst.Config),
 			TTLExpiresAt:              parseTTLExpiresAt(inst.Config),
@@ -1454,6 +1481,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		MonitoringEnabled:    inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 		AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
 		Held:                 inst.Config[HoldKey] == "true",
+		GuardrailHook:        GuardrailHookSwitch(inst.Config[GuardrailHookKey]),
 		IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
 		LastStartedAt:        parseLastStartedAt(inst.Config),
 		TTLExpiresAt:         parseTTLExpiresAt(inst.Config),

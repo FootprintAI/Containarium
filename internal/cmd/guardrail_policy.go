@@ -47,6 +47,7 @@ type guardrailPolicyServiceClient interface {
 	guardrailPolicyAPI
 	guardrailStatusAPI
 	guardrailBaselineAPI
+	guardrailDropInAPI
 }
 
 func dialGuardrailPolicyService() (guardrailPolicyServiceClient, func(), error) {

@@ -83,6 +83,8 @@ func (p *PendingCreation) active() bool { return p != nil && !p.Done && !p.Cance
 // ContainerServer implements the gRPC ContainerService
 type ContainerServer struct {
 	nativeTenantReady func() bool
+	// boxStarted, when set, runs after StartContainer starts a box (#3762).
+	boxStarted func(username string)
 	pb.UnimplementedContainerServiceServer
 	// systemInfoFn overrides the local GetSystemInfo probe in ListBackends.
 	// Nil in production; a test seam for a wedged local incusd (#2318).
@@ -2061,6 +2063,13 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		// is a no-op).
 		if err := s.manager.UnsetConfig(req.Username+"-container", incus.StoppedAtKey); err != nil {
 			log.Printf("[ttl] failed to clear %s on %q: %v (continuing)", incus.StoppedAtKey, req.Username, err)
+		}
+
+		// Guardrail hook drop-in (#3762): a box started while its switch is
+		// on gets the drop-in now, not at the next periodic check. Off the
+		// request path: it pushes a binary and execs in the box.
+		if s.boxStarted != nil {
+			go s.boxStarted(req.Username)
 		}
 
 		// Re-deliver tenant secrets from the current DB state. Picks up
@@ -5620,3 +5629,7 @@ func (s *ContainerServer) ReconcileHolds() {
 		}
 	}
 }
+// SetBoxStartedHook registers a callback run, in its own goroutine, after a
+// box is started by StartContainer on this daemon (#3762). Startup wiring
+// only.
+func (s *ContainerServer) SetBoxStartedHook(fn func(username string)) { s.boxStarted = fn }

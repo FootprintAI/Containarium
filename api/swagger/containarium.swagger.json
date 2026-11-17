@@ -38,6 +38,10 @@
       "description": "GuardrailPolicyService is the daemon's store for the server-side policy.\nGet and GetStatus: any authenticated caller (a data owner needs the policy\nto run `guardrail apply` against it). Set: admin role only, audited."
     },
     {
+      "name": "GuardrailHookService",
+      "description": "GuardrailHookService switches the managed guardrail hook drop-in per box\nand reports coverage (#3762). Set and List: admin role only. Get: the\nbox's own tenant or an admin. A scoped token also needs security:write\n(Set) or security:read (Get, List)."
+    },
+    {
       "name": "RecipeService",
       "description": "RecipeService provides one-command deployment of declarative GPU/app\nrecipes onto Containarium backends."
     },
@@ -4191,6 +4195,76 @@
         ]
       }
     },
+    "/v1/containers/{username}/guardrail-hook": {
+      "get": {
+        "summary": "Get a box's guardrail hook coverage",
+        "description": "Return the switch and the result of the daemon's last periodic coverage check for one box. Tamper-evident, not tamper-proof. The box's tenant or an admin.",
+        "operationId": "GuardrailHookService_GetGuardrailHookCoverage",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/GetGuardrailHookCoverageResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Guardrail"
+        ]
+      },
+      "put": {
+        "summary": "Switch the guardrail hook drop-in for a box",
+        "description": "On: the daemon installs a pinned hook binary and a root-owned Claude Code managed-settings drop-in into the box, now if it is running and at every later start. Off: both are removed; removal is the break-glass for a broken hook, because the hooks block on failure. Running sessions pick the change up at their next tool call. Admin role only.",
+        "operationId": "GuardrailHookService_SetGuardrailHook",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/SetGuardrailHookResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/SetGuardrailHookBody"
+            }
+          }
+        ],
+        "tags": [
+          "Guardrail"
+        ]
+      }
+    },
     "/v1/containers/{username}/install-stack": {
       "post": {
         "summary": "Install a software stack on a container",
@@ -5191,6 +5265,30 @@
             }
           }
         ],
+        "tags": [
+          "Guardrail"
+        ]
+      }
+    },
+    "/v1/guardrail/hook-coverage": {
+      "get": {
+        "summary": "List guardrail hook coverage",
+        "description": "Return the last coverage result for every box whose guardrail hook switch is on. Admin role only.",
+        "operationId": "GuardrailHookService_ListGuardrailHookCoverage",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ListGuardrailHookCoverageResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpc.Status"
+            }
+          }
+        },
         "tags": [
           "Guardrail"
         ]
@@ -16442,6 +16540,14 @@
         }
       }
     },
+    "GetGuardrailHookCoverageResponse": {
+      "type": "object",
+      "properties": {
+        "box": {
+          "$ref": "#/definitions/GuardrailHookBoxCoverage"
+        }
+      }
+    },
     "GetGuardrailPolicyResponse": {
       "type": "object",
       "properties": {
@@ -17427,6 +17533,55 @@
       },
       "description": "GuardrailGateInput is the dataset a gated deploy checks."
     },
+    "GuardrailHookBoxCoverage": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the operator has the guardrail hook switched on for this box."
+        },
+        "coverage": {
+          "$ref": "#/definitions/GuardrailHookCoverage"
+        },
+        "detail": {
+          "type": "string",
+          "description": "One human-readable sentence saying why. Never file contents."
+        },
+        "checkedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the daemon last checked; unset when it never has."
+        },
+        "clientVersion": {
+          "type": "string",
+          "description": "The coding agent version last read in the box; empty when not read."
+        },
+        "clientInstalled": {
+          "type": "boolean",
+          "description": "Whether the last check found a coding agent for the box user. A box\nthat is COVERED with this false has the drop-in in place and nothing\nthat would run without it; it has not shown hooks firing."
+        }
+      },
+      "description": "GuardrailHookBoxCoverage is one box's switch and last coverage result."
+    },
+    "GuardrailHookCoverage": {
+      "type": "string",
+      "enum": [
+        "GUARDRAIL_HOOK_COVERAGE_UNSPECIFIED",
+        "GUARDRAIL_HOOK_COVERAGE_COVERED",
+        "GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_FEATURE_OFF",
+        "GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_NOT_INSTALLED",
+        "GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_CLIENT_TOO_OLD",
+        "GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING",
+        "GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_HOOKS_NOT_FIRING",
+        "GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_TAMPERED",
+        "GUARDRAIL_HOOK_COVERAGE_UNKNOWN"
+      ],
+      "default": "GUARDRAIL_HOOK_COVERAGE_UNSPECIFIED",
+      "description": "GuardrailHookCoverage is whether a box's coding agent runs the guardrail\nhook (#3762; docs/architecture/guardrail.md, \"Managed hook drop-in\"). The\ndaemon derives it from outside the box user's control, on a period. It is\ntamper-evident, not tamper-proof: a box user with sudo can change things\nbetween two checks.\n\n - GUARDRAIL_HOOK_COVERAGE_COVERED: The drop-in and hook binary are in place and unchanged, the engine is\nrunning, the client meets the minimum version, and no long-running\nclient process is missing its hook stamp.\n - GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_FEATURE_OFF: The switch is off for this box; the drop-in is not installed.\n - GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_NOT_INSTALLED: The switch is on but the drop-in or the hook binary is missing.\n - GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_CLIENT_TOO_OLD: The coding agent in the box is older than the daemon's minimum version.\n - GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING: The detector engine service in the box is not running.\n - GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_HOOKS_NOT_FIRING: A client process has run for longer than the grace period with no hook\nstamp since it started (for example, a higher-ranked managed settings\nsource skipped the drop-in).\n - GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_TAMPERED: The drop-in or hook binary differs from what the daemon installed, or\nanother managed settings file sets disableAllHooks.\n - GUARDRAIL_HOOK_COVERAGE_UNKNOWN: The check has not run yet, the box is not running, or the check failed."
+    },
     "GuardrailKind": {
       "type": "string",
       "enum": [
@@ -18210,6 +18365,19 @@
         "keyOwner": {
           "type": "string",
           "description": "key_owner is the owner whose key was spent listing them."
+        }
+      }
+    },
+    "ListGuardrailHookCoverageResponse": {
+      "type": "object",
+      "properties": {
+        "boxes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/GuardrailHookBoxCoverage"
+          },
+          "description": "Every box whose switch is on, or was on and is still being cleaned up."
         }
       }
     },
@@ -22452,6 +22620,22 @@
         "baseline": {
           "$ref": "#/definitions/GuardrailBaselineSetting",
           "description": "The stored setting, with its new revision."
+        }
+      }
+    },
+    "SetGuardrailHookBody": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "SetGuardrailHookResponse": {
+      "type": "object",
+      "properties": {
+        "box": {
+          "$ref": "#/definitions/GuardrailHookBoxCoverage"
         }
       }
     },

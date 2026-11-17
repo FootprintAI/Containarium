@@ -23,6 +23,7 @@ import (
 
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/config"
+	"github.com/footprintai/containarium/internal/guardraildropin"
 	"github.com/footprintai/containarium/internal/hostcheck"
 	"github.com/footprintai/containarium/internal/mtls"
 	"github.com/footprintai/containarium/internal/poolcapacity"
@@ -37,6 +38,9 @@ import (
 // daemonGuardrailStagingRoot is where guardrail-gated recipe deploys read
 // staged datasets from (#2368). Empty = gated deploys are refused.
 var daemonGuardrailStagingRoot string
+
+// daemonGuardrailHook tunes the managed guardrail hook drop-in (#3762).
+var daemonGuardrailHook guardraildropin.Options
 
 // daemonGuardrailSnapshotDir is where the gate makes its private
 // verification snapshots ("" = the OS temp dir).
@@ -154,6 +158,20 @@ func init() {
 
 	// gRPC settings
 	daemonCmd.Flags().StringVar(&daemonAddress, "address", "0.0.0.0", "Address to listen on")
+	daemonCmd.Flags().DurationVar(&daemonGuardrailHook.CheckInterval, "guardrail-hook-check-interval", guardraildropin.DefaultCheckInterval,
+		"How often the daemon checks guardrail hook coverage in running boxes that have the hook switched on")
+	daemonCmd.Flags().StringVar(&daemonGuardrailHook.MinClientVersion, "guardrail-hook-min-client-version", guardraildropin.DefaultMinClientVersion,
+		"Oldest Claude Code version the guardrail hook coverage check accepts; an older client is reported as not covered")
+	daemonCmd.Flags().DurationVar(&daemonGuardrailHook.HookTimeout, "guardrail-hook-timeout", guardraildropin.DefaultHookTimeout,
+		"Per-hook timeout written into the guardrail hook drop-in (whole seconds); a hook that exceeds it blocks the tool call. Keep it above the engine service's per-scan deadline")
+	daemonCmd.Flags().StringVar(&daemonGuardrailHook.EngineUnit, "guardrail-hook-engine-unit", guardraildropin.DefaultEngineUnit,
+		"systemd unit of the engine service inside a box, checked for coverage; \"none\" skips the unit check")
+	daemonCmd.Flags().StringVar(&daemonGuardrailHook.EngineAddr, "guardrail-hook-engine", guardraildropin.DefaultEngineAddr,
+		"Address of the engine service inside a box, passed to every hook as --engine: unix://<absolute path> or a loopback host:port. \"none\" passes none, and the hook scans with its in-process reference rules")
+	daemonCmd.Flags().StringVar(&daemonGuardrailHook.HookBinary, "guardrail-hook-binary", "",
+		"Host path of the containarium binary copied into boxes as the hook command. It must be statically linked (CGO_ENABLED=0), as the released client binary is. Empty = this daemon's own executable, which is refused if it is dynamically linked")
+	daemonCmd.Flags().DurationVar(&daemonGuardrailHook.ExecTimeout, "guardrail-hook-exec-timeout", guardraildropin.DefaultExecTimeout,
+		"Deadline for each command the guardrail hook install and coverage check run inside a box (whole seconds)")
 	daemonCmd.Flags().StringVar(&daemonGuardrailStagingRoot, "guardrail-staging-root", "",
 		"Absolute directory a guardrail-gated recipe deploy reads its staged dataset from, as <root>/<caller subject>/<staging_ref>. Empty = gated deploys are refused")
 	daemonCmd.Flags().StringVar(&daemonGuardrailSnapshotDir, "guardrail-snapshot-dir", os.Getenv("CONTAINARIUM_GUARDRAIL_SNAPSHOT_DIR"),
@@ -703,6 +721,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			IPCreatesPer10: anonIPCreatesPer10, IPBurst: anonIPBurst, StatePath: anonDoorStatePath,
 		},
 		GuardrailStagingRoot:   daemonGuardrailStagingRoot,
+		GuardrailHook:          daemonGuardrailHook,
 		GuardrailSnapshotDir:   daemonGuardrailSnapshotDir,
 		GuardrailRateLimits:    daemonGuardrailRateLimits(),
 		CaddyAdminURL:          caddyAdminURL,

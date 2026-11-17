@@ -409,3 +409,113 @@ service GuardrailPolicyService {
     };
   }
 }
+
+// GuardrailHookCoverage is whether a box's coding agent runs the guardrail
+// hook (#3762; docs/architecture/guardrail.md, "Managed hook drop-in"). The
+// daemon derives it from outside the box user's control, on a period. It is
+// tamper-evident, not tamper-proof: a box user with sudo can change things
+// between two checks.
+enum GuardrailHookCoverage {
+  GUARDRAIL_HOOK_COVERAGE_UNSPECIFIED = 0;
+  // The drop-in and hook binary are in place and unchanged, the engine is
+  // running, the client meets the minimum version, and no long-running
+  // client process is missing its hook stamp.
+  GUARDRAIL_HOOK_COVERAGE_COVERED = 1;
+  // The switch is off for this box; the drop-in is not installed.
+  GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_FEATURE_OFF = 2;
+  // The switch is on but the drop-in or the hook binary is missing.
+  GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_NOT_INSTALLED = 3;
+  // The coding agent in the box is older than the daemon's minimum version.
+  GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_CLIENT_TOO_OLD = 4;
+  // The detector engine service in the box is not running.
+  GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING = 5;
+  // A client process has run for longer than the grace period with no hook
+  // stamp since it started (for example, a higher-ranked managed settings
+  // source skipped the drop-in).
+  GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_HOOKS_NOT_FIRING = 6;
+  // The drop-in or hook binary differs from what the daemon installed, or
+  // another managed settings file sets disableAllHooks.
+  GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_TAMPERED = 7;
+  // The check has not run yet, the box is not running, or the check failed.
+  GUARDRAIL_HOOK_COVERAGE_UNKNOWN = 8;
+}
+
+// GuardrailHookBoxCoverage is one box's switch and last coverage result.
+message GuardrailHookBoxCoverage {
+  string username = 1;
+  // Whether the operator has the guardrail hook switched on for this box.
+  bool enabled = 2;
+  GuardrailHookCoverage coverage = 3;
+  // One human-readable sentence saying why. Never file contents.
+  string detail = 4;
+  // When the daemon last checked; unset when it never has.
+  google.protobuf.Timestamp checked_at = 5;
+  // The coding agent version last read in the box; empty when not read.
+  string client_version = 6;
+  // Whether the last check found a coding agent for the box user. A box
+  // that is COVERED with this false has the drop-in in place and nothing
+  // that would run without it; it has not shown hooks firing.
+  bool client_installed = 7;
+}
+
+message SetGuardrailHookRequest {
+  string username = 1;
+  bool enabled = 2;
+}
+
+message SetGuardrailHookResponse {
+  GuardrailHookBoxCoverage box = 1;
+}
+
+message GetGuardrailHookCoverageRequest {
+  string username = 1;
+}
+
+message GetGuardrailHookCoverageResponse {
+  GuardrailHookBoxCoverage box = 1;
+}
+
+message ListGuardrailHookCoverageRequest {}
+
+message ListGuardrailHookCoverageResponse {
+  // Every box whose switch is on, or was on and is still being cleaned up.
+  repeated GuardrailHookBoxCoverage boxes = 1;
+}
+
+// GuardrailHookService switches the managed guardrail hook drop-in per box
+// and reports coverage (#3762). Set and List: admin role only. Get: the
+// box's own tenant or an admin. A scoped token also needs security:write
+// (Set) or security:read (Get, List).
+service GuardrailHookService {
+  rpc SetGuardrailHook(SetGuardrailHookRequest) returns (SetGuardrailHookResponse) {
+    option (google.api.http) = {
+      put: "/v1/containers/{username}/guardrail-hook"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Switch the guardrail hook drop-in for a box";
+      description: "On: the daemon installs a pinned hook binary and a root-owned Claude Code managed-settings drop-in into the box, now if it is running and at every later start. Off: both are removed; removal is the break-glass for a broken hook, because the hooks block on failure. Running sessions pick the change up at their next tool call. Admin role only.";
+      tags: "Guardrail";
+    };
+  }
+  rpc GetGuardrailHookCoverage(GetGuardrailHookCoverageRequest) returns (GetGuardrailHookCoverageResponse) {
+    option (google.api.http) = {
+      get: "/v1/containers/{username}/guardrail-hook"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Get a box's guardrail hook coverage";
+      description: "Return the switch and the result of the daemon's last periodic coverage check for one box. Tamper-evident, not tamper-proof. The box's tenant or an admin.";
+      tags: "Guardrail";
+    };
+  }
+  rpc ListGuardrailHookCoverage(ListGuardrailHookCoverageRequest) returns (ListGuardrailHookCoverageResponse) {
+    option (google.api.http) = {
+      get: "/v1/guardrail/hook-coverage"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List guardrail hook coverage";
+      description: "Return the last coverage result for every box whose guardrail hook switch is on. Admin role only.";
+      tags: "Guardrail";
+    };
+  }
+}

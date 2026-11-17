@@ -38,6 +38,7 @@ import (
 	"github.com/footprintai/containarium/internal/gateway"
 	"github.com/footprintai/containarium/internal/guacamole"
 	"github.com/footprintai/containarium/internal/guardrail"
+	"github.com/footprintai/containarium/internal/guardraildropin"
 	"github.com/footprintai/containarium/internal/guardrailpolicy"
 	guardrailpolicypg "github.com/footprintai/containarium/internal/guardrailpolicy/pgstore"
 	"github.com/footprintai/containarium/internal/guardrailrate"
@@ -126,6 +127,9 @@ type DualServerConfig struct {
 	// GuardrailRateLimits are the per-subject limits on gated deploys and
 	// guardrail policy Set/Get (#2404). Zero = disabled.
 	GuardrailRateLimits GuardrailRateLimits
+	// GuardrailHook tunes the managed guardrail hook drop-in and its
+	// coverage check (#3762). Zero values take the package defaults.
+	GuardrailHook guardraildropin.Options
 
 	// Swagger settings
 	SwaggerDir string
@@ -337,15 +341,17 @@ type DualServer struct {
 	alertPool                *pgxpool.Pool      // the alert family's startup pool; nil when it installed late (#3334)
 	peerPool                 *PeerPool
 	autoSleepManager         *autosleep.Manager
-	ttlSweeperManager        *ttlsweeper.Manager     // ephemeral CI box auto-delete (#299)
-	anonManager              *anonbox.Manager        // anonymous-box door (#2197); nil unless CONTAINARIUM_ANON_DOOR=enable
-	sandboxServer            *SandboxServer          // set in NewDualServer when incus.New succeeds; nil otherwise (#1488)
-	sandboxTTLSweeperManager *ttlsweeper.Manager     // ephemeral sandbox auto-delete (#1488 Phase 4)
-	secretsReconciler        *secretsReconciler      // Phase 4.3 Phase B-3
-	secretsLateInstall       bool                    // secrets store pending with the late-install helper (#3327)
-	networkPolicyEnforcer    *NetworkPolicyEnforcer  // #315 Phase A — eBPF per-tenant net policy (off unless configured)
-	coreGuard                *coreguard.Reconciler   // #2084 — Incus NIC ACLs keeping tenants off core-role containers (on unless CONTAINARIUM_CORE_GUARD=off)
-	tenantGuard              *tenantguard.Reconciler // #2347 — Incus NIC ACLs keeping tenants off each other (on unless CONTAINARIUM_TENANT_GUARD=off)
+	guardrailHookServer      *GuardrailHookServer     // #3762; its manager is installed in Start
+	guardrailHookManager     *guardraildropin.Manager // nil when Incus is unavailable
+	ttlSweeperManager        *ttlsweeper.Manager      // ephemeral CI box auto-delete (#299)
+	anonManager              *anonbox.Manager         // anonymous-box door (#2197); nil unless CONTAINARIUM_ANON_DOOR=enable
+	sandboxServer            *SandboxServer           // set in NewDualServer when incus.New succeeds; nil otherwise (#1488)
+	sandboxTTLSweeperManager *ttlsweeper.Manager      // ephemeral sandbox auto-delete (#1488 Phase 4)
+	secretsReconciler        *secretsReconciler       // Phase 4.3 Phase B-3
+	secretsLateInstall       bool                     // secrets store pending with the late-install helper (#3327)
+	networkPolicyEnforcer    *NetworkPolicyEnforcer   // #315 Phase A — eBPF per-tenant net policy (off unless configured)
+	coreGuard                *coreguard.Reconciler    // #2084 — Incus NIC ACLs keeping tenants off core-role containers (on unless CONTAINARIUM_CORE_GUARD=off)
+	tenantGuard              *tenantguard.Reconciler  // #2347 — Incus NIC ACLs keeping tenants off each other (on unless CONTAINARIUM_TENANT_GUARD=off)
 
 	// k8sNetPolicyReconciler converges tenant NetworkPolicy objects on the K8s
 	// backend from the same store the eBPF enforcer reads (#1188). Nil on
@@ -652,6 +658,10 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 	// guardrailPolicyStartupStore once postgresConnString is final (below).
 	guardrailPolicyServer := NewGuardrailPolicyServer(unavailableGuardrailPolicyStore{})
 	pb.RegisterGuardrailPolicyServiceServer(grpcServer, guardrailPolicyServer)
+	// GuardrailHookService (#3762): the per-box managed hook drop-in. Its
+	// manager needs an Incus client and is installed in Start.
+	guardrailHookServer := NewGuardrailHookServer()
+	pb.RegisterGuardrailHookServiceServer(grpcServer, guardrailHookServer)
 	// RetentionService (#2875): per-class retention windows and per-org legal
 	// holds. The store is chosen by retentionStartupStore below.
 	retentionServer := NewRetentionServer(unavailableRetentionStore{})
@@ -2787,6 +2797,8 @@ skipAppHosting:
 			containerServer.SetAuditStore(auditStore)
 			// guardrail.policy.set entries (#2368).
 			guardrailPolicyServer.SetAuditStore(auditStore)
+			// guardrail.hook.set entries (#3762).
+			guardrailHookServer.SetAuditStore(auditStore)
 			// retention.policy.set / retention.hold.* entries (#2875).
 			retentionServer.SetAuditStore(auditStore)
 			// The hash-chained audit_logs is swept once the audit store has
@@ -2934,6 +2946,7 @@ skipAppHosting:
 		grpcServer:             grpcServer,
 		internalLis:            internalLis,
 		containerServer:        containerServer,
+		guardrailHookServer:    guardrailHookServer,
 		networkServer:          networkServer,
 		trafficServer:          trafficServer,
 		trafficCollector:       trafficCollector,
@@ -3531,6 +3544,18 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		}
 		ds.autoSleepManager = autosleep.NewManager(incusClient, trafficSrc, ds.containerServer, auditAdapter, autosleep.Options{})
 		ds.autoSleepManager.Start(ctx)
+
+		// Guardrail hook drop-in (#3762): the per-box switch, the install at
+		// box start, and the periodic coverage check. Shares this client
+		// because it is the daemon's root exec and file path into a box.
+		if hookMgr, hookErr := guardraildropin.NewManager(incusClient, incusClient, ds.config.GuardrailHook); hookErr != nil {
+			log.Printf("[guardrail-hook] disabled: %v", hookErr)
+		} else {
+			ds.guardrailHookManager = hookMgr
+			ds.guardrailHookServer.SetManager(hookMgr)
+			ds.containerServer.SetBoxStartedHook(hookMgr.BoxStarted)
+			hookMgr.Start(ctx)
+		}
 	}
 
 	// Start TTL sweeper (#299 scaffold + this PR's wiring). Reads
@@ -4014,6 +4039,9 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 		ds.passthroughSync.stop()
 		if ds.autoSleepManager != nil {
 			ds.autoSleepManager.Stop()
+		}
+		if ds.guardrailHookManager != nil {
+			ds.guardrailHookManager.Stop()
 		}
 		if ds.ttlSweeperManager != nil {
 			ds.ttlSweeperManager.Stop()
