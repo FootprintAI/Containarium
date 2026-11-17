@@ -32,12 +32,17 @@ type Options struct {
 	// ExecTimeout bounds each command the daemon runs inside a box.
 	ExecTimeout time.Duration
 	// EngineUnit is the systemd unit of the detector engine in the box.
-	// EngineNone skips the unit check.
+	// Empty or EngineBuiltin: the daemon installs the reference engine as
+	// ReferenceEngineUnit and runs it. Any other name is a unit the
+	// operator provides; the daemon installs none and only checks it.
+	// EngineNone skips the unit check too.
 	EngineUnit string
 	// EngineAddr is the engine's address inside the box, passed to every
 	// hook as --engine: unix://<absolute path>, an absolute socket path, or
-	// a loopback host:port. EngineNone passes none, and the hook scans with
-	// its in-process reference rules.
+	// a loopback host:port. Empty follows EngineUnit: the built-in
+	// engine's socket, or DefaultEngineAddr for an operator's unit.
+	// EngineNone passes none, and the hook scans with its in-process
+	// reference rules.
 	EngineAddr string
 	// HookBinary is the host path of the CLI binary copied into boxes.
 	// Empty means the daemon's own executable, which carries the same
@@ -69,13 +74,16 @@ func (o Options) withDefaults() Options {
 	}
 	switch o.EngineUnit {
 	case "":
-		o.EngineUnit = DefaultEngineUnit
+		o.EngineUnit = EngineBuiltin
 	case EngineNone:
 		o.EngineUnit = ""
 	}
 	switch o.EngineAddr {
 	case "":
 		o.EngineAddr = DefaultEngineAddr
+		if o.EngineUnit == EngineBuiltin {
+			o.EngineAddr = ReferenceEngineAddr
+		}
 	case EngineNone:
 		o.EngineAddr = ""
 	}

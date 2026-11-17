@@ -35,7 +35,7 @@ const (
 func newTestChecker(t *testing.T) (*checker, *fakeBox) {
 	t.Helper()
 	box := newFakeBox()
-	c, err := newChecker(box, Options{}.withDefaults(), bytesBinary(testBinary))
+	c, err := newChecker(box, operatorEngine.withDefaults(), bytesBinary(testBinary))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +293,7 @@ func TestInstallLeavesNoDropInWhenTheBinaryDoesNotRun(t *testing.T) {
 func TestInstallRefusesAndReplacesLinks(t *testing.T) {
 	for _, dir := range []string{ManagedSettingsDir, DropInDir, HookBinaryDir} {
 		box := newFakeBox()
-		c, err := newChecker(box, Options{}.withDefaults(), bytesBinary(testBinary))
+		c, err := newChecker(box, operatorEngine.withDefaults(), bytesBinary(testBinary))
 		if err != nil {
 			t.Fatal(err)
 		}

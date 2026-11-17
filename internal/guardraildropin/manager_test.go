@@ -19,7 +19,7 @@ func newTestManager(t *testing.T, state string, sw incus.GuardrailHookSwitch) (*
 
 func managerOver(t *testing.T, inst *fakeInstances, box *fakeBox, binary []byte) *Manager {
 	t.Helper()
-	m, err := newManager(inst, box, Options{}, bytesBinary(binary))
+	m, err := newManager(inst, box, operatorEngine, bytesBinary(binary))
 	if err != nil {
 		t.Fatal(err)
 	}

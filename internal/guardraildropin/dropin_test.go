@@ -70,9 +70,15 @@ func TestRenderWithoutEngineAddress(t *testing.T) {
 }
 
 func TestOptionsDefaults(t *testing.T) {
+	// The default is the built-in reference engine on its own socket
+	// (#3767); naming a unit means the operator's engine on the packaged one.
 	o := Options{}.withDefaults()
-	if o.EngineUnit != "containarium-engine.service" || o.EngineAddr != "unix:///run/containarium-engine/engine.sock" {
+	if o.EngineUnit != EngineBuiltin || o.EngineAddr != "unix:///run/containarium-guardrail-reference/engine.sock" {
 		t.Errorf("engine defaults = %q, %q", o.EngineUnit, o.EngineAddr)
+	}
+	o = operatorEngine.withDefaults()
+	if o.EngineUnit != operatorUnit || o.EngineAddr != "unix:///run/containarium-engine/engine.sock" {
+		t.Errorf("operator engine defaults = %q, %q", o.EngineUnit, o.EngineAddr)
 	}
 	// Above the engine's own 10 s scan deadline, so the engine (or the
 	// hook's shorter deadline) answers before the client kills the hook.
@@ -84,12 +90,12 @@ func TestOptionsDefaults(t *testing.T) {
 		t.Errorf("none should clear both, got %q, %q", o.EngineUnit, o.EngineAddr)
 	}
 	for _, bad := range []string{"unix://relative.sock", "example.com:9091", "nonsense"} {
-		if _, err := newChecker(newFakeBox(), Options{EngineAddr: bad}.withDefaults(), bytesBinary(testBinary)); err == nil {
+		if _, err := newChecker(newFakeBox(), Options{EngineUnit: operatorUnit, EngineAddr: bad}.withDefaults(), bytesBinary(testBinary)); err == nil {
 			t.Errorf("engine address %q accepted", bad)
 		}
 	}
 	for _, ok := range []string{"/run/x/engine.sock", "127.0.0.1:9091", "localhost:9091"} {
-		if _, err := newChecker(newFakeBox(), Options{EngineAddr: ok}.withDefaults(), bytesBinary(testBinary)); err != nil {
+		if _, err := newChecker(newFakeBox(), Options{EngineUnit: operatorUnit, EngineAddr: ok}.withDefaults(), bytesBinary(testBinary)); err != nil {
 			t.Errorf("engine address %q refused: %v", ok, err)
 		}
 	}

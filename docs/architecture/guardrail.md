@@ -111,6 +111,12 @@ the flow is runnable and testable on a fresh checkout. It is not a detector
 anyone should ship data on, and the CLI says so on stderr every time it is
 used.
 
+`containarium guardrail engine serve --listen unix://<absolute path>` runs
+that same reference engine as a process behind `GuardrailEngineService`, on
+a unix socket of mode 0660 and nothing else. It is what the daemon's
+built-in engine service runs inside a box ("Built-in engine service"
+below); it contacts no server and reads no credential.
+
 ## Coding-agent hooks
 
 `containarium guardrail hook <event>` (#3761) applies the same engine
@@ -322,15 +328,18 @@ a running box and again at every start while the switch is on:
      works. If it does not, the box reports `NOT_COVERED_NOT_INSTALLED`
      with the reason and is left with no drop-in, including one from an
      earlier install.
-2. `/etc/claude-code/managed-settings.d/containarium-guardrail.json`:
+2. With the built-in engine (the default), the engine service: see
+   "Built-in engine service" below. It is in place and answering before the
+   next file is written.
+3. `/etc/claude-code/managed-settings.d/containarium-guardrail.json`:
    - one **exec-form** hook (`command` plus `args`, no shell) for each of
      `SessionStart`, `PreToolUse`, `PostToolUse`, `PostToolBatch`,
      `UserPromptSubmit` and `InstructionsLoaded`;
-   - `--engine <address>` in each hook's `args`
-     (`--guardrail-hook-engine`, default
-     `unix:///run/containarium-engine/engine.sock`). Without it the hook
-     scans with its in-process reference rules, and nothing outside the box
-     could tell; `none` asks for exactly that;
+   - `--engine <address>` in each hook's `args`: the built-in engine's
+     socket, or with an operator's engine `--guardrail-hook-engine`
+     (default `unix:///run/containarium-engine/engine.sock`). Without it
+     the hook scans with its in-process reference rules, and nothing
+     outside the box could tell; `none` asks for exactly that;
    - `onFailure: "block"` and an explicit timeout on each
      (`--guardrail-hook-timeout`, default 15 s);
    - `env.CLAUDE_CODE_DISABLE_FILE_MENTIONS=1`, so an `@`-mentioned file is
@@ -341,9 +350,11 @@ a running box and again at every start while the switch is on:
    no `forceLoginOrgUUID`. Any other managed policy in the box is left as it
    is. Managed hooks also fire under `--bare`.
 
-Root's writes do not follow a link the box user placed. The three
-directories must be real directories owned by root and closed to group and
-others, or the install refuses and says which one is not. Each file is
+Root's writes do not follow a link the box user placed. The directories
+written into (the three above, and `/etc/systemd` and `/etc/systemd/system`
+for the built-in engine's unit) must be real directories owned by root and
+closed to group and others, or the install refuses and says which one is
+not. Each file is
 written under a temporary name in its directory and renamed into place,
 which replaces a link at the final path and never exposes a half-written
 file.
@@ -354,8 +365,9 @@ restarted.
 **Timeouts.** The deadline that applies to a scan is the hook's own: it
 waits up to 3 s for the engine and gives one scan 2 s by default, sending
 at most 16 KiB at a time (anything larger gets a fast in-process pattern
-pass). The engine service's own per-scan deadline, 10 s as packaged, is
-longer and is never reached from a hook. The hook timeout in the drop-in,
+pass). A separately packaged engine service's own per-scan deadline, 10 s,
+is longer and is never reached from a hook; the built-in engine sets none
+of its own. The hook timeout in the drop-in,
 15 s by default, is the outer limit: in the common case the hook answers
 for itself, with a reason the model sees, well inside it. It does not
 bound the worst case. An event that scans many results one after another
@@ -363,13 +375,93 @@ bound the worst case. An event that scans many results one after another
 client then kills the hook and blocks the turn. Raise
 `--guardrail-hook-timeout` if that happens.
 
-**The engine service is not installed by the daemon.** The drop-in and the
-check assume the engine service as packaged: the unit
-`containarium-engine.service`, listening on the socket above, which only
-members of the socket's group may open. Installing it, and adding the box
-user to that group, is the engine installer's job (#3767). The hook runs as
-the box user, so the check tests the socket as that user rather than
-trusting the unit's state.
+**Built-in engine service** (#3767). The hook denies every tool call while
+its engine is not ready, so a box with the drop-in and no engine is a
+blocked box. `--guardrail-hook-engine-unit` says whose engine it is:
+
+| `--guardrail-hook-engine-unit` | The daemon | Drop-in's `--engine` |
+| --- | --- | --- |
+| `builtin` (default) | installs, starts and checks the in-tree reference engine as `containarium-guardrail-reference-engine.service` | `unix:///run/containarium-guardrail-reference/engine.sock`, fixed; setting `--guardrail-hook-engine` to anything else is refused at start |
+| any other unit name | installs nothing; checks that the unit is active and the socket opens for the box user | `--guardrail-hook-engine` (default `unix:///run/containarium-engine/engine.sock`) |
+| `none` | installs nothing and checks no unit | `--guardrail-hook-engine`, same default; `none` there too means in-process rules |
+
+The built-in unit and socket have names of their own on purpose. A
+separately packaged engine uses `containarium-engine.service` and
+`/run/containarium-engine/`; the daemon never writes a unit under that name
+or a socket in that directory, so the two can be installed side by side and
+the flag picks which one the hooks call. The daemon's own unit name is
+refused as an operator's unit.
+
+The reference engine is a handful of regular expressions for proving the
+flow, not a detector to rely on ("What is in-tree and what is not"). The
+built-in service makes a box work end to end with no other install; it does
+not make the detection better than the hook's in-process rules. Name your
+own unit for a real engine.
+
+What the daemon does for `builtin`, in this order, under the box's lock,
+each command under the exec deadline:
+
+1. The pinned binary, as above. The service runs
+   `containarium guardrail engine serve --listen unix://<socket>` from it,
+   so the engine is pinned to the daemon's version like the hook. The
+   subcommand is in both the client and the server binary, contacts no
+   server and reads no credential.
+2. Accounts, with `groupadd` / `useradd` / `usermod -aG`, each only if
+   needed: a `guardrail` group, a `containarium-guardrail` system user (no
+   shell, no home) in it, and the box user added to the group. The socket
+   is `0660`, owned by that user and group, in a `0750` runtime directory;
+   access is by group and the mode is never widened. These are the tools
+   the box user itself was created with, present in every box image;
+   `systemd-sysusers` would need a second root-owned file to keep in step
+   for the same result.
+3. The unit file, `/etc/systemd/system/containarium-guardrail-reference-engine.service`,
+   written under a temporary name and renamed, then `daemon-reload` and
+   `enable`. It is rewritten only when its content differs.
+4. `systemctl start`, or `restart` after a new binary or unit. The unit is
+   `Type=notify` and the engine reports ready once it listens, so the start
+   returns with the socket there.
+5. The socket is tested as a fresh process of the box user. Only then is
+   the drop-in written. If the unit does not start or the user cannot open
+   the socket, the box reports `NOT_COVERED_NOT_INSTALLED` with the reason
+   and is left with no drop-in, including one from an earlier install: the
+   same rule as for a binary that does not run.
+
+The unit: exec form; `User=containarium-guardrail`, `Group=guardrail`;
+`RuntimeDirectory=` (so the socket's directory exists only while the
+service runs); `UMask=0117`; `Restart=on-failure`; no timer. Hardening is
+limited to what works for a non-root service in an unprivileged system
+container: `NoNewPrivileges=`, an empty `CapabilityBoundingSet=`,
+`RestrictAddressFamilies=AF_UNIX`, `RestrictRealtime=`, `RestrictSUIDSGID=`,
+`LockPersonality=`, `MemoryDenyWriteExecute=`, `SystemCallArchitectures=native`.
+Directives that build a mount or network namespace (`ProtectSystem=`,
+`PrivateTmp=`, `PrivateNetwork=`) are left out: whether they work depends
+on the container's nesting and AppArmor settings, and a unit that fails to
+start blocks the box. `RestrictAddressFamilies=AF_UNIX` is what gives "no
+network": the process cannot create an IP socket.
+
+The engine is not activity for auto-sleep. Auto-sleep decides on two
+inputs only (`internal/autosleep/decide.go`): the box's last-start stamp
+and the newest row of recorded network connections for the box. The engine
+opens a unix socket and cannot open any other kind, so it adds no
+connection row; it has no timer and wakes nothing; and installing it writes
+no box config except the install record, which auto-sleep does not read.
+
+`disable` removes, in reverse: the drop-in, then the unit (stop, disable,
+delete, `daemon-reload`), then the binary. The `guardrail` group, the
+`containarium-guardrail` user and the box user's membership are **left**.
+The group may be shared with a separately packaged engine, the daemon does
+not track who created it, and membership grants nothing but an engine's
+socket. Remove them by hand if you want them gone. Changing the flag from
+`builtin` to another unit removes the daemon's unit from each box at its
+next install.
+
+The built-in engine needs systemd in the box. In a box without it the
+install fails with the reason and no drop-in; use `none`.
+
+With an operator's unit, installing it, and adding the box user to the
+group that may open its socket, is the operator's job. The hook runs as the
+box user, so the check tests the socket as that user rather than trusting
+the unit's state.
 
 **`disable` is the break-glass.** `onFailure: "block"` reads no setting: if
 the hook binary or the engine is broken, every tool call in the box is
@@ -387,10 +479,10 @@ on, as root from outside the box user's control. It reports one
 | --- | --- |
 | `COVERED` | Everything below holds. `client_installed` says whether a client was found: `COVERED` with none means the drop-in is in place and nothing would run without it, not that hooks were seen firing. |
 | `NOT_COVERED_FEATURE_OFF` | The switch is off. |
-| `NOT_COVERED_NOT_INSTALLED` | The drop-in, the hook binary or one of their directories is missing, or the daemon could not install them (a directory it refuses to write into; a binary that does not run in the box). |
-| `NOT_COVERED_TAMPERED` | A change the daemon did not make: the drop-in or binary differs in content, is not a regular file, is not owned by root, or is writable by group or others; one of the directories is; another file in `/etc/claude-code/` or `managed-settings.d/` sets `disableAllHooks` (a second managed file does turn the hooks off, whichever sorts first), or cannot be checked because it is a link, a FIFO or over 1 MiB. |
+| `NOT_COVERED_NOT_INSTALLED` | The drop-in, the hook binary, the built-in engine's unit file or one of their directories is missing, or the daemon could not install them (a directory it refuses to write into; a binary that does not run in the box; a built-in engine that does not start or whose socket the box user cannot open). |
+| `NOT_COVERED_TAMPERED` | A change the daemon did not make: the drop-in, the binary or the built-in engine's unit file differs in content, is not a regular file, is not owned by root, or is writable by group or others; one of the directories is; another file in `/etc/claude-code/` or `managed-settings.d/` sets `disableAllHooks` (a second managed file does turn the hooks off, whichever sorts first), or cannot be checked because it is a link, a FIFO or over 1 MiB. |
 | `NOT_COVERED_CLIENT_TOO_OLD` | Claude Code is older than `--guardrail-hook-min-client-version` (default 2.1.326, the only version this was tested on; the documented floors of the settings used put the true minimum at 2.1.299 or later). The client is looked for in the installers' usual places and on a default `PATH` for the box user, then among running `claude` processes. Its version is read as the box user, with a clean environment and no login shell, and only when the binary changed. |
-| `NOT_COVERED_ENGINE_NOT_RUNNING` | The engine service's systemd unit (`--guardrail-hook-engine-unit`, default `containarium-engine.service`) is not active, or its socket is missing or cannot be opened by the box user (for example, the user is not in the socket's group). The detail says which. |
+| `NOT_COVERED_ENGINE_NOT_RUNNING` | The engine service's systemd unit (the built-in one, or the unit `--guardrail-hook-engine-unit` names) is not active, or its socket is missing or cannot be opened by the box user (for example, the user is not in the socket's group). The detail says which. The built-in engine is then started again by the daemon; an operator's is not touched. |
 | `NOT_COVERED_HOOKS_NOT_FIRING` | A `claude` process has run for more than a few minutes with no hook stamp since it started. Every hook invocation touches a stamp for its client process under the box user's `$XDG_STATE_HOME/containarium-guardrail/stamps/`; the daemon compares them with process start times from `ps`. This catches what the file checks cannot, such as a higher-ranked managed settings source that makes the client skip the drop-in. |
 | `UNKNOWN` | Not checked yet, the box is stopped, or the check could not run. |
 
@@ -398,7 +490,8 @@ A missing or changed daemon file is reported at the check that sees it and
 then installed again. Another managed file is reported and never deleted:
 it is not the daemon's.
 
-A daemon upgrade changes the pinned binary, and a flag change the drop-in.
+A daemon upgrade changes the pinned binary and possibly the built-in
+engine's unit, and a flag change the drop-in.
 That is not tampering. The daemon records the hashes of what it last
 installed on the box's config, on the host where the box user cannot edit
 it; files that match that record are replaced at the next check and the
@@ -423,8 +516,10 @@ activity, and stopped boxes are skipped, never woken.
   the engine between two checks, and put them back before the next.
 - The stamp is written by the box user, so it can be forged.
 - A sample every few minutes misses a session shorter than the grace period.
-- A stopped engine is seen; an engine replaced by a no-op on the same unit
-  is not.
+- A stopped engine is seen; an operator's engine replaced by a no-op on the
+  same unit is not. For the built-in engine a changed unit file is seen; a
+  drop-in under `/etc/systemd/system/<unit>.d/` that changes what it runs is
+  not.
 - Any long-lived process named `claude` is expected to run hooks. One that
   never does (a session left at the sign-in screen, the agent run as a
   server for another tool) reads as `NOT_COVERED_HOOKS_NOT_FIRING`. Not yet
@@ -433,7 +528,9 @@ activity, and stopped boxes are skipped, never woken.
   managed file can also set `CLAUDE_CODE_DISABLE_FILE_MENTIONS` back.
 - The socket is tested with a fresh process of the box user. A session that
   was already running when the user joined the socket's group keeps its old
-  groups, and its tools are denied until it is restarted.
+  groups, and its tools are denied until it is restarted. That includes the
+  first `enable` on a box where `claude` is already running: the daemon adds
+  the user to `guardrail` then, and that session must be restarted.
 
 ## Open
 

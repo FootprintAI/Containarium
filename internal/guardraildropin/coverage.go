@@ -27,11 +27,6 @@ const (
 	clientProcessName = "claude"
 )
 
-// DefaultEngineUnit is the systemd unit of the engine service the hook
-// calls. Installing that unit, and putting the box user in the group that
-// may open its socket, is the engine installer's job, not this package's.
-const DefaultEngineUnit = "containarium-engine.service"
-
 // DefaultStampGrace is how long a client process may run before a missing
 // stamp counts. SessionStart fires within seconds; the slack is for a slow
 // start.
@@ -76,8 +71,12 @@ type checker struct {
 	// socket is the engine's unix socket path in the box; "" when the
 	// engine address is not a unix socket.
 	socket string
-	open   openBinary
-	clock  func() time.Time
+	// builtin: the daemon installs and runs the reference engine itself.
+	builtin bool
+	// engineUnit is the unit the check requires to be active; "" for none.
+	engineUnit string
+	open       openBinary
+	clock      func() time.Time
 
 	mu       sync.Mutex
 	binSHA   string
@@ -88,6 +87,15 @@ func newChecker(box Box, opts Options, open openBinary) (*checker, error) {
 	socket, err := engineSocket(opts.EngineAddr)
 	if err != nil {
 		return nil, err
+	}
+	builtin, engineUnit := opts.EngineUnit == EngineBuiltin, opts.EngineUnit
+	switch {
+	case builtin && opts.EngineAddr != ReferenceEngineAddr:
+		return nil, fmt.Errorf("engine address %q: the built-in engine listens on %s only; leave the address unset, or name your own engine's unit", opts.EngineAddr, ReferenceEngineAddr)
+	case builtin:
+		engineUnit = ReferenceEngineUnit
+	case engineUnit == ReferenceEngineUnit:
+		return nil, fmt.Errorf("engine unit %q is the daemon's own; use %q to have the daemon install it", engineUnit, EngineBuiltin)
 	}
 	dropIn, err := Render(opts.HookTimeout, opts.EngineAddr)
 	if err != nil {
@@ -100,7 +108,7 @@ func newChecker(box Box, opts Options, open openBinary) (*checker, error) {
 		return nil, fmt.Errorf("guardrail hook exec timeout %s is under one second", opts.ExecTimeout)
 	}
 	return &checker{box: box, run: runner{box: box, timeout: opts.ExecTimeout, grace: execGrace}, opts: opts,
-		dropIn: dropIn, socket: socket, open: open, clock: time.Now, versions: map[string]clientVersion{}}, nil
+		dropIn: dropIn, socket: socket, builtin: builtin, engineUnit: engineUnit, open: open, clock: time.Now, versions: map[string]clientVersion{}}, nil
 }
 
 // engineSocket validates an engine address the way the hook does and
@@ -244,6 +252,13 @@ func (c *checker) evaluate(container, user string, prev installed) Result {
 		}
 		return tampered("the hook binary differs from the pinned one", true)
 	}
+	if c.builtin {
+		if r, err := c.checkUnitFile(container, prev); err != nil {
+			return unknown(err)
+		} else if r.repair {
+			return r
+		}
+	}
 
 	// 2. Any other managed file that turns hooks off. A second managed file
 	// with disableAllHooks does disable ours, whichever sorts first. Names
@@ -285,26 +300,29 @@ func (c *checker) evaluate(container, user string, prev installed) Result {
 	// runs as that user, so a running engine whose socket the user cannot
 	// open is the same outcome, no scan. A fresh process is tested; a
 	// session started before the user joined the socket's group keeps its
-	// old groups until it is restarted.
-	if c.opts.EngineUnit != "" {
-		_, code, err := c.run.run(container, "systemctl", "is-active", "--quiet", c.opts.EngineUnit)
+	// old groups until it is restarted. The built-in engine is the
+	// daemon's to put back, so its failures are repaired after reporting.
+	if c.engineUnit != "" {
+		_, code, err := c.run.run(container, "systemctl", "is-active", "--quiet", c.engineUnit)
 		if err != nil {
 			return unknown(err)
 		}
 		if code != 0 {
 			res.Coverage = pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING
-			res.Detail = "the engine service " + c.opts.EngineUnit + " is not active"
+			res.Detail = "the engine service " + c.engineUnit + " is not active"
+			res.repair = c.builtin
 			return res
 		}
 	}
 	if c.socket != "" {
-		_, code, err := c.run.run(container, "runuser", "-u", user, "--", "test", "-S", c.socket, "-a", "-r", c.socket, "-a", "-w", c.socket)
+		_, code, err := c.run.run(container, c.socketTest(user)...)
 		if err != nil {
 			return unknown(err)
 		}
 		if code != 0 {
 			res.Coverage = pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING
 			res.Detail = "the engine socket " + c.socket + " is missing or the box user may not open it (is the user in the socket's group?)"
+			res.repair = c.builtin
 			return res
 		}
 	}

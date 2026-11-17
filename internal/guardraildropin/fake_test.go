@@ -16,6 +16,12 @@ import (
 
 const fakeClientPath = "/home/alice/.local/bin/claude"
 
+// operatorUnit is an engine unit the operator provides; the daemon installs
+// none. The tests written for #3762 run in this mode.
+const operatorUnit = "containarium-engine.service"
+
+var operatorEngine = Options{EngineUnit: operatorUnit}
+
 // fakeBox is an in-memory box: a file map plus answers for the commands the
 // package runs as root. It models just enough of a filesystem (file type,
 // owner, mode, the three directories) to drive the checks. No real host.
@@ -30,13 +36,18 @@ type fakeBox struct {
 	engineActive bool
 	socketDenied bool // the box user cannot reach the engine socket
 	smokeBroken  bool // the hook binary does not run in this box
-	ps           string
-	stamps       map[string]string // pid -> stamp mtime (epoch seconds)
-	claudeStat   string            // "" = no client installed
-	version      string
-	versionCalls int
-	execErr      error
-	exitCode     int // when non-zero, every command exits with it
+	// The built-in reference engine: whether its unit is running, whether
+	// the box user is in the socket's group, and whether a start fails.
+	refRunning       bool
+	inGroup          bool
+	engineStartFails bool
+	ps               string
+	stamps           map[string]string // pid -> stamp mtime (epoch seconds)
+	claudeStat       string            // "" = no client installed
+	version          string
+	versionCalls     int
+	execErr          error
+	exitCode         int // when non-zero, every command exits with it
 	// hang blocks the managed-file listing for a container until closed;
 	// entered is closed when the first such call arrives.
 	hang    map[string]chan struct{}
@@ -119,10 +130,26 @@ func (f *fakeBox) ExecWithExitCode(container string, c []string) (string, string
 		sum := sha256.Sum256(b)
 		return hex.EncodeToString(sum[:]) + "  " + last + "\n", "", 0, nil
 	case "systemctl":
-		if f.engineActive {
-			return "", "", 0, nil
+		f.log = append(f.log, "systemctl "+c[1])
+		switch c[1] {
+		case "is-active":
+			active := f.engineActive
+			if last == ReferenceEngineUnit {
+				active = f.refRunning
+			}
+			if active {
+				return "", "", 0, nil
+			}
+			return "", "", 3, nil
+		case "start", "restart":
+			_, unit := f.files[EngineUnitPath]
+			_, bin := f.files[HookBinaryPath]
+			if !unit || !bin || f.engineStartFails {
+				return "", "", 1, nil
+			}
+			f.refRunning = true
 		}
-		return "", "", 3, nil
+		return "", "", 0, nil
 	case "runuser":
 		return f.asUser(c[4:])
 	case "ps":
@@ -161,6 +188,9 @@ func (f *fakeBox) ExecWithExitCode(container string, c []string) (string, string
 // asUser answers a command run as the box user: c is what follows "--".
 func (f *fakeBox) asUser(c []string) (string, string, int, error) {
 	if c[0] == "test" {
+		if c[2] == ReferenceEngineSocket && (!f.refRunning || !f.inGroup) {
+			return "", "", 1, nil
+		}
 		if f.socketDenied {
 			return "", "", 1, nil
 		}
@@ -209,6 +239,16 @@ func (f *fakeBox) script(script string, args []string) (string, string, int, err
 			}
 			f.dirs[d] = true
 		}
+		return "", "", 0, nil
+	case engineAccountsScript:
+		f.log = append(f.log, "accounts "+strings.Join(args, " "))
+		f.inGroup = true
+		return "", "", 0, nil
+	case removeEngineScript:
+		f.log = append(f.log, "remove-engine")
+		delete(f.files, EngineUnitPath)
+		delete(f.files, tmpUnitPath)
+		f.refRunning = false
 		return "", "", 0, nil
 	case findClientScript:
 		if f.claudeStat == "" {

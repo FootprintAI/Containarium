@@ -42,13 +42,22 @@ done`
 // binary and of the drop-in. The manager keeps it on the box's config, on
 // the host, where the box user cannot edit it; the check uses it to tell
 // "an earlier version of ours" from a change someone else made.
-type installed struct{ binary, dropIn string }
+//
+// unit is the hash of the built-in engine's unit file; "" when the daemon
+// installed none (an operator's engine, or a daemon from before #3767).
+type installed struct{ binary, dropIn, unit string }
 
-func (i installed) String() string { return i.binary + ":" + i.dropIn }
+func (i installed) String() string {
+	if i.unit == "" {
+		return i.binary + ":" + i.dropIn
+	}
+	return i.binary + ":" + i.dropIn + ":" + i.unit
+}
 
 func parseInstalled(s string) installed {
-	b, d, _ := strings.Cut(s, ":")
-	return installed{binary: b, dropIn: d}
+	b, rest, _ := strings.Cut(s, ":")
+	d, u, _ := strings.Cut(rest, ":")
+	return installed{binary: b, dropIn: d, unit: u}
 }
 
 func sha256Hex(b []byte) string {
@@ -62,7 +71,11 @@ func (c *checker) current() (installed, error) {
 	if err != nil {
 		return installed{}, err
 	}
-	return installed{binary: bin, dropIn: sha256Hex(c.dropIn)}, nil
+	cur := installed{binary: bin, dropIn: sha256Hex(c.dropIn)}
+	if c.builtin {
+		cur.unit = sha256Hex(RenderEngineUnit())
+	}
+	return cur, nil
 }
 
 // smoke runs the hook binary at path once, as the box user with a clean
@@ -81,10 +94,12 @@ func (c *checker) smoke(container, user, path string) error {
 	return nil
 }
 
-// install puts the pinned binary and then the drop-in into a running box.
-// The drop-in is written only after the binary it names has run there: with
-// onFailure "block", a drop-in naming a command that does not run blocks
-// every tool call. Both files are written under a temporary name and
+// install puts the pinned binary, then the engine, then the drop-in into a
+// running box. The drop-in is written only after the binary it names has
+// run there and, with the built-in engine, after that engine answers on its
+// socket for the box user: with onFailure "block", a drop-in naming a
+// command that does not run, or an engine that is not there, blocks every
+// tool call. Both files are written under a temporary name and
 // renamed, which replaces a symlink at the final path instead of following
 // it and never exposes a half-written file.
 func (c *checker) install(container, user string) error {
@@ -140,6 +155,12 @@ func (c *checker) install(container, user string) error {
 		}
 	}
 
+	if err := c.installEngine(container, user, candidate != HookBinaryPath); err != nil {
+		// As for a binary that does not run: no drop-in without it.
+		_ = c.run.mustRun(container, "rm", "-f", "--", DropInPath)
+		return err
+	}
+
 	if err := c.run.mustRun(container, "rm", "-f", "--", tmpDropInPath); err != nil {
 		return err
 	}
@@ -149,10 +170,14 @@ func (c *checker) install(container, user string) error {
 	return c.run.mustRun(container, "mv", "-T", "--", tmpDropInPath, DropInPath)
 }
 
-// remove takes the drop-in out first, then the binary. It is the
-// break-glass, so it must work whatever state the binary is in.
+// remove takes the drop-in out first, then the daemon's engine unit, then
+// the binary. It is the break-glass, so it must work whatever state the
+// binary and the engine are in.
 func (c *checker) remove(container string) error {
 	if err := c.run.mustRun(container, "rm", "-f", "--", DropInPath, tmpDropInPath); err != nil {
+		return err
+	}
+	if err := c.removeEngine(container); err != nil {
 		return err
 	}
 	if err := c.run.mustRun(container, "rm", "-rf", "--", HookBinaryDir); err != nil {
