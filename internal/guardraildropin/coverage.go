@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"path"
 	"regexp"
 	"strconv"
@@ -17,7 +18,7 @@ import (
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
-// TODO(#3761): the three values below belong to the hook handler. They are
+// TODO(#3761): the two values below belong to the hook handler. They are
 // restated here because the handler is not merged yet; replace them with its
 // exported constants once it is.
 const (
@@ -25,10 +26,12 @@ const (
 	stampSubdir = "containarium-guardrail/stamps"
 	// clientProcessName is the comm of a Claude Code process.
 	clientProcessName = "claude"
-	// DefaultEngineUnit is the systemd unit of the detector engine the hook
-	// calls. Installing that unit is not this package's job.
-	DefaultEngineUnit = "containarium-guardrail-engine.service"
 )
+
+// DefaultEngineUnit is the systemd unit of the engine service the hook
+// calls. Installing that unit, and putting the box user in the group that
+// may open its socket, is the engine installer's job, not this package's.
+const DefaultEngineUnit = "containarium-engine.service"
 
 // DefaultStampGrace is how long a client process may run before a missing
 // stamp counts. SessionStart fires within seconds; the slack is for a slow
@@ -67,6 +70,9 @@ type checker struct {
 	box    Box
 	opts   Options
 	dropIn []byte
+	// socket is the engine's unix socket path in the box; "" when the
+	// engine address is not a unix socket.
+	socket string
 	open   openBinary
 	clock  func() time.Time
 
@@ -76,14 +82,18 @@ type checker struct {
 }
 
 func newChecker(box Box, opts Options, open openBinary) (*checker, error) {
-	dropIn, err := Render(opts.HookTimeout)
+	socket, err := engineSocket(opts.EngineAddr)
+	if err != nil {
+		return nil, err
+	}
+	dropIn, err := Render(opts.HookTimeout, opts.EngineAddr)
 	if err != nil {
 		return nil, err
 	}
 	if _, err := versionAtLeast(opts.MinClientVersion, "0"); err != nil {
 		return nil, fmt.Errorf("minimum client version: %w", err)
 	}
-	return &checker{box: box, opts: opts, dropIn: dropIn, open: open, clock: time.Now, versions: map[string]clientVersion{}}, nil
+	return &checker{box: box, opts: opts, dropIn: dropIn, socket: socket, open: open, clock: time.Now, versions: map[string]clientVersion{}}, nil
 }
 
 // binarySHA is the SHA-256 of the pinned binary, hashed once.
@@ -106,11 +116,37 @@ func (c *checker) binarySHA() (string, error) {
 	return c.binSHA, nil
 }
 
+// engineSocket validates an engine address the way the hook does and
+// returns its unix socket path, or "" for a loopback host:port or no engine.
+// The path ends up inside a single-quoted shell word, so a quote is refused.
+func engineSocket(addr string) (string, error) {
+	p := strings.TrimPrefix(addr, "unix://")
+	switch {
+	case addr == "":
+		return "", nil
+	case strings.HasPrefix(p, "/"):
+		if strings.ContainsAny(p, "'\n") {
+			return "", fmt.Errorf("engine address %q: the socket path must not contain a quote or a newline", addr)
+		}
+		return p, nil
+	case strings.HasPrefix(addr, "unix:"):
+		return "", fmt.Errorf("engine address %q: want unix://<absolute path>", addr)
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("engine address %q: want a unix socket path or a loopback host:port", addr)
+	}
+	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return "", fmt.Errorf("engine address %q is not inside the box: use a unix socket or a loopback address", addr)
+	}
+	return "", nil
+}
+
 // run executes argv as root in the box. A non-zero exit is not an error.
 func (c *checker) run(container string, argv ...string) (string, int, error) {
 	out, _, code, err := c.box.ExecWithExitCode(container, argv)
 	if err != nil {
-		return "", code, fmt.Errorf("%s in %s: %w", argv[0], container, err)
+		return "", code, fmt.Errorf("%s in %q: %w", argv[0], container, err)
 	}
 	return out, code, nil
 }
@@ -119,7 +155,7 @@ func (c *checker) run(container string, argv ...string) (string, int, error) {
 func (c *checker) mustRun(container string, argv ...string) error {
 	_, code, err := c.run(container, argv...)
 	if err == nil && code != 0 {
-		err = fmt.Errorf("%s in %s: exit %d", argv[0], container, code)
+		err = fmt.Errorf("%s in %q: exit %d", argv[0], container, code)
 	}
 	return err
 }
@@ -154,11 +190,11 @@ func (c *checker) install(container string) error {
 		}
 		defer func() { _ = f.Close() }()
 		if err := c.box.PushFile(container, HookBinaryPath, f, "0755"); err != nil {
-			return fmt.Errorf("install hook binary in %s: %w", container, err)
+			return fmt.Errorf("install hook binary in %q: %w", container, err)
 		}
 	}
 	if err := c.box.WriteFile(container, DropInPath, c.dropIn, "0644"); err != nil {
-		return fmt.Errorf("install drop-in in %s: %w", container, err)
+		return fmt.Errorf("install drop-in in %q: %w", container, err)
 	}
 	return nil
 }
@@ -233,7 +269,7 @@ func (c *checker) evaluate(container, user string) Result {
 		}
 		if code == 0 && disablesHooks([]byte(raw)) {
 			return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_TAMPERED,
-				Detail: "another managed settings file sets disableAllHooks: " + p}
+				Detail: fmt.Sprintf("another managed settings file sets disableAllHooks: %q", p)}
 		}
 	}
 
@@ -252,6 +288,21 @@ func (c *checker) evaluate(container, user string) Result {
 		if code != 0 {
 			return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING,
 				Detail: "the engine service " + c.opts.EngineUnit + " is not active", ClientVersion: version}
+		}
+	}
+	// The hook runs as the box user, so a running engine whose socket that
+	// user cannot open is the same outcome: no scan. A fresh login is
+	// tested; a session started before the user joined the socket's group
+	// keeps its old groups until it is restarted.
+	if c.socket != "" {
+		_, code, err := c.run(container, "su", "-", user, "-c", "test -S '"+c.socket+"' -a -r '"+c.socket+"' -a -w '"+c.socket+"'")
+		if err != nil {
+			return unknown(err)
+		}
+		if code != 0 {
+			return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING,
+				Detail:        "the engine socket " + c.socket + " is missing or the box user may not open it (is the user in the socket's group?)",
+				ClientVersion: version}
 		}
 	}
 

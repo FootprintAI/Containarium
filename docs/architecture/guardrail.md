@@ -202,8 +202,13 @@ a running box and again at every start while the switch is on:
    - one **exec-form** hook (`command` plus `args`, no shell) for each of
      `SessionStart`, `PreToolUse`, `PostToolUse`, `PostToolBatch`,
      `UserPromptSubmit` and `InstructionsLoaded`;
+   - `--engine <address>` in each hook's `args`
+     (`--guardrail-hook-engine`, default
+     `unix:///run/containarium-engine/engine.sock`). Without it the hook
+     scans with its in-process reference rules, and nothing outside the box
+     could tell; `none` asks for exactly that;
    - `onFailure: "block"` and an explicit timeout on each
-     (`--guardrail-hook-timeout`, default 10 s);
+     (`--guardrail-hook-timeout`, default 15 s);
    - `env.CLAUDE_CODE_DISABLE_FILE_MENTIONS=1`, so an `@`-mentioned file is
      read through the `Read` tool, where the hook sees it, instead of being
      inlined with no tool call.
@@ -214,6 +219,23 @@ a running box and again at every start while the switch is on:
 
 Running sessions pick a change up at their next tool call; nothing is
 restarted.
+
+**Timeouts, from the inside out.** The hook waits up to 3 s for the engine
+and gives one scan 2 s by default; it sends the engine at most 16 KiB at a
+time and gives anything larger a fast in-process pattern pass. The engine
+service has its own per-scan deadline, 10 s as packaged. The hook timeout
+in the drop-in is the outermost and must stay above both: at 15 s a slow
+scan ends in the hook's own answer, with a reason the model sees, and the
+client only kills the hook when the hook itself is stuck. A daemon whose
+engine runs with a longer deadline needs a longer `--guardrail-hook-timeout`.
+
+**The engine service is not installed by the daemon.** The drop-in and the
+check assume the engine service as packaged: the unit
+`containarium-engine.service`, listening on the socket above, which only
+members of the socket's group may open. Installing it, and adding the box
+user to that group, is the engine installer's job (#3767). The hook runs as
+the box user, so the check tests the socket as that user rather than
+trusting the unit's state.
 
 **`disable` is the break-glass.** `onFailure: "block"` reads no setting: if
 the hook binary or the engine is broken, every tool call in the box is
@@ -234,7 +256,7 @@ on, as root from outside the box user's control. It reports one
 | `NOT_COVERED_NOT_INSTALLED` | The drop-in or the hook binary is missing. |
 | `NOT_COVERED_TAMPERED` | The drop-in or binary differs from what the daemon installed, or another file in `/etc/claude-code/` or `managed-settings.d/` sets `disableAllHooks`. A second managed file does turn the hooks off, whichever sorts first. |
 | `NOT_COVERED_CLIENT_TOO_OLD` | Claude Code is older than `--guardrail-hook-min-client-version` (default 2.1.326, the only version this was tested on; the documented floors of the settings used put the true minimum at 2.1.299 or later). The version is read as the box user, and only when the client binary changed. |
-| `NOT_COVERED_ENGINE_NOT_RUNNING` | The detector engine's systemd unit (`--guardrail-hook-engine-unit`) is not active. The daemon checks the unit; it does not install it. |
+| `NOT_COVERED_ENGINE_NOT_RUNNING` | The engine service's systemd unit (`--guardrail-hook-engine-unit`, default `containarium-engine.service`) is not active, or its socket is missing or cannot be opened by the box user (for example, the user is not in the socket's group). The detail says which. |
 | `NOT_COVERED_HOOKS_NOT_FIRING` | A `claude` process has run for more than a few minutes with no hook stamp since it started. Every hook invocation touches a stamp for its client process under the box user's `$XDG_STATE_HOME/containarium-guardrail/stamps/`; the daemon compares them with process start times from `ps`. This catches what the file checks cannot, such as a higher-ranked managed settings source that makes the client skip the drop-in. |
 | `UNKNOWN` | Not checked yet, the box is stopped, or the check could not run. |
 
@@ -255,6 +277,9 @@ woken.
 - A sample every few minutes misses a session shorter than the grace period.
 - A stopped engine is seen; an engine replaced by a no-op on the same unit
   is not.
+- The socket is tested with a fresh login of the box user. A session that
+  was already running when the user joined the socket's group keeps its old
+  groups, and its tools are denied until it is restarted.
 
 ## Open
 

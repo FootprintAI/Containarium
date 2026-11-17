@@ -107,7 +107,7 @@ func (s *GuardrailHookServer) SetGuardrailHook(ctx context.Context, req *pb.SetG
 // switch is already applied.
 func (s *GuardrailHookServer) auditSet(ctx context.Context, box guardraildropin.BoxCoverage) {
 	subject, _, _ := auth.SubjectFromGRPCContext(ctx)
-	log.Printf("[guardrail-hook] %s set enabled=%t for %s: %s", subject, box.Enabled, box.Username, box.Coverage)
+	log.Printf("[guardrail-hook] %q set enabled=%t for %q: %s", subject, box.Enabled, box.Username, box.Coverage)
 	if s.audit == nil {
 		return
 	}
@@ -118,7 +118,7 @@ func (s *GuardrailHookServer) auditSet(ctx context.Context, box guardraildropin.
 	if err := s.audit.Log(ctx, &audit.AuditEntry{
 		Username: subject, Action: guardrailHookSetAction, ResourceType: "container", ResourceID: box.Username, Detail: string(payload),
 	}); err != nil {
-		log.Printf("[guardrail-hook] audit %s for %s: %v", guardrailHookSetAction, box.Username, err)
+		log.Printf("[guardrail-hook] audit %s for %q: %v", guardrailHookSetAction, box.Username, err)
 	}
 }
 

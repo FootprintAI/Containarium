@@ -28,16 +28,22 @@ type Options struct {
 	HookTimeout      time.Duration
 	StampGrace       time.Duration
 	// EngineUnit is the systemd unit of the detector engine in the box.
-	// EngineUnitNone skips the engine check.
+	// EngineNone skips the unit check.
 	EngineUnit string
+	// EngineAddr is the engine's address inside the box, passed to every
+	// hook as --engine: unix://<absolute path>, an absolute socket path, or
+	// a loopback host:port. EngineNone passes none, and the hook scans with
+	// its in-process reference rules.
+	EngineAddr string
 	// HookBinary is the host path of the CLI binary copied into boxes.
 	// Empty means the daemon's own executable, which carries the same
 	// command tree and is by construction the daemon's version.
 	HookBinary string
 }
 
-// EngineUnitNone as Options.EngineUnit turns the engine check off.
-const EngineUnitNone = "none"
+// EngineNone as Options.EngineUnit or Options.EngineAddr means "no engine
+// service": no unit to check, no address to pass.
+const EngineNone = "none"
 
 func (o Options) withDefaults() Options {
 	if o.CheckInterval <= 0 {
@@ -55,8 +61,14 @@ func (o Options) withDefaults() Options {
 	switch o.EngineUnit {
 	case "":
 		o.EngineUnit = DefaultEngineUnit
-	case EngineUnitNone:
+	case EngineNone:
 		o.EngineUnit = ""
+	}
+	switch o.EngineAddr {
+	case "":
+		o.EngineAddr = DefaultEngineAddr
+	case EngineNone:
+		o.EngineAddr = ""
 	}
 	return o
 }
@@ -188,7 +200,7 @@ func (m *Manager) reconcile(container string, installFirst bool) {
 	// Read the switch again under the lock; the list may be stale.
 	cfg, _, err := m.inst.GetRawInstance(container)
 	if err != nil {
-		log.Printf("[guardrail-hook] read %s: %v", container, err)
+		log.Printf("[guardrail-hook] read %q: %v", container, err)
 		return
 	}
 	switch incus.GuardrailHookSwitch(cfg[incus.GuardrailHookKey]) {
@@ -201,7 +213,7 @@ func (m *Manager) reconcile(container string, installFirst bool) {
 		r := m.checker.check(container, usernameOf(container))
 		m.setResult(container, r)
 		if r.repair && !installFirst {
-			log.Printf("[guardrail-hook] %s: %s; installing again", container, r.Detail)
+			log.Printf("[guardrail-hook] %q: %s; installing again", container, r.Detail)
 			if err := m.checker.install(container); err != nil {
 				log.Printf("[guardrail-hook] repair: %v", err)
 			}

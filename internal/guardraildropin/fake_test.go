@@ -23,6 +23,7 @@ type fakeBox struct {
 	claudeStat   string            // "" = no client installed
 	version      string
 	versionCalls int
+	socketDenied bool // the box user cannot reach the engine socket
 	execErr      error
 	log          []string // "exec cat", "write <path>", ...
 }
@@ -74,6 +75,12 @@ func (f *fakeBox) ExecWithExitCode(_ string, c []string) (string, string, int, e
 		}
 		return f.claudeStat + "\n", "", 0, nil
 	case "su":
+		if strings.HasPrefix(last, "test ") {
+			if f.socketDenied {
+				return "", "", 1, nil
+			}
+			return "", "", 0, nil
+		}
 		f.versionCalls++
 		return f.version + "\n", "", 0, nil
 	case "ps":

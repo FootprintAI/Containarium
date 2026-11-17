@@ -163,9 +163,11 @@ func init() {
 	daemonCmd.Flags().StringVar(&daemonGuardrailHook.MinClientVersion, "guardrail-hook-min-client-version", guardraildropin.DefaultMinClientVersion,
 		"Oldest Claude Code version the guardrail hook coverage check accepts; an older client is reported as not covered")
 	daemonCmd.Flags().DurationVar(&daemonGuardrailHook.HookTimeout, "guardrail-hook-timeout", guardraildropin.DefaultHookTimeout,
-		"Per-hook timeout written into the guardrail hook drop-in (whole seconds); a hook that exceeds it blocks the tool call")
+		"Per-hook timeout written into the guardrail hook drop-in (whole seconds); a hook that exceeds it blocks the tool call. Keep it above the engine service's per-scan deadline")
 	daemonCmd.Flags().StringVar(&daemonGuardrailHook.EngineUnit, "guardrail-hook-engine-unit", guardraildropin.DefaultEngineUnit,
-		"systemd unit of the detector engine inside a box, checked for coverage; \"none\" skips the engine check")
+		"systemd unit of the engine service inside a box, checked for coverage; \"none\" skips the unit check")
+	daemonCmd.Flags().StringVar(&daemonGuardrailHook.EngineAddr, "guardrail-hook-engine", guardraildropin.DefaultEngineAddr,
+		"Address of the engine service inside a box, passed to every hook as --engine: unix://<absolute path> or a loopback host:port. \"none\" passes none, and the hook scans with its in-process reference rules")
 	daemonCmd.Flags().StringVar(&daemonGuardrailHook.HookBinary, "guardrail-hook-binary", "",
 		"Host path of the containarium binary copied into boxes as the hook command. Empty = this daemon's own executable")
 	daemonCmd.Flags().StringVar(&daemonGuardrailStagingRoot, "guardrail-staging-root", "",

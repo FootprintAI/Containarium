@@ -34,7 +34,13 @@ const (
 	HookBinaryPath = HookBinaryDir + "/containarium"
 
 	// DefaultHookTimeout is the per-hook timeout written into the drop-in.
-	DefaultHookTimeout = 10 * time.Second
+	// It sits above the engine service's own per-scan deadline (10 s as
+	// packaged) and well above the hook's defaults (a 3 s wait for the
+	// engine plus a 2 s scan deadline), so a slow scan ends in the hook's
+	// own answer, with a reason, before the client kills the hook.
+	DefaultHookTimeout = 15 * time.Second
+	// DefaultEngineAddr is where the engine service listens in a box.
+	DefaultEngineAddr = "unix:///run/containarium-engine/engine.sock"
 	// DefaultMinClientVersion is the oldest Claude Code the check accepts.
 	// 2.1.326 is the only version the drop-in's behaviour was tested on; the
 	// documented floors of the settings it uses put the true minimum at or
@@ -77,8 +83,10 @@ type hookCommand struct {
 }
 
 // Render returns the drop-in's bytes. Deterministic, so the coverage check
-// can compare a box's file against it byte for byte.
-func Render(timeout time.Duration) ([]byte, error) {
+// can compare a box's file against it byte for byte. engineAddr is passed
+// to every hook as --engine; empty leaves it out, and the hook then scans
+// with its in-process reference rules.
+func Render(timeout time.Duration, engineAddr string) ([]byte, error) {
 	if timeout < time.Second {
 		return nil, fmt.Errorf("guardrail hook timeout %s is under one second", timeout)
 	}
@@ -90,10 +98,14 @@ func Render(timeout time.Duration) ([]byte, error) {
 		Hooks: map[string][]hookGroup{},
 	}
 	for _, ev := range HookEvents {
+		args := []string{"guardrail", "hook", ev}
+		if engineAddr != "" {
+			args = append(args, "--engine", engineAddr)
+		}
 		s.Hooks[ev] = []hookGroup{{Hooks: []hookCommand{{
 			Type:      "command",
 			Command:   HookBinaryPath,
-			Args:      []string{"guardrail", "hook", ev},
+			Args:      args,
 			Timeout:   int(timeout / time.Second),
 			OnFailure: "block",
 		}}}}

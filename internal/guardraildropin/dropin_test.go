@@ -8,7 +8,7 @@ import (
 )
 
 func TestRenderDropIn(t *testing.T) {
-	raw, err := Render(10 * time.Second)
+	raw, err := Render(10*time.Second, DefaultEngineAddr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,9 @@ func TestRenderDropIn(t *testing.T) {
 		if h.Type != "command" || h.Command != HookBinaryPath {
 			t.Errorf("%s: command = %q (%s), want %q", ev, h.Command, h.Type, HookBinaryPath)
 		}
-		if strings.Join(h.Args, " ") != "guardrail hook "+ev {
+		// The engine address is passed explicitly: without --engine the hook
+		// falls back to its in-process reference rules.
+		if strings.Join(h.Args, " ") != "guardrail hook "+ev+" --engine unix:///run/containarium-engine/engine.sock" {
 			t.Errorf("%s: args = %v", ev, h.Args)
 		}
 		if h.OnFailure != "block" || h.Timeout != 10 {
@@ -50,7 +52,45 @@ func TestRenderDropIn(t *testing.T) {
 }
 
 func TestRenderRejectsSubSecondTimeout(t *testing.T) {
-	if _, err := Render(500 * time.Millisecond); err == nil {
+	if _, err := Render(500*time.Millisecond, DefaultEngineAddr); err == nil {
 		t.Fatal("want an error for a timeout under one second")
+	}
+}
+
+// With no engine address the hook runs its in-process reference rules, and
+// the drop-in passes no --engine.
+func TestRenderWithoutEngineAddress(t *testing.T) {
+	raw, err := Render(10*time.Second, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "--engine") {
+		t.Fatalf("drop-in names an engine:\n%s", raw)
+	}
+}
+
+func TestOptionsDefaults(t *testing.T) {
+	o := Options{}.withDefaults()
+	if o.EngineUnit != "containarium-engine.service" || o.EngineAddr != "unix:///run/containarium-engine/engine.sock" {
+		t.Errorf("engine defaults = %q, %q", o.EngineUnit, o.EngineAddr)
+	}
+	// Above the engine's own 10 s scan deadline, so the engine (or the
+	// hook's shorter deadline) answers before the client kills the hook.
+	if o.HookTimeout != 15*time.Second {
+		t.Errorf("hook timeout default = %s", o.HookTimeout)
+	}
+	o = Options{EngineUnit: EngineNone, EngineAddr: EngineNone}.withDefaults()
+	if o.EngineUnit != "" || o.EngineAddr != "" {
+		t.Errorf("none should clear both, got %q, %q", o.EngineUnit, o.EngineAddr)
+	}
+	for _, bad := range []string{"unix://relative.sock", "unix:///run/it's.sock", "example.com:9091", "nonsense"} {
+		if _, err := newChecker(newFakeBox(), Options{EngineAddr: bad}.withDefaults(), bytesBinary(testBinary)); err == nil {
+			t.Errorf("engine address %q accepted", bad)
+		}
+	}
+	for _, ok := range []string{"/run/x/engine.sock", "127.0.0.1:9091", "localhost:9091"} {
+		if _, err := newChecker(newFakeBox(), Options{EngineAddr: ok}.withDefaults(), bytesBinary(testBinary)); err != nil {
+			t.Errorf("engine address %q refused: %v", ok, err)
+		}
 	}
 }

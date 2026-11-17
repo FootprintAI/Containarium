@@ -79,7 +79,8 @@ switched on (admin).
   NOT_COVERED_FEATURE_OFF          the hook is switched off for the box
   NOT_COVERED_NOT_INSTALLED        the drop-in or hook binary is missing
   NOT_COVERED_CLIENT_TOO_OLD       Claude Code is older than the daemon's minimum
-  NOT_COVERED_ENGINE_NOT_RUNNING   the detector engine service is not active
+  NOT_COVERED_ENGINE_NOT_RUNNING   the engine service is not active, or the
+                                   box user cannot open its socket
   NOT_COVERED_HOOKS_NOT_FIRING     a long-running client has no hook stamp
   NOT_COVERED_TAMPERED             a file was changed, or another managed
                                    settings file sets disableAllHooks
@@ -156,8 +157,8 @@ func printGuardrailHookBoxes(w io.Writer, boxes []*pb.GuardrailHookBoxCoverage) 
 		if version == "" {
 			version = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", b.GetUsername(), sw,
-			strings.TrimPrefix(b.GetCoverage().String(), "GUARDRAIL_HOOK_COVERAGE_"), version, checked, b.GetDetail())
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", escapeControl(b.GetUsername()), sw,
+			strings.TrimPrefix(b.GetCoverage().String(), "GUARDRAIL_HOOK_COVERAGE_"), escapeControl(version), checked, escapeControl(b.GetDetail()))
 	}
 	return tw.Flush()
 }

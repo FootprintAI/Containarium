@@ -57,6 +57,7 @@ func TestCheck(t *testing.T) {
 			b.files[DropInDir+"/x.json"] = []byte(`{"disableAllHooks": false, "env": {"A": "b"}}`)
 		}, pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_COVERED},
 		{"engine stopped", func(b *fakeBox) { b.engineActive = false }, pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING},
+		{"engine socket not reachable by the box user", func(b *fakeBox) { b.socketDenied = true }, pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING},
 		{"client older than the minimum", func(b *fakeBox) { b.version = "2.1.298 (Claude Code)" }, pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_CLIENT_TOO_OLD},
 		{"client newer than the minimum", func(b *fakeBox) { b.version = "2.2.0 (Claude Code)" }, pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_COVERED},
 		{"client version unreadable", func(b *fakeBox) { b.version = "garbage" }, pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_UNKNOWN},
