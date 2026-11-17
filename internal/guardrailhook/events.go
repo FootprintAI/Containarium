@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -154,6 +155,13 @@ func (c *call) preToolUse(ctx context.Context) (*hookOutput, error) {
 			return c.deny("the guardrail's own state directory is not readable from a session.", "state directory named in "+name)
 		}
 	}
+	if tool == "Glob" {
+		root, _ := stringField(fields, "path")
+		pattern, _ := stringField(fields, "pattern")
+		if c.globReachesStateDir(root, pattern) {
+			return c.deny("this pattern can match files in the guardrail's own state directory, which is not readable from a session. Search a narrower directory.", "state directory reachable by Glob")
+		}
+	}
 	if out, err := rehydrate(spec.content, "edit"); out != nil || err != nil {
 		return out, err
 	}
@@ -197,6 +205,56 @@ func (c *call) underStateDir(p string) bool {
 	p = filepath.Clean(p)
 	dir := filepath.Clean(c.state.dir)
 	return p == dir || strings.HasPrefix(p, dir+string(filepath.Separator))
+}
+
+// globReachesStateDir reports whether a Glob from root (the working
+// directory when empty) with pattern could match the state directory or a
+// file in it: a search from an ancestor would list its file names.
+func (c *call) globReachesStateDir(root, pattern string) bool {
+	if filepath.IsAbs(pattern) {
+		root = string(filepath.Separator)
+	} else if root == "" {
+		root = c.in.CWD
+	}
+	if !filepath.IsAbs(root) {
+		root = filepath.Join(c.in.CWD, root)
+	}
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(c.state.dir))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	var dirParts []string
+	if rel != "." {
+		dirParts = strings.Split(rel, string(filepath.Separator))
+	}
+	var segs []string
+	for _, s := range strings.Split(filepath.ToSlash(pattern), "/") {
+		if s != "" && s != "." {
+			segs = append(segs, s)
+		}
+	}
+	return globReaches(segs, dirParts)
+}
+
+// globReaches reports whether pattern segments segs can match dir (the path
+// components from the search root to the state directory) or anything
+// below it. A segment the matcher cannot read (a brace list, a bad pattern)
+// is taken to match: when unsure, refuse.
+func globReaches(segs, dir []string) bool {
+	if len(dir) == 0 {
+		return true // at the state directory: whatever is left matches in it
+	}
+	if len(segs) == 0 {
+		return false // the pattern stops above the state directory
+	}
+	if segs[0] == "**" {
+		return globReaches(segs[1:], dir) || globReaches(segs, dir[1:])
+	}
+	if strings.ContainsAny(segs[0], "{}") {
+		return globReaches(segs[1:], dir[1:])
+	}
+	ok, err := path.Match(segs[0], dir[0])
+	return (ok || err != nil) && globReaches(segs[1:], dir[1:])
 }
 
 // namesStateDir is the best-effort check for a command line: it catches the

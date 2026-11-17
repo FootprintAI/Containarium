@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -710,7 +711,9 @@ func TestState_KeyIsPrivateAndStable(t *testing.T) {
 }
 
 func TestSpool_IsBoundedAndNeverBlocks(t *testing.T) {
-	h, dir := newHandler(t, func(c *Config) { c.SpoolMaxBytes = 300 })
+	// Room for a few rows, not for the 20 the loop writes.
+	const bound = 2048
+	h, dir := newHandler(t, func(c *Config) { c.SpoolMaxBytes = bound })
 	for i := 0; i < 20; i++ {
 		decodeRead(t, fire(t, h, evPost, readResult("/w/.env", "k="+synthKey)))
 	}
@@ -718,8 +721,11 @@ func TestSpool_IsBoundedAndNeverBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Size() > 300 {
-		t.Errorf("spool grew to %d bytes past its 300 byte bound", info.Size())
+	if info.Size() > bound {
+		t.Errorf("spool grew to %d bytes past its %d byte bound", info.Size(), bound)
+	}
+	if n := len(spoolRows(t, dir)); n < 1 || n >= 20 {
+		t.Errorf("spool holds %d rows: want at least one, and fewer than the 20 written", n)
 	}
 }
 
@@ -779,5 +785,188 @@ func TestStamp_IsKeyedByTheAgentProcess(t *testing.T) {
 	fire(t, h, evSession, `{"session_id":"s1","source":"startup"}`)
 	if _, err := os.Stat(filepath.Join(dir, stampsDir, "50")); err != nil {
 		t.Errorf("every invocation touches the stamp: %v", err)
+	}
+}
+
+// A Glob whose search root is an ancestor of the state directory, with a
+// pattern that can reach into it, would list the directory's file names.
+func TestPreToolUse_DeniesGlobsThatReachTheStateDirectory(t *testing.T) {
+	h, dir := newHandler(t, nil)
+	parent := filepath.Dir(filepath.Dir(dir))
+	for _, in := range []string{
+		preInput("Glob", `{"pattern":"**/*","path":`+q(parent)+`}`),
+		preInput("Glob", `{"pattern":"**/marker.key","path":`+q(parent)+`}`),
+		preInput("Glob", `{"pattern":"*/state/*","path":`+q(parent)+`}`),
+		preInput("Glob", `{"pattern":`+q(parent+"/**/*.jsonl")+`}`),
+		`{"session_id":"s1","cwd":` + q(parent) + `,"hook_event_name":"PreToolUse","tool_name":"Glob","tool_input":{"pattern":"**/*.key"}}`,
+	} {
+		out := fire(t, h, evPre, in)
+		if out.HookSpecificOutput == nil || out.HookSpecificOutput.PermissionDecision != "deny" {
+			t.Errorf("must deny %s: %+v", in, out)
+		}
+	}
+	for _, in := range []string{
+		preInput("Glob", `{"pattern":"**/*.go","path":"/w"}`),
+		preInput("Glob", `{"pattern":"src/*","path":`+q(parent)+`}`),
+		preInput("Glob", `{"pattern":"*","path":`+q(parent)+`}`),
+	} {
+		if out := fire(t, h, evPre, in); out.HookSpecificOutput != nil {
+			t.Errorf("a glob that cannot reach the state directory passes: %s: %+v", in, out)
+		}
+	}
+}
+
+// The pattern pass is a fallback for text that reaches the model anyway. A
+// prompt can still be stopped, so an oversized one goes to the engine too.
+func TestUserPromptSubmit_OversizedPromptStillGetsTheEngine(t *testing.T) {
+	h, _ := newHandler(t, func(c *Config) { c.Engine = wordEngine{}; c.FullScanMaxBytes = 64 })
+	prompt := strings.Repeat("filler words ", 20) + "codename BLUEHERON"
+	out := fire(t, h, evPrompt, `{"session_id":"s1","prompt":`+q(prompt)+`}`)
+	if out.Decision != "block" || !strings.Contains(out.Reason, "CODENAME") {
+		t.Fatalf("a finding only the engine makes must still block an oversized prompt: %+v", out)
+	}
+}
+
+// wordEngine is the reference engine plus one finding the pattern pass
+// does not make: the word BLUEHERON, as a secret.
+type wordEngine struct{ guardrail.RulesEngine }
+
+func (e wordEngine) Scan(ctx context.Context, req *pb.GuardrailScanRequest) (*pb.GuardrailScanResponse, error) {
+	resp, err := e.RulesEngine.Scan(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range req.GetUnits() {
+		if at := strings.Index(u.GetText(), "BLUEHERON"); at >= 0 {
+			start := int32(utf8.RuneCountInString(u.GetText()[:at]))
+			resp.Findings = append(resp.Findings, &pb.GuardrailFinding{UnitId: u.GetUnitId(), Start: start, End: start + 9,
+				Kind: pb.GuardrailKind_GUARDRAIL_KIND_SECRET, Type: "CODENAME", Confidence: 1})
+		}
+	}
+	return resp, nil
+}
+
+// A secret that touches or overlaps personal data keeps the merged span a
+// secret, so its value is never written to the marker map.
+func TestMergeSpans_SecretDecidesTheKind(t *testing.T) {
+	pii, secret := pb.GuardrailKind_GUARDRAIL_KIND_PII, pb.GuardrailKind_GUARDRAIL_KIND_SECRET
+	for name, in := range map[string][]span{
+		"touching, equal confidence":  {{0, 11, pii, "SSN", 1}, {11, 40, secret, "PRIVATE_KEY", 1}},
+		"overlap, pii more confident": {{0, 20, pii, "EMAIL", 0.9}, {5, 15, secret, "TOKEN", 0.5}},
+	} {
+		got := mergeSpans(in)
+		if len(got) != 1 || got[0].kind != secret {
+			t.Errorf("%s: %+v, want one SECRET span", name, got)
+		}
+	}
+	h, dir := newHandler(t, nil)
+	fire(t, h, evPost, readResult("/w/k", "123-45-6789"+pemBegin+"\n"+pemBody+"\n"+pemEnd))
+	if stateContains(t, dir, pemBody) {
+		t.Error("key material was persisted through a merged personal-data span")
+	}
+}
+
+// A block marker that cannot be read is treated as set: the session stays
+// held rather than released by an error.
+func TestUserPromptSubmit_UnreadableBlockMarkerHoldsTheSession(t *testing.T) {
+	h, dir := newHandler(t, func(c *Config) { c.BlockOnBatchFinding = true })
+	fire(t, h, evSession, `{"session_id":"s1","source":"startup"}`)
+	// A file where the directory should be: every lookup under it fails
+	// with something other than "does not exist".
+	if err := os.WriteFile(filepath.Join(dir, blockedDir), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := fire(t, h, evPrompt, `{"session_id":"s1","prompt":"what next"}`); out.Decision != "block" {
+		t.Fatalf("an unreadable block marker must hold the session: %+v", out)
+	}
+}
+
+// Each excerpt is the window around its own marker, however far into a
+// large unit the span is.
+func TestPostToolUse_ExcerptIsTheWindowAroundEachMarker(t *testing.T) {
+	h, dir := newHandler(t, nil)
+	var b strings.Builder
+	for i := 0; i < 200; i++ {
+		b.WriteString(strings.Repeat("filler ", 10) + "row" + string(rune('a'+i%26)) + " " + synthEmail + "\n")
+	}
+	fire(t, h, evPost, postInput("FutureTool", `{}`, q(b.String())))
+	n := 0
+	for _, r := range spoolRows(t, dir) {
+		if r.GetOutcome() != pb.GuardrailHookOutcome_GUARDRAIL_HOOK_OUTCOME_REDACTED {
+			continue
+		}
+		n++
+		ex := r.GetExcerpt()
+		if !strings.Contains(ex, "row") || !strings.Contains(ex, "[[EMAIL:") || strings.Contains(ex, synthEmail) || utf8.RuneCountInString(ex) > 2*excerptContext+len("[[EMAIL:0123456789ab]]") {
+			t.Errorf("excerpt %q", ex)
+		}
+	}
+	if n != 200 {
+		t.Errorf("%d REDACTED rows, want 200", n)
+	}
+	if got := excerpt("ab [[X:1]] cd", 3, "[[X:1]]"); got != "ab [[X:1]] cd" {
+		t.Errorf("excerpt = %q", got)
+	}
+	if got := excerpt("ab", -1, "[[X:1]]"); got != "[[X:1]]" {
+		t.Errorf("a token not in the text is its own excerpt: %q", got)
+	}
+}
+
+// Object keys and numbers are text the model reads too.
+func TestPostToolUse_KeysAndNumbersAreScanned(t *testing.T) {
+	h, dir := newHandler(t, nil)
+	const card = "4111111111111111" // the card network's documented test number
+	out := fire(t, h, evPost, postInput("FutureTool", `{}`, `{"users":{`+q(synthEmail)+`:{"id":1}},"card":`+card+`,"count":6}`))
+	if out.HookSpecificOutput == nil {
+		t.Fatal("a result with a personal-data key must be redacted")
+	}
+	raw := string(out.HookSpecificOutput.UpdatedToolOutput)
+	if strings.Contains(raw, synthEmail) || strings.Contains(raw, card) {
+		t.Fatalf("value reached the model: %s", raw)
+	}
+	var got struct {
+		Users map[string]struct {
+			ID json.Number `json:"id"`
+		} `json:"users"`
+		Card  string      `json:"card"`
+		Count json.Number `json:"count"`
+	}
+	if err := json.Unmarshal(out.HookSpecificOutput.UpdatedToolOutput, &got); err != nil {
+		t.Fatalf("%s: %v", raw, err)
+	}
+	if len(got.Users) != 1 {
+		t.Fatalf("users = %v", got.Users)
+	}
+	for k, v := range got.Users {
+		if !strings.HasPrefix(k, "[[EMAIL:") || v.ID != "1" {
+			t.Errorf("key %q -> %+v, want an EMAIL marker keeping its value", k, v)
+		}
+	}
+	if !strings.HasPrefix(got.Card, "[[CREDIT_CARD:") || got.Count != "6" {
+		t.Errorf("card %q count %q", got.Card, got.Count)
+	}
+	if !stateContains(t, dir, synthEmail) {
+		t.Error("the PII key must be in the marker map, or it can never be restored")
+	}
+
+	// A redacted key that lands on a key already present keeps both values.
+	pii, _ := seedMarkers(t, h)
+	out = fire(t, h, evPost, postInput("FutureTool", `{}`, `{`+q(synthEmail)+`:1,`+q(pii)+`:2}`))
+	if out.HookSpecificOutput == nil {
+		t.Fatal("a result with a personal-data key must be redacted")
+	}
+	var both map[string]int
+	if err := json.Unmarshal(out.HookSpecificOutput.UpdatedToolOutput, &both); err != nil {
+		t.Fatal(err)
+	}
+	sum := 0
+	for k, v := range both {
+		if strings.Contains(k, synthEmail) {
+			t.Errorf("key reached the model: %q", k)
+		}
+		sum += v
+	}
+	if len(both) != 2 || sum != 3 {
+		t.Errorf("a key collision lost a value: %v", both)
 	}
 }

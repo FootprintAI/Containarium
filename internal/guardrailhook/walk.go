@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -94,10 +95,36 @@ func (w *walker) walk(v any, key string, set func(any), dirty []*bool) {
 			keys = append(keys, k)
 		}
 		for _, k := range sortedStrings(keys) {
-			w.walk(t[k], k, func(nv any) { t[k] = nv }, dirty)
+			// A key is text the model reads too (an email keying a map, say).
+			// It is renamed when redacted, so the value's setter follows the
+			// key's current name.
+			name := k
+			if k != "" && !isBinary(k) {
+				w.units = append(w.units, &unit{lines: []string{k}, set: func(_ int, nk string) {
+					v := t[name]
+					delete(t, name)
+					name = freeKey(t, nk)
+					t[name] = v
+				}, dirty: dirty})
+			}
+			w.walk(t[k], k, func(nv any) { t[name] = nv }, dirty)
+		}
+	case json.Number:
+		// A card or phone number can be a JSON number. Redacted, it becomes
+		// a marker string.
+		w.units = append(w.units, &unit{lines: []string{t.String()}, set: func(_ int, ns string) { set(ns) }, dirty: dirty})
+	}
+	// Booleans and null carry no text.
+}
+
+// freeKey returns k, or k with a numeric suffix when t already has k: two
+// keys that redact to the same marker keep both values.
+func freeKey(t map[string]any, k string) string {
+	for n, c := 2, k; ; n, c = n+1, k+"#"+strconv.Itoa(n) {
+		if _, taken := t[c]; !taken {
+			return c
 		}
 	}
-	// Numbers, booleans and null carry no text.
 }
 
 func (w *walker) leaf(s, key string, set func(any), dirty []*bool) {

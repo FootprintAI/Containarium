@@ -49,7 +49,8 @@ type Config struct {
 	ScanTimeout time.Duration
 	// FullScanMaxBytes is the largest text the engine is asked to scan. A
 	// larger one gets the in-process pattern pass and is recorded as
-	// partially scanned.
+	// partially scanned, except a prompt, which can still be stopped and so
+	// always goes to the engine.
 	FullScanMaxBytes int
 	// SpoolMaxBytes bounds the findings spool. A row that would not fit is
 	// dropped.

@@ -93,7 +93,7 @@ func init() {
 	f.StringVar(&guardrailHookStateDir, "state-dir", "", "Where the marker key, marker map, stamps and findings spool live (default $XDG_STATE_HOME/containarium-guardrail, else ~/.local/state/containarium-guardrail)")
 	f.DurationVar(&guardrailHookEngineWait, "engine-wait", guardrailhook.DefaultEngineWait, "How long PreToolUse waits for the engine before it denies the call")
 	f.DurationVar(&guardrailHookScanTimeout, "scan-timeout", guardrailhook.DefaultScanTimeout, "Deadline for one engine scan")
-	f.IntVar(&guardrailHookFullScanMax, "full-scan-max-bytes", guardrailhook.DefaultFullScanMaxBytes, "Largest text sent to the engine. A larger one gets the in-process pattern pass and is recorded as partially scanned")
+	f.IntVar(&guardrailHookFullScanMax, "full-scan-max-bytes", guardrailhook.DefaultFullScanMaxBytes, "Largest text sent to the engine. A larger one gets the in-process pattern pass and is recorded as partially scanned; a prompt always goes to the engine")
 	f.Int64Var(&guardrailHookSpoolMax, "spool-max-bytes", guardrailhook.DefaultSpoolMaxBytes, "Size bound of the findings spool. Rows that would not fit are dropped")
 	f.BoolVar(&guardrailHookBlockOnBatch, "block-on-batch-finding", false, "On a PostToolBatch finding, stop the turn and refuse later prompts in that session until /clear or a new session")
 }

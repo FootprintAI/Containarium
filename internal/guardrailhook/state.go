@@ -196,9 +196,11 @@ func (s *state) blockSession(session string) error {
 	return os.WriteFile(p, nil, 0o600)
 }
 
+// sessionBlocked fails closed: only a marker known not to exist releases
+// the session. Any other stat error leaves it held.
 func (s *state) sessionBlocked(session string) bool {
 	_, err := os.Stat(s.blockedPath(session))
-	return err == nil
+	return !errors.Is(err, os.ErrNotExist)
 }
 
 func (s *state) unblockSession(session string) { _ = os.Remove(s.blockedPath(session)) }

@@ -53,7 +53,8 @@ type scanned struct {
 
 // scanMode says what a scan may do.
 type scanMode struct {
-	// strict fails when the engine does. Without it the scan falls back to
+	// strict fails when the engine does, and sends text over the full-scan
+	// limit to the engine all the same. Without it the scan falls back to
 	// the in-process pattern pass and says so: right when the text reaches
 	// the model whatever the handler does, wrong when the handler can still
 	// stop it.
@@ -90,7 +91,9 @@ func (c *call) scanUnits(ctx context.Context, units []*unit, mode scanMode) (*sc
 
 	var byUnit map[int][]span
 	var err error
-	if total > c.h.cfg.FullScanMaxBytes {
+	// The size limit lets a scan settle for the pattern pass. A strict scan
+	// may not settle, so it always asks the engine, bounded by ScanTimeout.
+	if total > c.h.cfg.FullScanMaxBytes && !mode.strict {
 		res.partial = fmt.Sprintf("%d bytes is over the %d byte full-scan limit", total, c.h.cfg.FullScanMaxBytes)
 	} else {
 		sctx, cancel := context.WithTimeout(ctx, c.h.cfg.ScanTimeout)
@@ -151,16 +154,23 @@ func dropInsideMarkers(text string, spans []span) []span {
 	if len(locs) == 0 {
 		return spans
 	}
+	// Marker ranges in code points, in one pass over text. They are sorted
+	// and do not overlap.
+	type runeRange struct{ start, end int }
+	ranges := make([]runeRange, len(locs))
+	at, runes := 0, 0
+	for i, l := range locs {
+		runes += utf8.RuneCountInString(text[at:l[0]])
+		start := runes
+		runes += utf8.RuneCountInString(text[l[0]:l[1]])
+		ranges[i], at = runeRange{start, runes}, l[1]
+	}
 	kept := spans[:0]
 	for _, s := range spans {
-		inside := false
-		for _, l := range locs {
-			if s.start >= utf8.RuneCountInString(text[:l[0]]) && s.end <= utf8.RuneCountInString(text[:l[1]]) {
-				inside = true
-				break
-			}
-		}
-		if !inside {
+		// The only marker that can hold s is the last one starting at or
+		// before it.
+		i := sort.Search(len(ranges), func(i int) bool { return ranges[i].start > s.start }) - 1
+		if i < 0 || s.end > ranges[i].end {
 			kept = append(kept, s)
 		}
 	}
@@ -168,7 +178,9 @@ func dropInsideMarkers(text string, spans []span) []span {
 }
 
 // mergeSpans collapses overlapping or touching spans; the survivor takes
-// the higher-confidence member's kind and type.
+// the higher-confidence member's kind and type, except that a secret
+// member always makes it a secret: a personal-data span has its value
+// stored, and a secret must never be.
 func mergeSpans(in []span) []span {
 	if len(in) == 0 {
 		return nil
@@ -187,7 +199,12 @@ func mergeSpans(in []span) []span {
 			continue
 		}
 		last.end = max(last.end, s.end)
-		if s.conf > last.conf {
+		secret := pb.GuardrailKind_GUARDRAIL_KIND_SECRET
+		sWins := s.conf > last.conf
+		if (s.kind == secret) != (last.kind == secret) {
+			sWins = s.kind == secret
+		}
+		if sWins {
 			last.kind, last.typ, last.conf = s.kind, s.typ, s.conf
 		}
 	}
@@ -218,7 +235,13 @@ func (c *call) mark(u *unit, spans []span, rewrite bool) []hit {
 		}
 	}
 	marked := make([]string, len(u.lines))
-	lo := 0
+	// at[i] is the byte offset in the redacted text where span i's marker
+	// first appears, so each excerpt reads only its own window.
+	at := make([]int, len(spans))
+	for i := range at {
+		at[i] = -1
+	}
+	lo, lineAt := 0, 0
 	for li, line := range u.lines {
 		hi := lo + utf8.RuneCountInString(line)
 		var b strings.Builder
@@ -229,6 +252,9 @@ func (c *call) mark(u *unit, spans []span, rewrite bool) []hit {
 				continue
 			}
 			b.WriteString(string(joined[pos:from]))
+			if at[i] < 0 {
+				at[i] = lineAt + b.Len()
+			}
 			b.WriteString(tokens[i])
 			pos = to
 		}
@@ -241,25 +267,34 @@ func (c *call) mark(u *unit, spans []span, rewrite bool) []hit {
 			}
 		}
 		lo = hi + 1 // the "\n" that joined this line to the next
+		lineAt += len(marked[li]) + 1
 	}
 	after := strings.Join(marked, "\n")
 	hits := make([]hit, len(spans))
 	for i, s := range spans {
-		hits[i] = hit{kind: s.kind, typ: s.typ, excerpt: excerpt(after, tokens[i])}
+		hits[i] = hit{kind: s.kind, typ: s.typ, excerpt: excerpt(after, at[i], tokens[i])}
 	}
 	return hits
 }
 
-// excerpt is a short window of already-redacted text around token.
-func excerpt(redacted, token string) string {
-	at := strings.Index(redacted, token)
-	if at < 0 {
+// excerpt is a short window of already-redacted text around token, which
+// starts at byte offset at (negative: not in the text). It reads only
+// excerptContext code points on each side, whatever the size of redacted.
+func excerpt(redacted string, at int, token string) string {
+	if at < 0 || !strings.HasPrefix(redacted[at:], token) {
 		return token
 	}
-	before, after := []rune(redacted[:at]), []rune(redacted[at+len(token):])
-	before = before[max(0, len(before)-excerptContext):]
-	after = after[:min(len(after), excerptContext)]
-	return strings.Join(strings.Fields(string(before)+token+string(after)), " ")
+	from := at
+	for n := 0; n < excerptContext && from > 0; n++ {
+		_, size := utf8.DecodeLastRuneInString(redacted[:from])
+		from -= size
+	}
+	to := at + len(token)
+	for n := 0; n < excerptContext && to < len(redacted); n++ {
+		_, size := utf8.DecodeRuneInString(redacted[to:])
+		to += size
+	}
+	return strings.Join(strings.Fields(redacted[from:to]), " ")
 }
 
 // scanValue walks one JSON value from tool (a result, or a prompt as a JSON
