@@ -2,7 +2,9 @@ package guardraildropin
 
 import (
 	"context"
+	"debug/elf"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -27,6 +29,8 @@ type Options struct {
 	MinClientVersion string
 	HookTimeout      time.Duration
 	StampGrace       time.Duration
+	// ExecTimeout bounds each command the daemon runs inside a box.
+	ExecTimeout time.Duration
 	// EngineUnit is the systemd unit of the detector engine in the box.
 	// EngineNone skips the unit check.
 	EngineUnit string
@@ -37,7 +41,9 @@ type Options struct {
 	EngineAddr string
 	// HookBinary is the host path of the CLI binary copied into boxes.
 	// Empty means the daemon's own executable, which carries the same
-	// command tree and is by construction the daemon's version.
+	// command tree and is by construction the daemon's version. Either way
+	// the file must be a statically linked Linux binary: a box has its own
+	// libc, which need not be the host's.
 	HookBinary string
 }
 
@@ -54,6 +60,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.HookTimeout <= 0 {
 		o.HookTimeout = DefaultHookTimeout
+	}
+	if o.ExecTimeout <= 0 {
+		o.ExecTimeout = DefaultExecTimeout
 	}
 	if o.StampGrace <= 0 {
 		o.StampGrace = DefaultStampGrace
@@ -93,17 +102,19 @@ type BoxCoverage struct {
 // incus.GuardrailHookKey, so it survives a daemon restart and moves with
 // the box; results are in memory and rebuilt by the next check.
 //
-// The check execs as root and writes nothing: not into the box, and not
-// into the box's config. Auto-sleep reads the last-start stamp and recorded
-// network traffic only, so a check is not activity and never wakes a box.
+// The check execs as root and reads. It writes nothing into the box, and
+// nothing into the box's config unless it had to install again. Auto-sleep
+// reads the last-start stamp and recorded network traffic only, so a check
+// is not activity and never wakes a box.
 type Manager struct {
 	inst     Instances
 	checker  *checker
 	interval time.Duration
 
-	// opMu serializes work on boxes, so a periodic repair cannot put a
-	// drop-in back after a concurrent switch-off removed it.
-	opMu sync.Mutex
+	// boxMu holds one lock per box: enable, start and the periodic check
+	// of one box run one at a time, and a slow box holds up no other.
+	// Switching off takes no lock at all (see SetEnabled).
+	boxMu sync.Map // container name -> *sync.Mutex
 
 	mu      sync.Mutex
 	results map[string]Result // container name -> last check
@@ -115,16 +126,51 @@ type Manager struct {
 
 // NewManager builds a manager over the daemon's Incus client.
 func NewManager(inst Instances, box Box, opts Options) (*Manager, error) {
-	p := opts.HookBinary
-	return newManager(inst, box, opts, func() (io.ReadSeekCloser, error) {
-		if p == "" {
-			var err error
-			if p, err = os.Executable(); err != nil {
+	return newManager(inst, box, opts, func() (io.ReadSeekCloser, error) { return openHookBinary(opts.HookBinary) })
+}
+
+// openHookBinary opens the binary to pin and refuses one that is not a
+// static Linux executable. The daemon's own executable is opened through
+// /proc/self/exe, which is the running file even after the path on disk was
+// replaced by an upgrade that has not restarted the daemon yet.
+func openHookBinary(path string) (io.ReadSeekCloser, error) {
+	if path == "" {
+		path = "/proc/self/exe"
+		if _, err := os.Stat(path); err != nil {
+			if path, err = os.Executable(); err != nil {
 				return nil, err
 			}
 		}
-		return os.Open(p)
-	})
+	}
+	f, err := os.Open(path) // #nosec G304 -- operator-configured path or the daemon's own executable
+	if err != nil {
+		return nil, err
+	}
+	if err := requireStaticELF(f); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("hook binary %s: %w; build the daemon with CGO_ENABLED=0 or name a static containarium binary with --guardrail-hook-binary", path, err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// requireStaticELF accepts only an ELF executable with no program
+// interpreter, which is what CGO_ENABLED=0 produces. A dynamically linked
+// binary needs the loader and libc of the machine it was built for.
+func requireStaticELF(r io.ReaderAt) error {
+	f, err := elf.NewFile(r)
+	if err != nil {
+		return errors.New("not a Linux ELF executable")
+	}
+	for _, p := range f.Progs {
+		if p.Type == elf.PT_INTERP {
+			return errors.New("dynamically linked, so it may not start on a box's libc")
+		}
+	}
+	return nil
 }
 
 func newManager(inst Instances, box Box, opts Options, open openBinary) (*Manager, error) {
@@ -190,39 +236,100 @@ func (m *Manager) BoxStarted(username string) {
 	m.reconcile(containerName(username), true)
 }
 
+func (m *Manager) lockBox(container string) func() {
+	mu, _ := m.boxMu.LoadOrStore(container, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	return mu.(*sync.Mutex).Unlock
+}
+
+// state reads a box's switch and what the daemon last installed there.
+func (m *Manager) state(container string) (incus.GuardrailHookSwitch, installed, error) {
+	cfg, _, err := m.inst.GetRawInstance(container)
+	if err != nil {
+		return "", installed{}, err
+	}
+	return incus.GuardrailHookSwitch(cfg[incus.GuardrailHookKey]), parseInstalled(cfg[incus.GuardrailHookInstalledKey]), nil
+}
+
 // reconcile brings one running box in line with its switch. installFirst is
 // for moments the daemon expects to write (enable, start): install, then
-// check. Without it (the periodic check) the order is check, record, then
-// repair, so a tampered file is reported before it is put back.
+// check. Without it (the periodic check) the order is check, then repair:
+//
+//   - files an earlier daemon version or earlier flags installed are
+//     replaced and checked again, and only that second result is kept. An
+//     upgrade is not tampering;
+//   - anything else that is missing or changed is recorded as found, then
+//     put back, so the report is not lost to the repair.
 func (m *Manager) reconcile(container string, installFirst bool) {
-	m.opMu.Lock()
-	defer m.opMu.Unlock()
+	defer m.lockBox(container)()
 	// Read the switch again under the lock; the list may be stale.
-	cfg, _, err := m.inst.GetRawInstance(container)
+	sw, prev, err := m.state(container)
 	if err != nil {
 		log.Printf("[guardrail-hook] read %q: %v", container, err)
 		return
 	}
-	switch incus.GuardrailHookSwitch(cfg[incus.GuardrailHookKey]) {
+	user := usernameOf(container)
+	switch sw {
 	case incus.GuardrailHookOn:
 		if installFirst {
-			if err := m.checker.install(container); err != nil {
-				log.Printf("[guardrail-hook] install: %v", err)
+			if !m.install(container, user, prev) {
+				return
+			}
+			if _, prev, err = m.state(container); err != nil {
+				return
 			}
 		}
-		r := m.checker.check(container, usernameOf(container))
-		m.setResult(container, r)
-		if r.repair && !installFirst {
-			log.Printf("[guardrail-hook] %q: %s; installing again", container, r.Detail)
-			if err := m.checker.install(container); err != nil {
-				log.Printf("[guardrail-hook] repair: %v", err)
+		r := m.checker.check(container, user, prev)
+		switch {
+		case r.stale:
+			log.Printf("[guardrail-hook] %q: %s; updating", container, r.Detail)
+			if !m.install(container, user, prev) {
+				return
 			}
+			if _, prev, err = m.state(container); err != nil {
+				return
+			}
+			m.setResult(container, m.checker.check(container, user, prev))
+		case r.repair && !installFirst:
+			m.setResult(container, r)
+			log.Printf("[guardrail-hook] %q: %s; installing again", container, r.Detail)
+			m.install(container, user, prev)
+		default:
+			m.setResult(container, r)
 		}
 	case incus.GuardrailHookRemoving:
 		if err := m.finishRemoval(container); err != nil {
 			log.Printf("[guardrail-hook] %v (will retry)", err)
 		}
 	}
+}
+
+// install installs into a box and records what it installed on the box's
+// config. On failure the stored result says why, as not installed. It
+// reports whether the box now has the drop-in.
+func (m *Manager) install(container, user string, prev installed) bool {
+	err := m.checker.install(container, user)
+	if err != nil {
+		log.Printf("[guardrail-hook] install: %v", err)
+		m.setResult(container, Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_NOT_INSTALLED,
+			Detail: "the daemon could not install the drop-in: " + err.Error(), CheckedAt: m.checker.clock()})
+		return false
+	}
+	if cur, cerr := m.checker.current(); cerr == nil && cur != prev {
+		if err := m.inst.SetConfig(container, incus.GuardrailHookInstalledKey, cur.String()); err != nil {
+			log.Printf("[guardrail-hook] record install on %q: %v", container, err)
+		}
+	}
+	// Switching off does not wait for this lock. If it happened while the
+	// files were being written, take them out again: its own removal may
+	// have run before the write.
+	if sw, _, err := m.state(container); err == nil && sw != incus.GuardrailHookOn {
+		if err := m.checker.remove(container); err != nil {
+			log.Printf("[guardrail-hook] %v (will retry)", err)
+		}
+		return false
+	}
+	return true
 }
 
 // finishRemoval removes the files from a running box and clears the switch.
@@ -233,6 +340,9 @@ func (m *Manager) finishRemoval(container string) error {
 	m.mu.Lock()
 	delete(m.results, container)
 	m.mu.Unlock()
+	if err := m.inst.UnsetConfig(container, incus.GuardrailHookInstalledKey); err != nil {
+		return err
+	}
 	return m.inst.UnsetConfig(container, incus.GuardrailHookKey)
 }
 
@@ -258,6 +368,10 @@ func (m *Manager) find(username string) (*incus.ContainerInfo, error) {
 // SetEnabled turns the feature on or off for one box and applies it now if
 // the box is running. Off on a stopped box records the removal as owed; it
 // is done when the box next starts.
+//
+// Off is the break-glass and takes no lock: it must not wait behind a
+// coverage check of this box or any other. A check or install in flight
+// re-reads the switch after it writes and undoes its own write (install).
 func (m *Manager) SetEnabled(username string, enabled bool) (BoxCoverage, error) {
 	b, err := m.find(username)
 	if err != nil {
@@ -280,8 +394,6 @@ func (m *Manager) SetEnabled(username string, enabled bool) (BoxCoverage, error)
 	if b.GuardrailHook == incus.GuardrailHookOff {
 		return m.Coverage(username)
 	}
-	m.opMu.Lock()
-	defer m.opMu.Unlock()
 	// Mark first: if the removal below fails, the periodic check retries it.
 	if err := m.inst.SetConfig(b.Name, incus.GuardrailHookKey, string(incus.GuardrailHookRemoving)); err != nil {
 		return BoxCoverage{}, err

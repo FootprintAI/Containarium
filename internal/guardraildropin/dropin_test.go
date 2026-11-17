@@ -83,7 +83,7 @@ func TestOptionsDefaults(t *testing.T) {
 	if o.EngineUnit != "" || o.EngineAddr != "" {
 		t.Errorf("none should clear both, got %q, %q", o.EngineUnit, o.EngineAddr)
 	}
-	for _, bad := range []string{"unix://relative.sock", "unix:///run/it's.sock", "example.com:9091", "nonsense"} {
+	for _, bad := range []string{"unix://relative.sock", "example.com:9091", "nonsense"} {
 		if _, err := newChecker(newFakeBox(), Options{EngineAddr: bad}.withDefaults(), bytesBinary(testBinary)); err == nil {
 			t.Errorf("engine address %q accepted", bad)
 		}

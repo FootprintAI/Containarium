@@ -64,16 +64,21 @@ func (s *GuardrailHookServer) manager() (guardrailHookManager, error) {
 	return nil, status.Error(codes.Unavailable, "the guardrail hook drop-in needs the daemon's root path into a box, which this runtime does not have")
 }
 
+// guardrailHookError maps a manager error. The cause goes to the daemon's
+// log only: Get is open to a box's tenant, and an internal error can name
+// host paths.
 func guardrailHookError(err error) error {
 	if errors.Is(err, guardraildropin.ErrBoxNotFound) {
-		return status.Error(codes.NotFound, err.Error())
+		return status.Error(codes.NotFound, "box not found")
 	}
-	return status.Errorf(codes.Internal, "guardrail hook: %v", err)
+	log.Printf("[guardrail-hook] request failed: %v", err)
+	return status.Error(codes.Internal, "guardrail hook: internal error; see the daemon log")
 }
 
 func toProtoGuardrailHookBox(b guardraildropin.BoxCoverage) *pb.GuardrailHookBoxCoverage {
 	out := &pb.GuardrailHookBoxCoverage{
 		Username: b.Username, Enabled: b.Enabled, Coverage: b.Coverage, Detail: b.Detail, ClientVersion: b.ClientVersion,
+		ClientInstalled: b.ClientInstalled,
 	}
 	if !b.CheckedAt.IsZero() {
 		out.CheckedAt = timestamppb.New(b.CheckedAt)

@@ -17554,6 +17554,10 @@
         "clientVersion": {
           "type": "string",
           "description": "The coding agent version last read in the box; empty when not read."
+        },
+        "clientInstalled": {
+          "type": "boolean",
+          "description": "Whether the last check found a coding agent for the box user. A box\nthat is COVERED with this false has the drop-in in place and nothing\nthat would run without it; it has not shown hooks firing."
         }
       },
       "description": "GuardrailHookBoxCoverage is one box's switch and last coverage result."
