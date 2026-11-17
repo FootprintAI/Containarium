@@ -182,6 +182,13 @@ Before merging the release PR, check each:
   (or the reverse), both halves are in this release. If the second half is not
   merged yet, the first half does not ship: revert it from the release branch or
   hold the release.
+- **Open release holds.** `ls release-holds/` shows only `README.md`. A hold
+  names a gate that has to be run on the machines that will run the release (for
+  example a refusal that older clusters would trip over); clear it by deleting
+  the file in a PR whose description records the result, never to get a release
+  through. `scripts/ci/check-release-holds.sh` enforces this on a release PR and
+  on the tag push. It blocks publishing a release, not deploying a build made
+  from `main`.
 
 ## What a tag push actually publishes
 

@@ -1,0 +1,49 @@
+name: release-holds
+
+# Fail a release PR while a release hold is open (release-holds/README.md).
+# The tag push in release.yml runs the same check, but by then the tag exists;
+# this finds the hold while the release can still wait.
+#
+# Runs only when a PR changes the version constant, which every release PR does,
+# plus when it touches the check itself or the holds directory.
+
+on:
+  pull_request:
+    paths:
+      - 'pkg/version/version.go'
+      - 'release-holds/**'
+      - 'scripts/ci/check-release-holds.sh'
+      - 'scripts/ci/test-check-release-holds.sh'
+      - '.github/workflows/release-holds.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  release-holds:
+    name: No open release holds
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # The base ref is needed to see whether this PR bumps the version.
+          fetch-depth: 0
+
+      - name: Check script tests
+        run: scripts/ci/test-check-release-holds.sh
+
+      # Only a PR that bumps the version is a release PR. Edits to the holds
+      # directory itself must not fail on the very hold they are adding.
+      - name: No open release holds
+        run: |
+          set -euo pipefail
+          # No error suppression: if the diff cannot be computed the job fails,
+          # it does not quietly decide this is not a release PR.
+          changed=$(git diff --name-only "origin/${GITHUB_BASE_REF}...HEAD")
+          if printf '%s\n' "$changed" | grep -qx 'pkg/version/version.go'; then
+            scripts/ci/check-release-holds.sh
+          else
+            echo "not a release PR (version.go unchanged): holds are not enforced here"
+          fi
