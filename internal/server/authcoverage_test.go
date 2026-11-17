@@ -113,6 +113,8 @@ var registeredServices = []rpcSurface{
 	// #2368 — Set is RequireRole(admin); Get is any authenticated subject
 	// (the manual SubjectFromGRPCContext/Unauthenticated pattern).
 	{pb.GuardrailPolicyService_ServiceDesc, "GuardrailPolicyServer"},
+	// #3762 — Set is RequireScope(security:write) + RequireRole(admin); List is RequireScope(security:read) + RequireRole(admin); Get is RequireScope(security:read) + AuthorizeTenant.
+	{pb.GuardrailHookService_ServiceDesc, "GuardrailHookServer"},
 	// #2875 — every RPC is RequireRole(admin) (through requireRetentionAdmin); reads also RequireScope(audit:read), writes RequireScope(retention:write).
 	{pb.RetentionService_ServiceDesc, "RetentionServer"},
 	{pb.AuditService_ServiceDesc, "AuditServer"},         // #2415

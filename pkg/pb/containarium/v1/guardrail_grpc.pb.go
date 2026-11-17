@@ -359,3 +359,191 @@ var GuardrailPolicyService_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "containarium/v1/guardrail.proto",
 }
+
+const (
+	GuardrailHookService_SetGuardrailHook_FullMethodName          = "/containarium.v1.GuardrailHookService/SetGuardrailHook"
+	GuardrailHookService_GetGuardrailHookCoverage_FullMethodName  = "/containarium.v1.GuardrailHookService/GetGuardrailHookCoverage"
+	GuardrailHookService_ListGuardrailHookCoverage_FullMethodName = "/containarium.v1.GuardrailHookService/ListGuardrailHookCoverage"
+)
+
+// GuardrailHookServiceClient is the client API for GuardrailHookService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// GuardrailHookService switches the managed guardrail hook drop-in per box
+// and reports coverage (#3762). Set and List: admin role only. Get: the
+// box's own tenant or an admin. A scoped token also needs security:write
+// (Set) or security:read (Get, List).
+type GuardrailHookServiceClient interface {
+	SetGuardrailHook(ctx context.Context, in *SetGuardrailHookRequest, opts ...grpc.CallOption) (*SetGuardrailHookResponse, error)
+	GetGuardrailHookCoverage(ctx context.Context, in *GetGuardrailHookCoverageRequest, opts ...grpc.CallOption) (*GetGuardrailHookCoverageResponse, error)
+	ListGuardrailHookCoverage(ctx context.Context, in *ListGuardrailHookCoverageRequest, opts ...grpc.CallOption) (*ListGuardrailHookCoverageResponse, error)
+}
+
+type guardrailHookServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewGuardrailHookServiceClient(cc grpc.ClientConnInterface) GuardrailHookServiceClient {
+	return &guardrailHookServiceClient{cc}
+}
+
+func (c *guardrailHookServiceClient) SetGuardrailHook(ctx context.Context, in *SetGuardrailHookRequest, opts ...grpc.CallOption) (*SetGuardrailHookResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetGuardrailHookResponse)
+	err := c.cc.Invoke(ctx, GuardrailHookService_SetGuardrailHook_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *guardrailHookServiceClient) GetGuardrailHookCoverage(ctx context.Context, in *GetGuardrailHookCoverageRequest, opts ...grpc.CallOption) (*GetGuardrailHookCoverageResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetGuardrailHookCoverageResponse)
+	err := c.cc.Invoke(ctx, GuardrailHookService_GetGuardrailHookCoverage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *guardrailHookServiceClient) ListGuardrailHookCoverage(ctx context.Context, in *ListGuardrailHookCoverageRequest, opts ...grpc.CallOption) (*ListGuardrailHookCoverageResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListGuardrailHookCoverageResponse)
+	err := c.cc.Invoke(ctx, GuardrailHookService_ListGuardrailHookCoverage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GuardrailHookServiceServer is the server API for GuardrailHookService service.
+// All implementations must embed UnimplementedGuardrailHookServiceServer
+// for forward compatibility.
+//
+// GuardrailHookService switches the managed guardrail hook drop-in per box
+// and reports coverage (#3762). Set and List: admin role only. Get: the
+// box's own tenant or an admin. A scoped token also needs security:write
+// (Set) or security:read (Get, List).
+type GuardrailHookServiceServer interface {
+	SetGuardrailHook(context.Context, *SetGuardrailHookRequest) (*SetGuardrailHookResponse, error)
+	GetGuardrailHookCoverage(context.Context, *GetGuardrailHookCoverageRequest) (*GetGuardrailHookCoverageResponse, error)
+	ListGuardrailHookCoverage(context.Context, *ListGuardrailHookCoverageRequest) (*ListGuardrailHookCoverageResponse, error)
+	mustEmbedUnimplementedGuardrailHookServiceServer()
+}
+
+// UnimplementedGuardrailHookServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedGuardrailHookServiceServer struct{}
+
+func (UnimplementedGuardrailHookServiceServer) SetGuardrailHook(context.Context, *SetGuardrailHookRequest) (*SetGuardrailHookResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetGuardrailHook not implemented")
+}
+func (UnimplementedGuardrailHookServiceServer) GetGuardrailHookCoverage(context.Context, *GetGuardrailHookCoverageRequest) (*GetGuardrailHookCoverageResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetGuardrailHookCoverage not implemented")
+}
+func (UnimplementedGuardrailHookServiceServer) ListGuardrailHookCoverage(context.Context, *ListGuardrailHookCoverageRequest) (*ListGuardrailHookCoverageResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListGuardrailHookCoverage not implemented")
+}
+func (UnimplementedGuardrailHookServiceServer) mustEmbedUnimplementedGuardrailHookServiceServer() {}
+func (UnimplementedGuardrailHookServiceServer) testEmbeddedByValue()                              {}
+
+// UnsafeGuardrailHookServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to GuardrailHookServiceServer will
+// result in compilation errors.
+type UnsafeGuardrailHookServiceServer interface {
+	mustEmbedUnimplementedGuardrailHookServiceServer()
+}
+
+func RegisterGuardrailHookServiceServer(s grpc.ServiceRegistrar, srv GuardrailHookServiceServer) {
+	// If the following call panics, it indicates UnimplementedGuardrailHookServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&GuardrailHookService_ServiceDesc, srv)
+}
+
+func _GuardrailHookService_SetGuardrailHook_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetGuardrailHookRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GuardrailHookServiceServer).SetGuardrailHook(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GuardrailHookService_SetGuardrailHook_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GuardrailHookServiceServer).SetGuardrailHook(ctx, req.(*SetGuardrailHookRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GuardrailHookService_GetGuardrailHookCoverage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetGuardrailHookCoverageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GuardrailHookServiceServer).GetGuardrailHookCoverage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GuardrailHookService_GetGuardrailHookCoverage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GuardrailHookServiceServer).GetGuardrailHookCoverage(ctx, req.(*GetGuardrailHookCoverageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GuardrailHookService_ListGuardrailHookCoverage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListGuardrailHookCoverageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GuardrailHookServiceServer).ListGuardrailHookCoverage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GuardrailHookService_ListGuardrailHookCoverage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GuardrailHookServiceServer).ListGuardrailHookCoverage(ctx, req.(*ListGuardrailHookCoverageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// GuardrailHookService_ServiceDesc is the grpc.ServiceDesc for GuardrailHookService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var GuardrailHookService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "containarium.v1.GuardrailHookService",
+	HandlerType: (*GuardrailHookServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "SetGuardrailHook",
+			Handler:    _GuardrailHookService_SetGuardrailHook_Handler,
+		},
+		{
+			MethodName: "GetGuardrailHookCoverage",
+			Handler:    _GuardrailHookService_GetGuardrailHookCoverage_Handler,
+		},
+		{
+			MethodName: "ListGuardrailHookCoverage",
+			Handler:    _GuardrailHookService_ListGuardrailHookCoverage_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "containarium/v1/guardrail.proto",
+}

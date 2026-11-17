@@ -2778,6 +2778,40 @@ func (c *HTTPClient) GetGuardrailStatus() (*pb.GetGuardrailStatusResponse, error
 	return out, nil
 }
 
+// SetGuardrailHook switches the managed guardrail hook drop-in for one box
+// via HTTP (#3762; admin only).
+func (c *HTTPClient) SetGuardrailHook(username string, enabled bool) (*pb.GuardrailHookBoxCoverage, error) {
+	body, err := protojson.Marshal(&pb.SetGuardrailHookRequest{Enabled: enabled})
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	out := &pb.SetGuardrailHookResponse{}
+	if err := c.guardrailPolicyCall(http.MethodPut, "/v1/containers/"+url.PathEscape(username)+"/guardrail-hook", body, out, "set guardrail hook"); err != nil {
+		return nil, err
+	}
+	return out.GetBox(), nil
+}
+
+// GetGuardrailHookCoverage reads one box's guardrail hook coverage via HTTP
+// (#3762).
+func (c *HTTPClient) GetGuardrailHookCoverage(username string) (*pb.GuardrailHookBoxCoverage, error) {
+	out := &pb.GetGuardrailHookCoverageResponse{}
+	if err := c.guardrailPolicyCall(http.MethodGet, "/v1/containers/"+url.PathEscape(username)+"/guardrail-hook", nil, out, "get guardrail hook coverage"); err != nil {
+		return nil, err
+	}
+	return out.GetBox(), nil
+}
+
+// ListGuardrailHookCoverage reads coverage for every box with the hook
+// switched on via HTTP (#3762; admin only).
+func (c *HTTPClient) ListGuardrailHookCoverage() ([]*pb.GuardrailHookBoxCoverage, error) {
+	out := &pb.ListGuardrailHookCoverageResponse{}
+	if err := c.guardrailPolicyCall(http.MethodGet, "/v1/guardrail/hook-coverage", nil, out, "list guardrail hook coverage"); err != nil {
+		return nil, err
+	}
+	return out.GetBoxes(), nil
+}
+
 // SetGuardrailPolicy replaces the server-side guardrail policy via HTTP
 // (admin only).
 func (c *HTTPClient) SetGuardrailPolicy(req *pb.SetGuardrailPolicyRequest) (*pb.SetGuardrailPolicyResponse, error) {
