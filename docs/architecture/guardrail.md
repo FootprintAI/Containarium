@@ -106,17 +106,130 @@ rotation and revocation" in `guardrail-inbound-and-server-policy.md`.
 
 With no `--engine`, the in-tree **reference rules engine** runs: a handful
 of regular expressions (email, US phone, SSN, IPv4, Luhn-checked card
-numbers, PEM private-key headers, one cloud access-key shape). It exists so
+numbers, PEM private-key blocks, one cloud access-key shape). It exists so
 the flow is runnable and testable on a fresh checkout. It is not a detector
 anyone should ship data on, and the CLI says so on stderr every time it is
 used.
+
+## Coding-agent hooks
+
+`containarium guardrail hook <event>` (#3761) applies the same engine
+contract and the same markers to a different subject: what a coding agent
+gives the model while it works. It is a Claude Code
+[hook](https://code.claude.com/docs/en/hooks) handler. The agent runs it for
+each event with the event as JSON on stdin, and the handler answers on
+stdout. It covers the agent that talks to its model provider directly, which
+gateway-side redaction cannot see. Detection, the marker key and the marker
+map all stay on the machine the agent runs on; no credential is read.
+
+| Event | What the handler does |
+| --- | --- |
+| `SessionStart` | Adds context for the model: what a marker is, that an edit with a secret marker is refused, and that a marker cannot be used as the text an edit replaces. |
+| `PreToolUse` | The gate. Denies the call when the engine does not answer within `--engine-wait` (3 s). Denies `WebFetch`. Denies a file tool or a command that names the handler's own state directory (best effort for commands). Restores **personal-data** markers in local file-path arguments and in the new content of `Edit` / `Write` / `NotebookEdit`, and returns the changed input with no permission decision, so the user's own permission rules decide. A **secret** marker, or one this machine did not issue, denies the call: a marker is never written literally into a file. No other tool input is ever restored. |
+| `PostToolUse` | Replaces the tool's result with a redacted copy of the same shape. Every string is content, for every tool including ones the handler has never seen; only a short per-tool list of enum-like fields is skipped, and never a path. An array of strings is scanned joined, so a key held as lines is seen whole, and keeps its length. Redaction never changes a JSON type or an object's keys in the result's own structure, because the agent rejects a replacement of the wrong shape whole: a finding in a number or a key there is recorded and left. A result that is one JSON string (how MCP results arrive) is decoded first, and inside it numbers and keys are rewritten too. Binary and base64 strings are skipped and counted. |
+| `PostToolBatch` | Rescans what is about to reach the model, with no memory of `PostToolUse`, and records anything still unredacted. |
+| `UserPromptSubmit` | Blocks a prompt that has a finding, naming the type and never the value. A prompt cannot be rewritten. Background events (`<task-notification>`) arrive here too and are dropped whole. |
+| `InstructionsLoaded` | Scans the instruction file and records; this event cannot change anything. |
+
+Markers are the dataset flow's, `[[EMAIL:1a2b3c4d5e6f]]`, under a per-user key
+created on first use. The state directory
+(`$XDG_STATE_HOME/containarium-guardrail`, default
+`~/.local/state/containarium-guardrail`, mode 0700 with 0600 files) holds:
+
+- `marker.key`, the HMAC key;
+- `markers.jsonl`, the marker map. A personal-data marker is stored with its
+  value. A secret marker is stored with no value, only so it can be told
+  apart from an unknown one. Secrets are never stored and never restored. A
+  marker not issued or restored for 30 days is dropped, value included, and
+  is then an unknown marker. A use is noted by appending the row again with
+  the day's date, at most once per marker per day; the file is rewritten
+  only to drop expired or superseded rows;
+- `findings.jsonl`, a bounded spool of `GuardrailHookRecord` rows (protojson,
+  `proto/containarium/v1/guardrail_hook.proto`): event, tool, source,
+  outcome, type and a short excerpt of the already-redacted text. A full
+  spool drops rows and never blocks the agent;
+- `stamps/<pid>`, touched on every invocation and named after the agent
+  process, so an operator can tell whether hooks are firing.
+
+An existing state directory must belong to the user and have mode 0700, and
+must not be a symbolic link. Otherwise every event fails (exit 2) until it is
+fixed, because the key and the map would be readable by others.
+
+**Engine and size limit.** `--engine` names a `GuardrailEngineService` on a
+unix socket or a loopback address; anything else is refused. With no
+`--engine` the reference rules engine runs in-process. A result or a prompt up to
+`--full-scan-max-bytes` (16 KiB) gets the engine's scan. A larger one gets
+the in-process pattern pass only and is recorded as `PARTIALLY_SCANNED`, so
+one large file cannot hold every tool call for seconds. The same fallback
+applies when the engine fails in `PostToolUse`: by then the tool has run, and
+a degraded scan beats none.
+
+**Time limits.** Three limits nest inside the hook's own `timeout`:
+
+| Limit | Default | Applies to | When it runs out |
+| --- | --- | --- | --- |
+| `--engine-wait` | 3 s | `PreToolUse`, once, waiting for an engine that is still starting | the call is denied |
+| `--scan-timeout` | 2 s | each engine scan: one per `PostToolUse`, `UserPromptSubmit` and `InstructionsLoaded` | pattern pass and a `PARTIALLY_SCANNED` record; for a prompt, exit 2, which blocks it |
+| `--batch-budget` | 10 s | all the engine scans of one `PostToolBatch`, which makes one per tool call | the remaining calls get the pattern pass and a `PARTIALLY_SCANNED` record; none is skipped |
+
+The pattern pass is in-process and has no deadline. Keep the hook `timeout`
+above the largest of these with room to spare: 15 s with the defaults.
+
+**Failure.** A denial or a block is an answer and exits 0. Every internal
+error exits **2** with nothing on stdout, never 0: `onFailure: "block"` does
+not catch a hook that exits 0 with unusable output. Configure every hook in
+exec form with `onFailure: "block"` and a short `timeout`:
+
+```json
+{ "type": "command", "command": "containarium", "args": ["guardrail", "hook", "PreToolUse"], "onFailure": "block", "timeout": 15 }
+```
+
+Installing the hooks is a separate change (#3762). Behaviour was checked
+against Claude Code 2.1.326; `onFailure` needs 2.1.295 or later.
+
+### What the hooks do not cover
+
+The hooks protect against **accidental disclosure by a cooperative agent**.
+They do not stop an agent that deliberately transforms a value, or the user,
+who owns the machine.
+
+- **A typed prompt** can be blocked, not redacted, and its text stays in the
+  agent's local transcript.
+- **After the tool has run**, a handler that crashes or times out in
+  `PostToolUse` cannot stop the original result. `PostToolBatch` records it.
+- **A `PostToolBatch` block stops the turn but does not remove the result**
+  from the conversation. `--block-on-batch-finding` (off by default, not yet
+  proven against a live agent, #3765) stops the turn and then refuses later prompts
+  in that session until `/clear` or a new session.
+- **A failing command's output** is redacted like any other result only where
+  the agent accepts a replacement for a failed call. Wrapping shell commands
+  so they report their exit status and always succeed is a follow-up (#3765).
+- **An edit that must match a redacted value** is not possible: the agent
+  checks the text to replace against the file before any hook runs.
+- **Another hook's input rewrite can replace this one**, so a marker can end
+  up written literally. `PostToolUse` records a marker still present in the
+  input (`MARKER_IN_TOOL_INPUT`).
+- **Context the agent loads by itself**: instruction and memory files are
+  recorded, never rewritten; file names in the version-control status the
+  agent adds at session start pass no hook; `@`-mentioned files are inlined
+  with no tool call unless the agent is run with
+  `CLAUDE_CODE_DISABLE_FILE_MENTIONS=1`.
+- **`WebFetch`** hands the page to the model inside the tool, so it is denied
+  rather than redacted. A fetch through a shell command is covered.
+- **A number or an object key in a tool's structured result** is scanned but
+  cannot be replaced without changing the result's shape. It is recorded.
+- **A file that documents markers** cannot be written with file tools: an
+  example marker is one this machine did not issue, so the write is denied.
+- **Binary and base64 content** is not scanned.
+- **Detection is only as good as the engine.** With the reference engine it
+  is a handful of regular expressions.
 
 ## What is in-tree and what is not
 
 | In this repository | Behind the contract (separate deliverable) |
 | --- | --- |
 | the proto contract | a real detection engine: rules packs, NER models, checksum-verified identifiers, per-language recognizers |
-| the CLI: scan / apply / verify / keygen | the engine's own vault semantics if it keeps one (this flow's vault is a local JSON file) |
+| the CLI: scan / apply / verify / keygen / hook | the engine's own vault semantics if it keeps one (this flow's vault is a local JSON file) |
 | redaction, token-aware gate, attestation, verification | distribution and licensing of the engine |
 | the reference rules engine | curated recipes/skills that run the flow unattended |
 

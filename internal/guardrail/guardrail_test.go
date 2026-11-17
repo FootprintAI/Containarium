@@ -251,3 +251,64 @@ func must(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+// #3761: a private key is flagged through its END line, so redaction takes
+// the key material and not just the header. A header with no key after it
+// (in prose, or a truncated file) is still flagged on its own.
+func TestRulesEngine_PrivateKeyCoversTheWholeBlock(t *testing.T) {
+	const begin, end = "-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"
+	block := begin + "\nMIIEsynthetic+/0123\nabcdSYNTHETIC==\n" + end
+	escaped := strings.ReplaceAll(block, "\n", `\n`)
+	// A legacy encrypted key carries header lines with ':' and ','.
+	encrypted := begin + "\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF\n\nMIIEsynthetic+/0123\nabcdSYNTHETIC==\n" + end
+	// A read cut off before the END line: the body lines that follow the
+	// header are flagged with it, up to the first line that is not key-like.
+	truncated := begin + "\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF\n\nMIIEsynthetic+/0123\nabcdSYNTHETIC=="
+	for name, tc := range map[string]struct{ text, want string }{
+		"whole block": {"key:\n" + block + "\ntail", block},
+		// A key inside a JSON string, as a file read returns it: the line
+		// breaks are the two characters backslash and n.
+		"escaped newlines":  {`{"private_key": "` + escaped + `\n", "client_id": "1"}`, escaped},
+		"header in prose":   {"the line " + begin + " starts a key", begin},
+		"encrypted headers": {"key:\n" + encrypted + "\ntail", encrypted},
+		"no END line":       {"key:\n" + truncated + "\n(output truncated) more", truncated},
+	} {
+		resp, err := (RulesEngine{}).Scan(context.Background(), &pb.GuardrailScanRequest{
+			Units: []*pb.GuardrailTextUnit{{UnitId: "u", Text: tc.text}},
+			Kinds: []pb.GuardrailKind{pb.GuardrailKind_GUARDRAIL_KIND_SECRET},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Findings) != 1 {
+			t.Fatalf("%s: %d findings, want 1", name, len(resp.Findings))
+		}
+		f := resp.Findings[0]
+		if got := string([]rune(tc.text)[f.Start:f.End]); got != tc.want {
+			t.Errorf("%s: flagged %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+// Two blocks in one text are two findings: the body match stops at the
+// first END line instead of running on to the last one.
+func TestRulesEngine_PrivateKeyBlocksDoNotMerge(t *testing.T) {
+	const begin, end = "-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"
+	block := begin + "\nMIIEsynthetic+/0123\n" + end
+	text := block + "\nbetween the keys\n" + block
+	resp, err := (RulesEngine{}).Scan(context.Background(), &pb.GuardrailScanRequest{
+		Units: []*pb.GuardrailTextUnit{{UnitId: "u", Text: text}},
+		Kinds: []pb.GuardrailKind{pb.GuardrailKind_GUARDRAIL_KIND_SECRET},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Findings) != 2 {
+		t.Fatalf("%d findings, want 2", len(resp.Findings))
+	}
+	for _, f := range resp.Findings {
+		if got := string([]rune(text)[f.Start:f.End]); got != block {
+			t.Errorf("flagged %q, want one block %q", got, block)
+		}
+	}
+}

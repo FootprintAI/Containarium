@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package containarium.v1;
+
+import "containarium/v1/guardrail.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1";
+
+// Records written by `containarium guardrail hook <event>`, the coding-agent
+// hook handler that redacts what an agent gives the model, inside the box
+// (docs/architecture/guardrail.md, "Coding-agent hooks"). The handler appends
+// one GuardrailHookRecord per observation to a bounded local spool as a line
+// of protojson. A record never carries a flagged value.
+
+// GuardrailHookEvent is the agent hook event a record was written from.
+enum GuardrailHookEvent {
+  GUARDRAIL_HOOK_EVENT_UNSPECIFIED = 0;
+  GUARDRAIL_HOOK_EVENT_SESSION_START = 1;
+  GUARDRAIL_HOOK_EVENT_PRE_TOOL_USE = 2;
+  GUARDRAIL_HOOK_EVENT_POST_TOOL_USE = 3;
+  GUARDRAIL_HOOK_EVENT_POST_TOOL_BATCH = 4;
+  GUARDRAIL_HOOK_EVENT_USER_PROMPT_SUBMIT = 5;
+  GUARDRAIL_HOOK_EVENT_INSTRUCTIONS_LOADED = 6;
+}
+
+// GuardrailHookSource is where the scanned text came from.
+enum GuardrailHookSource {
+  GUARDRAIL_HOOK_SOURCE_UNSPECIFIED = 0;
+  // A tool's result, on its way to the model.
+  GUARDRAIL_HOOK_SOURCE_TOOL_RESULT = 1;
+  // A tool's input, written by the model.
+  GUARDRAIL_HOOK_SOURCE_TOOL_INPUT = 2;
+  // A prompt the user typed.
+  GUARDRAIL_HOOK_SOURCE_PROMPT = 3;
+  // A prompt the agent generated from a background event (a monitor event,
+  // a background agent's result). It can be dropped whole, never rewritten.
+  GUARDRAIL_HOOK_SOURCE_TASK_NOTIFICATION = 4;
+  // An instruction or memory file the agent loaded by itself.
+  GUARDRAIL_HOOK_SOURCE_INSTRUCTIONS = 5;
+}
+
+// GuardrailHookOutcome is what the handler did about an observation.
+enum GuardrailHookOutcome {
+  GUARDRAIL_HOOK_OUTCOME_UNSPECIFIED = 0;
+  // The span was replaced with a marker before the model saw it.
+  GUARDRAIL_HOOK_OUTCOME_REDACTED = 1;
+  // The prompt or notification was blocked whole.
+  GUARDRAIL_HOOK_OUTCOME_BLOCKED = 2;
+  // The tool call was denied before it ran.
+  GUARDRAIL_HOOK_OUTCOME_DENIED = 3;
+  // The finding was recorded and nothing could be changed (the event has no
+  // control over what the model receives).
+  GUARDRAIL_HOOK_OUTCOME_RECORDED = 4;
+  // The batch rescan found a value about to reach the model unredacted.
+  GUARDRAIL_HOOK_OUTCOME_UNREDACTED_AT_BATCH = 5;
+  // A marker was still present in a tool input after the tool ran: another
+  // hook's input rewrite replaced this handler's, so the marker may have
+  // been written literally.
+  GUARDRAIL_HOOK_OUTCOME_MARKER_IN_TOOL_INPUT = 6;
+  // The text was larger than the full-scan limit, or the engine failed after
+  // the tool ran: it got the in-process pattern pass only.
+  GUARDRAIL_HOOK_OUTCOME_PARTIALLY_SCANNED = 7;
+  // Binary or base64 content was not scanned. `count` says how many leaves.
+  GUARDRAIL_HOOK_OUTCOME_SKIPPED_BINARY = 8;
+}
+
+// GuardrailHookRecord is one line of the local findings spool.
+message GuardrailHookRecord {
+  google.protobuf.Timestamp observed_at = 1;
+  // The agent's session and, inside a subagent, agent identifiers, as the
+  // hook input carried them.
+  string session_id = 2;
+  string agent_id = 3;
+  GuardrailHookEvent event = 4;
+  // The tool the event was about. Empty for prompt and instruction events.
+  string tool_name = 5;
+  GuardrailHookSource source = 6;
+  GuardrailHookOutcome outcome = 7;
+  // Set for a finding; UNSPECIFIED for a coverage record (PARTIALLY_SCANNED,
+  // SKIPPED_BINARY).
+  GuardrailKind kind = 8;
+  // The engine's type name for a finding (GuardrailFinding.type).
+  string type = 9;
+  // A short excerpt of the text AFTER redaction, around the marker. Never
+  // contains the flagged value.
+  string excerpt = 10;
+  // Reviewer-readable note. Never contains scanned text.
+  string detail = 11;
+  // How many items a coverage record stands for. 0 means one.
+  int64 count = 12;
+}

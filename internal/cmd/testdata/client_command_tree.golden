@@ -97,6 +97,7 @@ gateway models
 get
 guardrail apply
 guardrail baseline set
+guardrail hook
 guardrail dropin coverage
 guardrail dropin disable
 guardrail dropin enable
