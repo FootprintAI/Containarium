@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -128,6 +129,11 @@ func runGuardrailHook(cmd *cobra.Command, args []string) (code int) {
 		if cfg.StateDir, err = guardrailhook.DefaultStateDir(); err != nil {
 			return fail(err)
 		}
+	}
+	// Absolute once, here: the handler compares it with absolute paths, and
+	// the agent may run each hook from a different directory.
+	if cfg.StateDir, err = filepath.Abs(cfg.StateDir); err != nil {
+		return fail(fmt.Errorf("--state-dir: %w", err))
 	}
 	if guardrailHookEngineAddr != "" {
 		target, err := localEngineTarget(guardrailHookEngineAddr)

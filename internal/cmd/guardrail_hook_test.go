@@ -164,3 +164,29 @@ func TestGuardrailHook_StateLivesUnderXDGStateHome(t *testing.T) {
 		t.Errorf("marker key is %v, want 0600", info.Mode().Perm())
 	}
 }
+
+// A relative --state-dir is made absolute against the hook's own working
+// directory, so the state-directory deny compares like with like: an
+// absolute path into that directory is refused.
+func TestGuardrailHook_RelativeStateDirIsMadeAbsolute(t *testing.T) {
+	work := t.TempDir()
+	t.Chdir(work)
+	target := filepath.Join(work, ".guardrail", "markers.jsonl")
+	in := `{"session_id":"s","cwd":"/elsewhere","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":` +
+		hookJSONString(target) + `}}`
+	stdout, stderr, code := runHook(t, in, "PreToolUse", "--state-dir", ".guardrail")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	if d := decodeHookStdout(t, stdout).HookSpecificOutput.PermissionDecision; d != "deny" {
+		t.Fatalf("a read of the state directory must be denied: %q", stdout)
+	}
+}
+
+func hookJSONString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
