@@ -35,9 +35,12 @@ func (f *fakeContainerLister) GetContainerWithNetwork(name string) (*incus.Conta
 func newCacheWithFake(f *fakeContainerLister) *ContainerCache {
 	return &ContainerCache{
 		incusClient: f,
-		ipToName:    make(map[string]string),
-		nameToIP:    make(map[string]string),
-		nameToID:    make(map[string]string),
+		// The fake's addresses stand in for host-assigned ones; the
+		// host-address check itself is covered in cache_hostaddr_test.go.
+		hostAddr: func(string, string) bool { return true },
+		ipToName: make(map[string]string),
+		nameToIP: make(map[string]string),
+		nameToID: make(map[string]string),
 	}
 }
 
