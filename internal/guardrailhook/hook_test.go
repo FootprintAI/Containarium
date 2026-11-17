@@ -10,11 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/footprintai/containarium/internal/guardrail"
+	"github.com/footprintai/containarium/internal/safecast"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -816,14 +818,32 @@ func TestPreToolUse_DeniesGlobsThatReachTheStateDirectory(t *testing.T) {
 	}
 }
 
-// The pattern pass is a fallback for text that reaches the model anyway. A
-// prompt can still be stopped, so an oversized one goes to the engine too.
-func TestUserPromptSubmit_OversizedPromptStillGetsTheEngine(t *testing.T) {
-	h, _ := newHandler(t, func(c *Config) { c.Engine = wordEngine{}; c.FullScanMaxBytes = 64 })
-	prompt := strings.Repeat("filler words ", 20) + "codename BLUEHERON"
-	out := fire(t, h, evPrompt, `{"session_id":"s1","prompt":`+q(prompt)+`}`)
+// A prompt over the full-scan limit gets the pattern pass, like a tool
+// result: it still blocks on a finding, the engine is not asked, and the
+// record says the scan was partial. A prompt under the limit goes to the
+// engine, and a finding only the engine makes blocks it.
+func TestUserPromptSubmit_SizeLimitAppliesToPrompts(t *testing.T) {
+	eng := &countingEngine{}
+	h, dir := newHandler(t, func(c *Config) { c.Engine = eng; c.FullScanMaxBytes = 64 })
+	big := strings.Repeat("filler words ", 20)
+	out := fire(t, h, evPrompt, `{"session_id":"s1","prompt":`+q(big+"key "+synthKey)+`}`)
+	if out.Decision != "block" || !strings.Contains(out.Reason, "AWS_ACCESS_KEY_ID") {
+		t.Fatalf("an oversized prompt with a finding is blocked: %+v", out)
+	}
+	if out := fire(t, h, evPrompt, `{"session_id":"s1","prompt":`+q(big)+`}`); out.Decision != "" {
+		t.Errorf("a clean oversized prompt passes, it is not refused for its size: %+v", out)
+	}
+	if eng.calls != 0 {
+		t.Errorf("the engine was asked %d times for prompts over the limit", eng.calls)
+	}
+	if !hasRow(spoolRows(t, dir), pb.GuardrailHookOutcome_GUARDRAIL_HOOK_OUTCOME_PARTIALLY_SCANNED, "") {
+		t.Error("an oversized prompt is recorded as partially scanned")
+	}
+
+	h, _ = newHandler(t, func(c *Config) { c.Engine = wordEngine{} })
+	out = fire(t, h, evPrompt, `{"session_id":"s1","prompt":"codename BLUEHERON"}`)
 	if out.Decision != "block" || !strings.Contains(out.Reason, "CODENAME") {
-		t.Fatalf("a finding only the engine makes must still block an oversized prompt: %+v", out)
+		t.Fatalf("a finding only the engine makes blocks a prompt under the limit: %+v", out)
 	}
 }
 
@@ -838,7 +858,7 @@ func (e wordEngine) Scan(ctx context.Context, req *pb.GuardrailScanRequest) (*pb
 	}
 	for _, u := range req.GetUnits() {
 		if at := strings.Index(u.GetText(), "BLUEHERON"); at >= 0 {
-			start := int32(utf8.RuneCountInString(u.GetText()[:at]))
+			start := safecast.I32(utf8.RuneCountInString(u.GetText()[:at]))
 			resp.Findings = append(resp.Findings, &pb.GuardrailFinding{UnitId: u.GetUnitId(), Start: start, End: start + 9,
 				Kind: pb.GuardrailKind_GUARDRAIL_KIND_SECRET, Type: "CODENAME", Confidence: 1})
 		}
@@ -912,15 +932,17 @@ func TestPostToolUse_ExcerptIsTheWindowAroundEachMarker(t *testing.T) {
 	}
 }
 
-// Object keys and numbers are text the model reads too.
-func TestPostToolUse_KeysAndNumbersAreScanned(t *testing.T) {
+// Object keys and numbers are text the model reads too. Inside a result
+// that arrives as one JSON string they are rewritten: the container stays a
+// string whatever happens inside it.
+func TestPostToolUse_KeysAndNumbersAreRedactedInsideEmbeddedJSON(t *testing.T) {
 	h, dir := newHandler(t, nil)
 	const card = "4111111111111111" // the card network's documented test number
-	out := fire(t, h, evPost, postInput("FutureTool", `{}`, `{"users":{`+q(synthEmail)+`:{"id":1}},"card":`+card+`,"count":6}`))
+	out := fire(t, h, evPost, postInput("FutureTool", `{}`, q(`{"users":{`+q(synthEmail)+`:{"id":1}},"card":`+card+`,"count":6}`)))
 	if out.HookSpecificOutput == nil {
 		t.Fatal("a result with a personal-data key must be redacted")
 	}
-	raw := string(out.HookSpecificOutput.UpdatedToolOutput)
+	raw := string(innerJSON(t, out))
 	if strings.Contains(raw, synthEmail) || strings.Contains(raw, card) {
 		t.Fatalf("value reached the model: %s", raw)
 	}
@@ -931,7 +953,7 @@ func TestPostToolUse_KeysAndNumbersAreScanned(t *testing.T) {
 		Card  string      `json:"card"`
 		Count json.Number `json:"count"`
 	}
-	if err := json.Unmarshal(out.HookSpecificOutput.UpdatedToolOutput, &got); err != nil {
+	if err := json.Unmarshal(innerJSON(t, out), &got); err != nil {
 		t.Fatalf("%s: %v", raw, err)
 	}
 	if len(got.Users) != 1 {
@@ -951,12 +973,12 @@ func TestPostToolUse_KeysAndNumbersAreScanned(t *testing.T) {
 
 	// A redacted key that lands on a key already present keeps both values.
 	pii, _ := seedMarkers(t, h)
-	out = fire(t, h, evPost, postInput("FutureTool", `{}`, `{`+q(synthEmail)+`:1,`+q(pii)+`:2}`))
+	out = fire(t, h, evPost, postInput("FutureTool", `{}`, q(`{`+q(synthEmail)+`:1,`+q(pii)+`:2}`)))
 	if out.HookSpecificOutput == nil {
 		t.Fatal("a result with a personal-data key must be redacted")
 	}
 	var both map[string]int
-	if err := json.Unmarshal(out.HookSpecificOutput.UpdatedToolOutput, &both); err != nil {
+	if err := json.Unmarshal(innerJSON(t, out), &both); err != nil {
 		t.Fatal(err)
 	}
 	sum := 0
@@ -968,5 +990,224 @@ func TestPostToolUse_KeysAndNumbersAreScanned(t *testing.T) {
 	}
 	if len(both) != 2 || sum != 3 {
 		t.Errorf("a key collision lost a value: %v", both)
+	}
+}
+
+// innerJSON returns the JSON document inside a result that is one JSON
+// string.
+func innerJSON(t *testing.T, out hookOutput) json.RawMessage {
+	t.Helper()
+	var s string
+	if err := json.Unmarshal(out.HookSpecificOutput.UpdatedToolOutput, &s); err != nil {
+		t.Fatalf("the result must stay a string: %s", out.HookSpecificOutput.UpdatedToolOutput)
+	}
+	return json.RawMessage(s)
+}
+
+// Redaction never changes the shape of a tool's own result: a number stays
+// a number and a key keeps its name. The agent rejects a replacement of the
+// wrong shape whole, and the original would then go through, secrets and
+// all. A finding there is recorded and left.
+func TestPostToolUse_NeverChangesATypeOrAKeyInAStructuredResult(t *testing.T) {
+	h, dir := newHandler(t, nil)
+	// A shell result with an epoch in milliseconds and a long pid: digits
+	// enough for a phone or card pattern to match.
+	in := `{"stdout":` + q("mail "+synthEmail) + `,"stderr":"","interrupted":false,"startedAt":1731810000123,"pid":4155551234,"env":{` + q(synthEmail) + `:"x"}}`
+	out := fire(t, h, evPost, postInput("Bash", `{"command":"env"}`, in))
+	if out.HookSpecificOutput == nil {
+		t.Fatal("the string leaf must still be redacted")
+	}
+	var got struct {
+		Stdout    string            `json:"stdout"`
+		StartedAt json.RawMessage   `json:"startedAt"`
+		PID       json.RawMessage   `json:"pid"`
+		Env       map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(out.HookSpecificOutput.UpdatedToolOutput, &got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got.StartedAt) != "1731810000123" || string(got.PID) != "4155551234" {
+		t.Errorf("a number changed: startedAt=%s pid=%s", got.StartedAt, got.PID)
+	}
+	if _, ok := got.Env[synthEmail]; !ok || len(got.Env) != 1 {
+		t.Errorf("a key was renamed: %v", got.Env)
+	}
+	if !strings.HasPrefix(got.Stdout, "mail [[EMAIL:") {
+		t.Errorf("stdout %q", got.Stdout)
+	}
+	left := 0
+	for _, r := range spoolRows(t, dir) {
+		if r.GetOutcome() == pb.GuardrailHookOutcome_GUARDRAIL_HOOK_OUTCOME_RECORDED && strings.Contains(r.GetDetail(), "left as it is") {
+			left++
+			if strings.Contains(r.GetExcerpt(), synthEmail) || strings.Contains(r.GetExcerpt(), "4155551234") {
+				t.Errorf("excerpt carries the value: %q", r.GetExcerpt())
+			}
+		}
+	}
+	if left == 0 {
+		t.Error("a finding that was left in place must be recorded as left")
+	}
+
+	// With nothing but numbers and keys to flag there is no replacement at
+	// all, not an identical copy.
+	out = fire(t, h, evPost, postInput("Bash", `{}`, `{"stdout":"ok","startedAt":1731810000123}`))
+	if out.HookSpecificOutput != nil {
+		t.Errorf("nothing was replaced, so nothing is returned: %+v", out)
+	}
+}
+
+// slowEngine never answers: every scan runs to its deadline.
+type slowEngine struct{ calls int }
+
+func (e *slowEngine) Scan(ctx context.Context, _ *pb.GuardrailScanRequest) (*pb.GuardrailScanResponse, error) {
+	e.calls++
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// One budget covers the engine scans of a whole batch. Without it a batch
+// costs one scan deadline per call and outlives the hook's own timeout.
+// Calls reached after the budget is spent are still scanned, by the
+// pattern pass, and recorded.
+func TestPostToolBatch_OneBudgetForTheWholeBatch(t *testing.T) {
+	eng := &slowEngine{}
+	h, dir := newHandler(t, func(c *Config) {
+		c.Engine, c.ScanTimeout, c.BatchBudget = eng, 100*time.Millisecond, 150*time.Millisecond
+	})
+	const calls = 10
+	one := `{"tool_name":"Bash","tool_input":{},"tool_use_id":"t","tool_response":` + q("AWS="+synthKey) + `}`
+	start := time.Now()
+	fire(t, h, evBatch, `{"session_id":"s1","tool_calls":[`+strings.Repeat(one+",", calls-1)+one+`]}`)
+	if took := time.Since(start); took > 600*time.Millisecond {
+		t.Errorf("the batch took %v: one scan deadline per call (%d x 100ms), not one budget", took, calls)
+	}
+	if eng.calls > 2 {
+		t.Errorf("the engine was asked %d times after a 150ms budget of 100ms scans", eng.calls)
+	}
+	found, overBudget := 0, 0
+	for _, r := range spoolRows(t, dir) {
+		switch {
+		case r.GetOutcome() == pb.GuardrailHookOutcome_GUARDRAIL_HOOK_OUTCOME_UNREDACTED_AT_BATCH:
+			found++
+		case strings.Contains(r.GetDetail(), "time budget"):
+			overBudget++
+		}
+	}
+	if found != calls {
+		t.Errorf("%d of %d calls were scanned: a call past the budget must not be skipped", found, calls)
+	}
+	if overBudget == 0 {
+		t.Error("calls scanned after the budget ran out are recorded as partially scanned")
+	}
+}
+
+func TestPostToolBatch_NoToolCallsIsRecorded(t *testing.T) {
+	h, dir := newHandler(t, nil)
+	if out := fire(t, h, evBatch, `{"session_id":"s1"}`); out.Decision != "" {
+		t.Errorf("%+v", out)
+	}
+	rows := spoolRows(t, dir)
+	if len(rows) != 1 || !strings.Contains(rows[0].GetDetail(), "no tool_calls") {
+		t.Errorf("want one row saying nothing was rescanned, got %v", rows)
+	}
+}
+
+// The marker-left-in-input record is bookkeeping. An input it cannot read
+// must not cost the redaction.
+func TestPostToolUse_UnreadableToolInputStillRedacts(t *testing.T) {
+	h, _ := newHandler(t, nil)
+	out := fire(t, h, evPost, `{"session_id":"s1","tool_name":"Read","tool_input":"not an object","tool_response":`+q("k="+synthKey)+`}`)
+	if out.HookSpecificOutput == nil || strings.Contains(string(out.HookSpecificOutput.UpdatedToolOutput), synthKey) {
+		t.Fatalf("the result must be redacted whatever the input looks like: %+v", out)
+	}
+}
+
+// An existing state directory that other users can enter is refused: the
+// key and the marker map would be theirs to read.
+func TestState_RefusesADirectoryOpenToOthers(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("mode bits do not bind root")
+	}
+	open := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(open, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	private := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(private, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(private, link); err != nil {
+		t.Fatal(err)
+	}
+	for name, dir := range map[string]string{"mode 0755": open, "symbolic link": link} {
+		raw, err := New(Config{StateDir: dir}).Handle(context.Background(), evPre, []byte(preInput("Bash", `{"command":"ls"}`)))
+		if err == nil || len(raw) != 0 {
+			t.Errorf("%s: out=%q err=%v, want an error and no output", name, raw, err)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, keyFile)); statErr == nil {
+			t.Errorf("%s: a key was written into a refused directory", name)
+		}
+	}
+	if _, err := New(Config{StateDir: private}).Handle(context.Background(), evPre, []byte(preInput("Bash", `{"command":"ls"}`))); err != nil {
+		t.Errorf("a 0700 directory of the user's own is accepted: %v", err)
+	}
+}
+
+// A marker not issued or restored for MarkerTTL is dropped from the map,
+// value and all. Using one keeps it. Recording a use appends at most one
+// row a day and never rewrites the file.
+func TestState_MarkersExpireWhenUnused(t *testing.T) {
+	day := 24 * time.Hour
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	dir := filepath.Join(t.TempDir(), "state")
+	at := func(d time.Duration) *Handler {
+		return New(Config{StateDir: dir, Now: func() time.Time { return t0.Add(d) }})
+	}
+	lines := func() int {
+		b, err := os.ReadFile(filepath.Join(dir, markersFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return bytes.Count(b, []byte("\n"))
+	}
+	edit := func(m string) string {
+		return preInput("Write", `{"file_path":"/w/a.txt","content":`+q("to "+m)+`}`)
+	}
+
+	pii, _ := seedMarkers(t, at(0))
+	if got := lines(); got != 2 {
+		t.Fatalf("two markers issued, %d rows", got)
+	}
+	seedMarkers(t, at(time.Hour))
+	if out := fire(t, at(2*time.Hour), evPre, edit(pii)); out.HookSpecificOutput == nil || out.HookSpecificOutput.UpdatedInput == nil {
+		t.Fatalf("restored on the day it was issued: %+v", out)
+	}
+	if got := lines(); got != 2 {
+		t.Errorf("use on the same day must not write: %d rows", got)
+	}
+
+	// Restored on day 20: one row appended, and the 30 days start again.
+	if out := fire(t, at(20*day), evPre, edit(pii)); out.HookSpecificOutput == nil || out.HookSpecificOutput.UpdatedInput == nil {
+		t.Fatalf("day 20: %+v", out)
+	}
+	if got := lines(); got != 3 {
+		t.Errorf("a use on a later day appends one row: %d rows", got)
+	}
+	// Day 45: the secret marker, unused since day 0, is gone; the personal
+	// data marker, used on day 20, is not.
+	if out := fire(t, at(45*day), evPre, edit(pii)); out.HookSpecificOutput == nil || out.HookSpecificOutput.UpdatedInput == nil {
+		t.Fatalf("day 45, 25 days after its last use: %+v", out)
+	}
+	if got := lines(); got != 2 {
+		t.Errorf("the expired row and the superseded one are dropped, today's use appended: %d rows", got)
+	}
+	// Day 80: unused for 35 days. Unknown, denied, and its value is gone.
+	out := fire(t, at(80*day), evPre, edit(pii))
+	if out.HookSpecificOutput == nil || out.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Fatalf("an expired marker is unknown and denied: %+v", out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, markersFile)); bytes.Contains(b, []byte(synthEmail)) {
+		t.Error("an expired marker's value is still in the map")
 	}
 }

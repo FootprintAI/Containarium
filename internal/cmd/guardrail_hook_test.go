@@ -140,6 +140,8 @@ func TestGuardrailHook_InternalErrorExitsTwo(t *testing.T) {
 		"unknown event":      {`{}`, []string{"NoSuchEvent"}},
 		"no event":           {`{}`, nil},
 		"remote engine":      {hookBashResult, []string{"PostToolUse", "--engine", "198.51.100.7:9090"}},
+		"unknown flag":       {`{}`, []string{"PreToolUse", "--no-such-flag"}},
+		"bad flag value":     {`{}`, []string{"PreToolUse", "--engine-wait", "soon"}},
 		"prompt, engine down": {`{"session_id":"s","prompt":"hi"}`,
 			[]string{"UserPromptSubmit", "--engine", filepath.Join(t.TempDir(), "none.sock"), "--scan-timeout", "200ms"}},
 	} {

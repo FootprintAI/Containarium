@@ -40,6 +40,9 @@ type hit struct {
 	kind    pb.GuardrailKind
 	typ     string
 	excerpt string
+	// left is non-empty when the span was found in text that cannot be
+	// replaced (unit.fixed) and so was left as it is.
+	left string
 }
 
 // scanned is the outcome of scanning one value.
@@ -53,11 +56,12 @@ type scanned struct {
 
 // scanMode says what a scan may do.
 type scanMode struct {
-	// strict fails when the engine does, and sends text over the full-scan
-	// limit to the engine all the same. Without it the scan falls back to
+	// strict fails when the engine does. Without it the scan falls back to
 	// the in-process pattern pass and says so: right when the text reaches
 	// the model whatever the handler does, wrong when the handler can still
-	// stop it.
+	// stop it. Text over the full-scan limit gets the pattern pass in both
+	// modes: an engine that cannot finish in time would only turn every
+	// large prompt into an error.
 	strict bool
 	// rewrite writes markers into the units and remembers them.
 	rewrite bool
@@ -91,11 +95,14 @@ func (c *call) scanUnits(ctx context.Context, units []*unit, mode scanMode) (*sc
 
 	var byUnit map[int][]span
 	var err error
-	// The size limit lets a scan settle for the pattern pass. A strict scan
-	// may not settle, so it always asks the engine, bounded by ScanTimeout.
-	if total > c.h.cfg.FullScanMaxBytes && !mode.strict {
+	switch {
+	case total > c.h.cfg.FullScanMaxBytes:
 		res.partial = fmt.Sprintf("%d bytes is over the %d byte full-scan limit", total, c.h.cfg.FullScanMaxBytes)
-	} else {
+	case ctx.Err() != nil && !mode.strict:
+		// The caller's budget (PostToolBatch) is spent: do not start a scan
+		// that can only fail.
+		res.partial = "the hook's time budget ran out before this text reached the engine"
+	default:
 		sctx, cancel := context.WithTimeout(ctx, c.h.cfg.ScanTimeout)
 		byUnit, err = findSpans(sctx, c.h.cfg.Engine, req)
 		cancel()
@@ -107,7 +114,8 @@ func (c *call) scanUnits(ctx context.Context, units []*unit, mode scanMode) (*sc
 		}
 	}
 	if res.partial != "" {
-		if byUnit, err = findSpans(ctx, c.h.fast, req); err != nil {
+		// In-process and not bound by the engine's deadlines.
+		if byUnit, err = findSpans(context.WithoutCancel(ctx), c.h.fast, req); err != nil {
 			return nil, fmt.Errorf("guardrail pattern pass: %w", err)
 		}
 	}
@@ -219,6 +227,11 @@ func (c *call) mark(u *unit, spans []span, rewrite bool) []hit {
 	if len(spans) == 0 {
 		return nil
 	}
+	left := ""
+	if rewrite && u.fixed != "" {
+		rewrite = false
+		left = "found in " + u.fixed + " of a structured result, which cannot be replaced without changing the result's shape; left as it is"
+	}
 	joined := []rune(u.text())
 	tokens := make([]string, len(spans))
 	for i, s := range spans {
@@ -272,7 +285,7 @@ func (c *call) mark(u *unit, spans []span, rewrite bool) []hit {
 	after := strings.Join(marked, "\n")
 	hits := make([]hit, len(spans))
 	for i, s := range spans {
-		hits[i] = hit{kind: s.kind, typ: s.typ, excerpt: excerpt(after, at[i], tokens[i])}
+		hits[i] = hit{kind: s.kind, typ: s.typ, excerpt: excerpt(after, at[i], tokens[i]), left: left}
 	}
 	return hits
 }
@@ -328,7 +341,11 @@ func (c *call) scanValue(ctx context.Context, tool string, raw []byte, mode scan
 // recordScan writes one row per hit, plus the coverage rows.
 func (c *call) recordScan(tool string, source pb.GuardrailHookSource, outcome pb.GuardrailHookOutcome, res *scanned) {
 	for _, h := range res.hits {
-		c.record(&pb.GuardrailHookRecord{ToolName: tool, Source: source, Outcome: outcome, Kind: h.kind, Type: h.typ, Excerpt: h.excerpt})
+		r := &pb.GuardrailHookRecord{ToolName: tool, Source: source, Outcome: outcome, Kind: h.kind, Type: h.typ, Excerpt: h.excerpt}
+		if h.left != "" {
+			r.Outcome, r.Detail = pb.GuardrailHookOutcome_GUARDRAIL_HOOK_OUTCOME_RECORDED, h.left
+		}
+		c.record(r)
 	}
 	if res.partial != "" {
 		c.record(&pb.GuardrailHookRecord{ToolName: tool, Source: source,

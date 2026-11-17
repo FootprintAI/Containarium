@@ -26,6 +26,11 @@ type unit struct {
 	// dirty flags every embedded JSON document this unit sits inside, so
 	// each one is re-encoded if, and only if, something in it changed.
 	dirty []*bool
+	// fixed is non-empty for text that is scanned but must not be replaced,
+	// and says what it is. A marker is a string: putting one in place of a
+	// number, or renaming an object key, changes the shape of a tool's
+	// result, and the agent then rejects the whole replacement. See walk.
+	fixed string
 }
 
 func (u *unit) text() string { return strings.Join(u.lines, "\n") }
@@ -77,7 +82,15 @@ func decodeTree(raw []byte) (any, error) {
 
 // walk collects the units under v. key is the object field v sits in ("" at
 // the root); set replaces v in its parent.
+//
+// Redaction never changes a JSON type or an object's keys in the result's
+// own structure: only string values are replaced there, by strings. A
+// finding in a number or in a key of that structure is recorded and left.
+// Inside an embedded JSON document (a string that holds JSON) both are
+// rewritten, because the container stays the string it was.
 func (w *walker) walk(v any, key string, set func(any), dirty []*bool) {
+	// Every embedded document adds one flag; the first is the root's.
+	embedded := len(dirty) > 1
 	switch t := v.(type) {
 	case string:
 		w.leaf(t, key, set, dirty)
@@ -100,7 +113,7 @@ func (w *walker) walk(v any, key string, set func(any), dirty []*bool) {
 			// key's current name.
 			name := k
 			if k != "" && !isBinary(k) {
-				w.units = append(w.units, &unit{lines: []string{k}, set: func(_ int, nk string) {
+				w.units = append(w.units, &unit{lines: []string{k}, fixed: fixedUnless(embedded, "an object key"), set: func(_ int, nk string) {
 					v := t[name]
 					delete(t, name)
 					name = freeKey(t, nk)
@@ -110,11 +123,18 @@ func (w *walker) walk(v any, key string, set func(any), dirty []*bool) {
 			w.walk(t[k], k, func(nv any) { t[name] = nv }, dirty)
 		}
 	case json.Number:
-		// A card or phone number can be a JSON number. Redacted, it becomes
-		// a marker string.
-		w.units = append(w.units, &unit{lines: []string{t.String()}, set: func(_ int, ns string) { set(ns) }, dirty: dirty})
+		// A card or phone number can be a JSON number. Inside an embedded
+		// document it becomes a marker string when redacted.
+		w.units = append(w.units, &unit{lines: []string{t.String()}, fixed: fixedUnless(embedded, "a number"), set: func(_ int, ns string) { set(ns) }, dirty: dirty})
 	}
 	// Booleans and null carry no text.
+}
+
+func fixedUnless(embedded bool, what string) string {
+	if embedded {
+		return ""
+	}
+	return what
 }
 
 // freeKey returns k, or k with a numeric suffix when t already has k: two

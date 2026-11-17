@@ -258,13 +258,17 @@ func must(t *testing.T, err error) {
 func TestRulesEngine_PrivateKeyCoversTheWholeBlock(t *testing.T) {
 	const begin, end = "-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"
 	block := begin + "\nMIIEsynthetic+/0123\nabcdSYNTHETIC==\n" + end
+	escaped := strings.ReplaceAll(block, "\n", `\n`)
 	// A legacy encrypted key carries header lines with ':' and ','.
 	encrypted := begin + "\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF\n\nMIIEsynthetic+/0123\nabcdSYNTHETIC==\n" + end
 	// A read cut off before the END line: the body lines that follow the
 	// header are flagged with it, up to the first line that is not key-like.
 	truncated := begin + "\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF\n\nMIIEsynthetic+/0123\nabcdSYNTHETIC=="
 	for name, tc := range map[string]struct{ text, want string }{
-		"whole block":       {"key:\n" + block + "\ntail", block},
+		"whole block": {"key:\n" + block + "\ntail", block},
+		// A key inside a JSON string, as a file read returns it: the line
+		// breaks are the two characters backslash and n.
+		"escaped newlines":  {`{"private_key": "` + escaped + `\n", "client_id": "1"}`, escaped},
 		"header in prose":   {"the line " + begin + " starts a key", begin},
 		"encrypted headers": {"key:\n" + encrypted + "\ntail", encrypted},
 		"no END line":       {"key:\n" + truncated + "\n(output truncated) more", truncated},

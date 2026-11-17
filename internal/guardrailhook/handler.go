@@ -26,12 +26,35 @@ import (
 )
 
 // Defaults for a zero Config field.
+//
+// The three time limits nest, and all of them must fit inside the timeout
+// the agent gives the hook (the documented configuration uses 15 s):
+//
+//   - EngineWait (3 s) is spent at most once, by PreToolUse, waiting for an
+//     engine that is still starting. Past it the call is denied.
+//   - ScanTimeout (2 s) bounds each engine scan. PreToolUse makes no scan
+//     after the readiness wait; PostToolUse, UserPromptSubmit and
+//     InstructionsLoaded make exactly one.
+//   - BatchBudget (10 s) bounds all the engine scans of one PostToolBatch,
+//     which makes one per tool call. Each is still cut at ScanTimeout; once
+//     the budget is spent the remaining calls get the in-process pattern
+//     pass and are recorded as partially scanned.
+//
+// So the longest a hook waits on the engine is 3 s (PreToolUse), 2 s (the
+// single-scan events) or 10 s (PostToolBatch). The pattern pass that
+// follows a failed or skipped scan is in-process and has no deadline.
 const (
 	DefaultEngineWait       = 3 * time.Second
 	DefaultScanTimeout      = 2 * time.Second
+	DefaultBatchBudget      = 10 * time.Second
 	DefaultFullScanMaxBytes = 16 << 10
 	DefaultSpoolMaxBytes    = 1 << 20
 )
+
+// MarkerTTL is how long a marker stays in the map after it was last issued
+// or restored. Past it the marker is unknown, and an unknown marker is
+// denied.
+const MarkerTTL = 30 * 24 * time.Hour
 
 // Config is one invocation's settings. The zero value of every field but
 // StateDir has a usable default.
@@ -47,10 +70,12 @@ type Config struct {
 	EngineWait time.Duration
 	// ScanTimeout bounds one engine scan.
 	ScanTimeout time.Duration
+	// BatchBudget bounds the engine scans of one PostToolBatch, all tool
+	// calls together.
+	BatchBudget time.Duration
 	// FullScanMaxBytes is the largest text the engine is asked to scan. A
-	// larger one gets the in-process pattern pass and is recorded as
-	// partially scanned, except a prompt, which can still be stopped and so
-	// always goes to the engine.
+	// larger one, a prompt included, gets the in-process pattern pass and
+	// is recorded as partially scanned.
 	FullScanMaxBytes int
 	// SpoolMaxBytes bounds the findings spool. A row that would not fit is
 	// dropped.
@@ -86,6 +111,9 @@ func New(cfg Config) *Handler {
 	}
 	if cfg.ScanTimeout <= 0 {
 		cfg.ScanTimeout = DefaultScanTimeout
+	}
+	if cfg.BatchBudget <= 0 {
+		cfg.BatchBudget = DefaultBatchBudget
 	}
 	if cfg.FullScanMaxBytes <= 0 {
 		cfg.FullScanMaxBytes = DefaultFullScanMaxBytes

@@ -190,6 +190,7 @@ func (c *call) rehydrate(s string) (restored, problem string) {
 		case e.Kind != pb.GuardrailKind_GUARDRAIL_KIND_PII:
 			problem = "a marker for a removed secret (" + e.Type + "), and secrets are never put back"
 		default:
+			c.state.touch(tok)
 			return e.Value
 		}
 		return tok
@@ -277,9 +278,9 @@ func (c *call) postToolUse(ctx context.Context) (*hookOutput, error) {
 	if err := c.requireTool(); err != nil {
 		return nil, err
 	}
-	if err := c.recordMarkersLeftInInput(); err != nil {
-		return nil, err
-	}
+	// Bookkeeping, and so after the redaction is settled and best effort:
+	// nothing in it may stop the replacement from being returned.
+	defer c.recordMarkersLeftInInput()
 	if len(c.in.ToolResponse) == 0 {
 		return nil, nil
 	}
@@ -302,14 +303,14 @@ func (c *call) postToolUse(ctx context.Context) (*hookOutput, error) {
 // ran, in a field this handler restores at PreToolUse. A marker it refused
 // would have denied the call, so one that is still here means another
 // hook's input rewrite replaced ours and the marker may now be in a file.
-func (c *call) recordMarkersLeftInInput() error {
+func (c *call) recordMarkersLeftInInput() {
 	spec, ok := fileTools[c.in.ToolName]
 	if !ok {
-		return nil
+		return
 	}
 	fields, err := toolInputFields(c.in.ToolInput)
 	if err != nil {
-		return err
+		return
 	}
 	seen := map[string]bool{}
 	for _, name := range append(append([]string{}, spec.paths...), spec.content...) {
@@ -329,13 +330,27 @@ func (c *call) recordMarkersLeftInInput() error {
 			})
 		}
 	}
-	return nil
 }
 
 func (c *call) postToolBatch(ctx context.Context) (*hookOutput, error) {
 	// A rescan with no memory of what PostToolUse did: whatever is found
 	// here is about to reach the model, whether a replacement was rejected
 	// or the PostToolUse hook never ran.
+	if len(c.in.ToolCalls) == 0 {
+		// Nothing to rescan. Said out loud, so an input whose shape changed
+		// does not look like a rescan that found nothing.
+		c.record(&pb.GuardrailHookRecord{
+			Source:  pb.GuardrailHookSource_GUARDRAIL_HOOK_SOURCE_TOOL_RESULT,
+			Outcome: pb.GuardrailHookOutcome_GUARDRAIL_HOOK_OUTCOME_PARTIALLY_SCANNED,
+			Detail:  "the batch carried no tool_calls; nothing was rescanned",
+		})
+		return nil, nil
+	}
+	// One budget for the engine across the whole batch (see the defaults in
+	// handler.go). A call reached after it is spent gets the pattern pass
+	// and a PARTIALLY_SCANNED record; none is skipped.
+	ctx, cancel := context.WithTimeout(ctx, c.h.cfg.BatchBudget)
+	defer cancel()
 	var found []hit
 	for _, tc := range c.in.ToolCalls {
 		if len(tc.ToolResponse) == 0 {
@@ -379,6 +394,8 @@ func (c *call) userPromptSubmit(ctx context.Context) (*hookOutput, error) {
 	}
 	// The prompt can still be stopped, so a scan that fails is an error (the
 	// command exits 2, which blocks the prompt), never a pass.
+	// A prompt over the full-scan limit gets the pattern pass, like a tool
+	// result, and still blocks on what that finds.
 	res, err := c.scanUnits(ctx, []*unit{{lines: []string{c.in.Prompt}}}, scanMode{strict: true})
 	if err != nil {
 		return nil, err

@@ -81,6 +81,7 @@ var (
 	guardrailHookStateDir     string
 	guardrailHookEngineWait   time.Duration
 	guardrailHookScanTimeout  time.Duration
+	guardrailHookBatchBudget  time.Duration
 	guardrailHookFullScanMax  int
 	guardrailHookSpoolMax     int64
 	guardrailHookBlockOnBatch bool
@@ -93,7 +94,14 @@ func init() {
 	f.StringVar(&guardrailHookStateDir, "state-dir", "", "Where the marker key, marker map, stamps and findings spool live (default $XDG_STATE_HOME/containarium-guardrail, else ~/.local/state/containarium-guardrail)")
 	f.DurationVar(&guardrailHookEngineWait, "engine-wait", guardrailhook.DefaultEngineWait, "How long PreToolUse waits for the engine before it denies the call")
 	f.DurationVar(&guardrailHookScanTimeout, "scan-timeout", guardrailhook.DefaultScanTimeout, "Deadline for one engine scan")
-	f.IntVar(&guardrailHookFullScanMax, "full-scan-max-bytes", guardrailhook.DefaultFullScanMaxBytes, "Largest text sent to the engine. A larger one gets the in-process pattern pass and is recorded as partially scanned; a prompt always goes to the engine")
+	f.DurationVar(&guardrailHookBatchBudget, "batch-budget", guardrailhook.DefaultBatchBudget, "Time PostToolBatch may spend on engine scans, all tool calls together. Calls reached after it get the in-process pattern pass. Keep it below the hook's timeout")
+	f.IntVar(&guardrailHookFullScanMax, "full-scan-max-bytes", guardrailhook.DefaultFullScanMaxBytes, "Largest text sent to the engine. A larger one, a prompt included, gets the in-process pattern pass and is recorded as partially scanned")
+	// A flag error is an internal error like any other: exit 2, not cobra's 1.
+	guardrailHookCmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		fmt.Fprintf(cmd.ErrOrStderr(), "containarium guardrail hook: %v\n", err)
+		guardrailHookExit(guardrailHookFailed)
+		return nil
+	})
 	f.Int64Var(&guardrailHookSpoolMax, "spool-max-bytes", guardrailhook.DefaultSpoolMaxBytes, "Size bound of the findings spool. Rows that would not fit are dropped")
 	f.BoolVar(&guardrailHookBlockOnBatch, "block-on-batch-finding", false, "On a PostToolBatch finding, stop the turn and refuse later prompts in that session until /clear or a new session")
 }
@@ -121,6 +129,7 @@ func runGuardrailHook(cmd *cobra.Command, args []string) (code int) {
 		StateDir:            guardrailHookStateDir,
 		EngineWait:          guardrailHookEngineWait,
 		ScanTimeout:         guardrailHookScanTimeout,
+		BatchBudget:         guardrailHookBatchBudget,
 		FullScanMaxBytes:    guardrailHookFullScanMax,
 		SpoolMaxBytes:       guardrailHookSpoolMax,
 		BlockOnBatchFinding: guardrailHookBlockOnBatch,

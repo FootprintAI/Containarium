@@ -48,15 +48,32 @@ func DefaultStateDir() (string, error) {
 // its value, which is the only way back. A secret marker is listed with no
 // value, so an edit that uses one can be told apart from a marker this box
 // never issued; a secret itself is never written anywhere.
+//
+// Seen is the UTC date the marker was last issued or restored. A marker
+// not seen for MarkerTTL is dropped when the map is next loaded. Use is
+// recorded by appending the row again with a new date, at most once per
+// marker per day, so the file is never rewritten to note a use. It is
+// rewritten only to drop rows: when a load finds an expired marker, or
+// more than twice as many rows as live markers.
 type markerRow struct {
 	Token string `json:"token"`
 	guardrail.VaultEntry
+	Seen string `json:"seen,omitempty"`
 }
+
+// seenLayout is a date: sortable as a string, and coarse enough that a
+// marker in constant use costs one row a day.
+const seenLayout = "2006-01-02"
+
+// compactSlack is how many superseded rows the marker map may hold beyond
+// one per live marker before it is rewritten.
+const compactSlack = 64
 
 type state struct {
 	dir      string
 	key      []byte
 	markers  map[string]guardrail.VaultEntry
+	seen     map[string]string // token -> markerRow.Seen
 	spoolMax int64
 	now      func() time.Time
 }
@@ -68,8 +85,19 @@ func openState(cfg Config) (*state, error) {
 	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("guardrail state directory: %w", err)
 	}
-	s := &state{dir: cfg.StateDir, markers: map[string]guardrail.VaultEntry{}, spoolMax: cfg.SpoolMaxBytes, now: cfg.Now}
-	var err error
+	// MkdirAll leaves an existing directory as it found it. The key and the
+	// marker map are only private if the directory is.
+	info, err := os.Lstat(cfg.StateDir)
+	if err != nil {
+		return nil, fmt.Errorf("guardrail state directory: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("guardrail state directory %s is not a directory (a symbolic link is refused)", cfg.StateDir)
+	}
+	if err := checkPrivateDir(cfg.StateDir, info); err != nil {
+		return nil, err
+	}
+	s := &state{dir: cfg.StateDir, markers: map[string]guardrail.VaultEntry{}, seen: map[string]string{}, spoolMax: cfg.SpoolMaxBytes, now: cfg.Now}
 	if s.key, err = loadOrCreateKey(filepath.Join(s.dir, keyFile)); err != nil {
 		return nil, err
 	}
@@ -77,15 +105,55 @@ func openState(cfg Config) (*state, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("guardrail marker map: %w", err)
 	}
+	rows := 0
 	for _, line := range bytes.Split(b, []byte("\n")) {
 		var row markerRow
 		// A torn last line (two hooks appending at once) is skipped: the
 		// marker it was for is then unknown, and an unknown marker is denied.
 		if json.Unmarshal(line, &row) == nil && row.Token != "" {
-			s.markers[row.Token] = row.VaultEntry
+			rows++
+			s.markers[row.Token], s.seen[row.Token] = row.VaultEntry, row.Seen
 		}
 	}
+	cutoff, expired := s.now().Add(-MarkerTTL).UTC().Format(seenLayout), 0
+	for tok, seen := range s.seen {
+		if seen < cutoff {
+			delete(s.markers, tok)
+			delete(s.seen, tok)
+			expired++
+		}
+	}
+	if expired > 0 || rows > 2*len(s.markers)+compactSlack {
+		s.compactMarkers()
+	}
 	return s, nil
+}
+
+// compactMarkers rewrites the marker map with one row per live marker, by
+// writing a new file and renaming it into place. Best effort. A row another
+// hook appends between this load and the rename is lost; that marker is
+// then unknown, which is the safe way to fail.
+func (s *state) compactMarkers() {
+	var buf bytes.Buffer
+	toks := make([]string, 0, len(s.markers))
+	for tok := range s.markers {
+		toks = append(toks, tok)
+	}
+	for _, tok := range sortedStrings(toks) {
+		line, err := marshalJSON(markerRow{Token: tok, VaultEntry: s.markers[tok], Seen: s.seen[tok]})
+		if err != nil {
+			return
+		}
+		buf.Write(append(line, '\n'))
+	}
+	tmp, err := os.CreateTemp(s.dir, markersFile+".*")
+	if err != nil {
+		return
+	}
+	_, werr := tmp.Write(buf.Bytes())
+	if cerr := tmp.Close(); werr != nil || cerr != nil || os.Rename(tmp.Name(), filepath.Join(s.dir, markersFile)) != nil {
+		_ = os.Remove(tmp.Name())
+	}
 }
 
 // loadOrCreateKey returns the marker key, creating it on first use. Two
@@ -127,11 +195,23 @@ func loadOrCreateKey(path string) ([]byte, error) {
 // written the marker is simply unknown later, and an unknown marker is
 // denied, which is the safe way to fail.
 func (s *state) remember(token string, e guardrail.VaultEntry) {
-	if _, ok := s.markers[token]; ok {
+	if _, ok := s.markers[token]; !ok {
+		s.markers[token] = e
+	}
+	s.touch(token)
+}
+
+// touch notes that a known marker was issued or restored today, which is
+// what keeps it from expiring. It appends at most one row per marker per
+// day.
+func (s *state) touch(token string) {
+	e, ok := s.markers[token]
+	today := s.now().UTC().Format(seenLayout)
+	if !ok || s.seen[token] == today {
 		return
 	}
-	s.markers[token] = e
-	line, err := marshalJSON(markerRow{Token: token, VaultEntry: e})
+	s.seen[token] = today
+	line, err := marshalJSON(markerRow{Token: token, VaultEntry: e, Seen: today})
 	if err != nil {
 		return
 	}
