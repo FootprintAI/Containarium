@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/footprintai/containarium/internal/auth"
+	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
@@ -38,8 +39,9 @@ func guardLabelRoute(authMW func(http.Handler) http.Handler, requiredScope strin
 			http.Error(w, `{"error": "forbidden: scope required: `+requiredScope+`", "code": 403}`, http.StatusForbidden)
 			return
 		}
-		// Labels feed tenant resolution (cloud_org_id): only an admin may write
-		// or remove that key, even on a box they own.
+		// Labels feed tenant resolution (cloud_org_id) and telemetry
+		// attribution (cloud_container_id, #3690): only an admin may write or
+		// remove those keys, even on a box they own.
 		if !auth.HasRole(roles, auth.RoleAdmin) {
 			keys, err := labelKeysTouched(r)
 			if err != nil {
@@ -47,7 +49,7 @@ func guardLabelRoute(authMW func(http.Handler) http.Handler, requiredScope strin
 				return
 			}
 			for _, k := range keys {
-				if k == incus.CloudOrgIDLabel {
+				if k == incus.CloudOrgIDLabel || k == container.CloudContainerIDLabelKey {
 					http.Error(w, `{"error": "forbidden: label `+k+` requires administrator authority", "code": 403}`, http.StatusForbidden)
 					return
 				}

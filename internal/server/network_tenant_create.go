@@ -5,6 +5,7 @@ import (
 	"github.com/footprintai/containarium/internal/auth"
 	appconfig "github.com/footprintai/containarium/internal/config"
 	"github.com/footprintai/containarium/pkg/core/box"
+	"github.com/footprintai/containarium/pkg/core/container"
 	"github.com/footprintai/containarium/pkg/core/incus"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
@@ -77,7 +78,9 @@ func authorizeNetworkTenantLabels(ctx context.Context, labels map[string]string)
 		if k == "tenant" || k == incus.TenantLabelKey || strings.HasPrefix(k, "user.containarium.") {
 			return status.Error(codes.InvalidArgument, "protected network attribution is not a generic label")
 		}
-		if k == incus.CloudOrgIDLabel && !admin {
+		// cloud_container_id is the identity telemetry is attributed by
+		// (#3690), so it is as protected as cloud_org_id.
+		if (k == incus.CloudOrgIDLabel || k == container.CloudContainerIDLabelKey) && !admin {
 			return status.Error(codes.PermissionDenied, "cloud attribution requires administrator authority")
 		}
 	}

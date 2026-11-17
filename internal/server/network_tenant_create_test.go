@@ -79,6 +79,23 @@ func TestNativeTenantAuthorizationAndPlacement(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// cloud_container_id is the identity telemetry is attributed by, so a
+// non-admin caller cannot stamp it at create time or afterwards (#3690): a
+// tenant naming another box's id would have its telemetry counted as that box.
+func TestNetworkTenantLabels_CloudContainerIDIsAdminOnly(t *testing.T) {
+	labels := map[string]string{container.CloudContainerIDLabelKey: "other-box"}
+	if err := authorizeNetworkTenantLabels(nativeUser(), labels); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("non-admin cloud_container_id: err = %v, want PermissionDenied", err)
+	}
+	if err := authorizeNetworkTenantCreate(nativeUser(), &pb.CreateContainerRequest{Username: "workload", Labels: labels}, true, false); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("non-admin create with cloud_container_id: err = %v, want PermissionDenied", err)
+	}
+	if err := authorizeNetworkTenantLabels(nativeAdmin(), labels); err != nil {
+		t.Fatalf("admin cloud_container_id: err = %v, want nil", err)
+	}
+}
+
 func TestNativeTenantDryRunAndScopeFailBeforeProvisioning(t *testing.T) {
 	s := &ContainerServer{manager: &container.Manager{}, nativeTenantReady: func() bool { return true }}
 	req := &pb.CreateContainerRequest{Username: "workload", NetworkTenant: "team-a", DryRun: true}
