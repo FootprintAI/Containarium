@@ -2,9 +2,8 @@ package guardraildropin
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,10 +18,10 @@ import (
 )
 
 // TODO(#3761): the two values below belong to the hook handler. They are
-// restated here because the handler is not merged yet; replace them with its
-// exported constants once it is.
+// restated here because this package must not import it before it merges;
+// replace them with its constants afterwards.
 const (
-	// stampSubdir is under the box user's $XDG_STATE_HOME (~/.local/state).
+	// stampSubdir is under the box user's state directory.
 	stampSubdir = "containarium-guardrail/stamps"
 	// clientProcessName is the comm of a Claude Code process.
 	clientProcessName = "claude"
@@ -41,13 +40,9 @@ const DefaultStampGrace = 3 * time.Minute
 // stampSlack absorbs the rounding of ps's whole-second elapsed time.
 const stampSlack = 5 * time.Second
 
-// Box is the daemon's root path into a box: exec and file push as root.
-// *incus.Client satisfies it.
-type Box interface {
-	ExecWithExitCode(container string, command []string) (stdout, stderr string, exitCode int, err error)
-	WriteFile(container, path string, content []byte, mode string) error
-	PushFile(container, path string, content io.ReadSeeker, mode string) error
-}
+// maxManagedFileBytes caps what the check reads from one managed settings
+// file. A real one is a few kilobytes.
+const maxManagedFileBytes = 1 << 20
 
 // openBinary opens the pinned hook binary on the daemon's host.
 type openBinary func() (io.ReadSeekCloser, error)
@@ -57,10 +52,17 @@ type Result struct {
 	Coverage      pb.GuardrailHookCoverage
 	Detail        string
 	ClientVersion string
-	CheckedAt     time.Time
+	// ClientInstalled is whether a client was found for the box user. A
+	// box that is COVERED with none installed has nothing running without
+	// the hooks; it has not shown that hooks fire.
+	ClientInstalled bool
+	CheckedAt       time.Time
 	// repair: the daemon's own files are missing or changed, so the next
 	// step is to install them again.
 	repair bool
+	// stale: the files are the ones an earlier daemon version or earlier
+	// flags installed. Not tampering; repaired without being reported.
+	stale bool
 }
 
 type clientVersion struct{ fingerprint, version string }
@@ -68,6 +70,7 @@ type clientVersion struct{ fingerprint, version string }
 // checker installs, removes and checks the drop-in in one box at a time.
 type checker struct {
 	box    Box
+	run    runner
 	opts   Options
 	dropIn []byte
 	// socket is the engine's unix socket path in the box; "" when the
@@ -93,41 +96,21 @@ func newChecker(box Box, opts Options, open openBinary) (*checker, error) {
 	if _, err := versionAtLeast(opts.MinClientVersion, "0"); err != nil {
 		return nil, fmt.Errorf("minimum client version: %w", err)
 	}
-	return &checker{box: box, opts: opts, dropIn: dropIn, socket: socket, open: open, clock: time.Now, versions: map[string]clientVersion{}}, nil
-}
-
-// binarySHA is the SHA-256 of the pinned binary, hashed once.
-func (c *checker) binarySHA() (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.binSHA != "" {
-		return c.binSHA, nil
+	if opts.ExecTimeout < time.Second {
+		return nil, fmt.Errorf("guardrail hook exec timeout %s is under one second", opts.ExecTimeout)
 	}
-	f, err := c.open()
-	if err != nil {
-		return "", fmt.Errorf("open hook binary: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", fmt.Errorf("hash hook binary: %w", err)
-	}
-	c.binSHA = hex.EncodeToString(h.Sum(nil))
-	return c.binSHA, nil
+	return &checker{box: box, run: runner{box: box, timeout: opts.ExecTimeout, grace: execGrace}, opts: opts,
+		dropIn: dropIn, socket: socket, open: open, clock: time.Now, versions: map[string]clientVersion{}}, nil
 }
 
 // engineSocket validates an engine address the way the hook does and
 // returns its unix socket path, or "" for a loopback host:port or no engine.
-// The path ends up inside a single-quoted shell word, so a quote is refused.
 func engineSocket(addr string) (string, error) {
 	p := strings.TrimPrefix(addr, "unix://")
 	switch {
 	case addr == "":
 		return "", nil
 	case strings.HasPrefix(p, "/"):
-		if strings.ContainsAny(p, "'\n") {
-			return "", fmt.Errorf("engine address %q: the socket path must not contain a quote or a newline", addr)
-		}
 		return p, nil
 	case strings.HasPrefix(addr, "unix:"):
 		return "", fmt.Errorf("engine address %q: want unix://<absolute path>", addr)
@@ -142,174 +125,194 @@ func engineSocket(addr string) (string, error) {
 	return "", nil
 }
 
-// run executes argv as root in the box. A non-zero exit is not an error.
-func (c *checker) run(container string, argv ...string) (string, int, error) {
-	out, _, code, err := c.box.ExecWithExitCode(container, argv)
-	if err != nil {
-		return "", code, fmt.Errorf("%s in %q: %w", argv[0], container, err)
-	}
-	return out, code, nil
+// node is what `stat` says about one path, without following a link.
+type node struct {
+	missing bool
+	kind    string // stat's %F: "regular file", "directory", "symbolic link", "fifo", ...
+	uid     int
+	mode    int64
 }
 
-// mustRun is run for a command whose non-zero exit is a failure.
-func (c *checker) mustRun(container string, argv ...string) error {
-	_, code, err := c.run(container, argv...)
-	if err == nil && code != 0 {
-		err = fmt.Errorf("%s in %q: exit %d", argv[0], container, code)
-	}
-	return err
-}
+// closed: owned by root and not writable by group or others.
+func (n node) closed() bool { return !n.missing && n.uid == 0 && n.mode&0o022 == 0 }
 
-// boxSHA is the SHA-256 of a file in the box; "" when it is not there.
-func (c *checker) boxSHA(container, p string) (string, error) {
-	out, code, err := c.run(container, "sha256sum", "--", p)
-	if err != nil || code != 0 {
-		return "", err
-	}
-	return strings.Fields(out + " x")[0], nil
-}
+func (n node) rootDir() bool { return n.kind == "directory" && n.closed() }
 
-// install puts the pinned binary and then the drop-in into a running box.
-// Binary first: the drop-in must never name a command that is not there.
-func (c *checker) install(container string) error {
-	want, err := c.binarySHA()
+func (n node) rootFile() bool { return strings.HasPrefix(n.kind, "regular") && n.closed() }
+
+const statScript = `for p in "$@"; do stat -c '%F|%u|%a' -- "$p" 2>/dev/null || echo missing; done`
+
+// stat reports each path's type, owner and mode. It never opens the path.
+func (c *checker) stat(container string, paths ...string) ([]node, error) {
+	out, _, err := c.run.script(container, statScript, paths...)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := c.mustRun(container, "mkdir", "-p", "-m", "0755", HookBinaryDir, DropInDir); err != nil {
-		return err
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != len(paths) {
+		return nil, fmt.Errorf("stat in %q: %d answers for %d paths", container, len(lines), len(paths))
 	}
-	have, err := c.boxSHA(container, HookBinaryPath)
-	if err != nil {
-		return err
-	}
-	if have != want {
-		f, err := c.open()
-		if err != nil {
-			return fmt.Errorf("open hook binary: %w", err)
+	nodes := make([]node, len(paths))
+	for i, l := range lines {
+		f := strings.Split(l, "|")
+		if len(f) != 3 {
+			nodes[i].missing = true
+			continue
 		}
-		defer func() { _ = f.Close() }()
-		if err := c.box.PushFile(container, HookBinaryPath, f, "0755"); err != nil {
-			return fmt.Errorf("install hook binary in %q: %w", container, err)
+		uid, uerr := strconv.Atoi(f[1])
+		mode, merr := strconv.ParseInt(f[2], 8, 64)
+		if uerr != nil || merr != nil {
+			return nil, fmt.Errorf("stat in %q: unreadable answer for %s", container, paths[i])
 		}
+		nodes[i] = node{kind: f[0], uid: uid, mode: mode}
 	}
-	if err := c.box.WriteFile(container, DropInPath, c.dropIn, "0644"); err != nil {
-		return fmt.Errorf("install drop-in in %q: %w", container, err)
-	}
-	return nil
-}
-
-// remove takes the drop-in out first, then the binary. It is the
-// break-glass, so it must work whatever state the binary is in.
-func (c *checker) remove(container string) error {
-	if err := c.mustRun(container, "rm", "-f", "--", DropInPath); err != nil {
-		return err
-	}
-	if err := c.mustRun(container, "rm", "-rf", "--", HookBinaryDir); err != nil {
-		return err
-	}
-	c.mu.Lock()
-	delete(c.versions, container)
-	c.mu.Unlock()
-	return nil
+	return nodes, nil
 }
 
 // check runs the coverage check on a running box whose switch is on. user is
-// the box's Linux user. It reads; it never writes into the box.
-func (c *checker) check(container, user string) Result {
-	r := c.evaluate(container, user)
+// the box's Linux user; prev is what the daemon last installed there. It
+// reads; it never writes into the box.
+func (c *checker) check(container, user string, prev installed) Result {
+	r := c.evaluate(container, user, prev)
 	r.CheckedAt = c.clock()
 	return r
 }
 
 func unknown(err error) Result {
-	return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_UNKNOWN, Detail: "the check could not run: " + err.Error()}
+	detail := "the check could not run: " + err.Error()
+	if errors.Is(err, errExecTimeout) {
+		detail = "the check timed out inside the box: " + err.Error()
+	}
+	return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_UNKNOWN, Detail: detail}
 }
 
-func (c *checker) evaluate(container, user string) Result {
-	// 1. Our own files: present, then unchanged.
-	dropIn, code, err := c.run(container, "cat", "--", DropInPath)
+func notInstalled(detail string) Result {
+	return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_NOT_INSTALLED, Detail: detail, repair: true}
+}
+
+func tampered(detail string, repair bool) Result {
+	return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_TAMPERED, Detail: detail, repair: repair}
+}
+
+func (c *checker) evaluate(container, user string, prev installed) Result {
+	// 1. Our own files and their directories: what they are, whose they
+	// are, then what is in them. Nothing is opened before stat says it is
+	// a regular file.
+	paths := []string{ManagedSettingsDir, DropInDir, HookBinaryDir, DropInPath, HookBinaryPath}
+	nodes, err := c.stat(container, paths...)
 	if err != nil {
 		return unknown(err)
 	}
-	if code != 0 {
-		return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_NOT_INSTALLED, Detail: "the drop-in is missing", repair: true}
+	for i, n := range nodes[:3] {
+		switch {
+		case n.missing:
+			return notInstalled(paths[i] + " is missing")
+		case !n.rootDir():
+			// Not repaired: the install refuses such a directory too.
+			return tampered(paths[i]+" is not a root-owned directory closed to group and others", false)
+		}
 	}
-	want, err := c.binarySHA()
+	for i, n := range nodes[3:] {
+		switch p := paths[3+i]; {
+		case n.missing:
+			return notInstalled(p + " is missing")
+		case !n.rootFile():
+			return tampered(p+" is not a regular root-owned file closed to group and others", true)
+		}
+	}
+	want, err := c.current()
 	if err != nil {
 		return unknown(err)
 	}
-	have, err := c.boxSHA(container, HookBinaryPath)
+	dropIn, _, err := c.run.run(container, "head", "-c", strconv.Itoa(maxManagedFileBytes), "--", DropInPath)
 	if err != nil {
 		return unknown(err)
 	}
-	if have == "" {
-		return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_NOT_INSTALLED, Detail: "the hook binary is missing", repair: true}
+	haveBin, err := c.boxSHA(container, HookBinaryPath)
+	if err != nil {
+		return unknown(err)
 	}
-	if !bytes.Equal([]byte(dropIn), c.dropIn) {
-		return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_TAMPERED, Detail: "the drop-in differs from what the daemon installed", repair: true}
+	if have := sha256Hex([]byte(dropIn)); have != want.dropIn {
+		if have == prev.dropIn {
+			return Result{repair: true, stale: true, Detail: "the drop-in is from an earlier daemon configuration"}
+		}
+		return tampered("the drop-in differs from what the daemon installed", true)
 	}
-	if have != want {
-		return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_TAMPERED, Detail: "the hook binary differs from the pinned one", repair: true}
+	if haveBin != want.binary {
+		if haveBin == prev.binary {
+			return Result{repair: true, stale: true, Detail: "the hook binary is from an earlier daemon version"}
+		}
+		return tampered("the hook binary differs from the pinned one", true)
 	}
 
 	// 2. Any other managed file that turns hooks off. A second managed file
-	// with disableAllHooks does disable ours, whichever sorts first.
-	list, _, err := c.run(container, "find", ManagedSettingsDir, "-maxdepth", "2", "-name", "*.json")
+	// with disableAllHooks does disable ours, whichever sorts first. Names
+	// are NUL-separated (a name may hold a newline), and only a regular
+	// file under the size cap is opened: a link or a FIFO is reported, not
+	// read.
+	list, _, err := c.run.run(container, "find", ManagedSettingsDir, "-maxdepth", "2", "-name", "*.json", "-printf", `%y\t%s\t%p\0`)
 	if err != nil {
 		return unknown(err)
 	}
-	for _, p := range strings.Split(strings.TrimSpace(list), "\n") {
-		if p == DropInPath || (path.Dir(p) != DropInDir && p != ManagedSettingsDir+"/managed-settings.json") {
+	for _, entry := range strings.Split(list, "\x00") {
+		f := strings.SplitN(entry, "\t", 3)
+		if len(f) != 3 {
 			continue
 		}
-		raw, code, err := c.run(container, "cat", "--", p)
+		kind, p := f[0], f[2]
+		if p == DropInPath || kind == "d" || (path.Dir(p) != DropInDir && p != ManagedSettingsDir+"/managed-settings.json") {
+			continue
+		}
+		if size, serr := strconv.ParseInt(f[1], 10, 64); kind != "f" || serr != nil || size > maxManagedFileBytes {
+			return tampered(fmt.Sprintf("another managed settings file cannot be checked (not a regular file, or too large): %q", p), false)
+		}
+		raw, code, err := c.run.run(container, "head", "-c", strconv.Itoa(maxManagedFileBytes), "--", p)
 		if err != nil {
 			return unknown(err)
 		}
 		if code == 0 && disablesHooks([]byte(raw)) {
-			return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_TAMPERED,
-				Detail: fmt.Sprintf("another managed settings file sets disableAllHooks: %q", p)}
+			return tampered(fmt.Sprintf("another managed settings file sets disableAllHooks: %q", p), false)
 		}
 	}
 
-	// 3. The client version, as the box user, only when the binary changed.
-	version, res := c.clientVersion(container, user)
-	if res != nil {
-		return *res
+	// 3. The client and its version.
+	res := Result{}
+	if stop := c.client(container, user, &res); stop {
+		return res
 	}
 
-	// 4. The detector engine.
+	// 4. The engine service, then its socket as the box user: the hook
+	// runs as that user, so a running engine whose socket the user cannot
+	// open is the same outcome, no scan. A fresh process is tested; a
+	// session started before the user joined the socket's group keeps its
+	// old groups until it is restarted.
 	if c.opts.EngineUnit != "" {
-		_, code, err := c.run(container, "systemctl", "is-active", "--quiet", c.opts.EngineUnit)
+		_, code, err := c.run.run(container, "systemctl", "is-active", "--quiet", c.opts.EngineUnit)
 		if err != nil {
 			return unknown(err)
 		}
 		if code != 0 {
-			return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING,
-				Detail: "the engine service " + c.opts.EngineUnit + " is not active", ClientVersion: version}
+			res.Coverage = pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING
+			res.Detail = "the engine service " + c.opts.EngineUnit + " is not active"
+			return res
 		}
 	}
-	// The hook runs as the box user, so a running engine whose socket that
-	// user cannot open is the same outcome: no scan. A fresh login is
-	// tested; a session started before the user joined the socket's group
-	// keeps its old groups until it is restarted.
 	if c.socket != "" {
-		_, code, err := c.run(container, "su", "-", user, "-c", "test -S '"+c.socket+"' -a -r '"+c.socket+"' -a -w '"+c.socket+"'")
+		_, code, err := c.run.run(container, "runuser", "-u", user, "--", "test", "-S", c.socket, "-a", "-r", c.socket, "-a", "-w", c.socket)
 		if err != nil {
 			return unknown(err)
 		}
 		if code != 0 {
-			return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING,
-				Detail:        "the engine socket " + c.socket + " is missing or the box user may not open it (is the user in the socket's group?)",
-				ClientVersion: version}
+			res.Coverage = pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_ENGINE_NOT_RUNNING
+			res.Detail = "the engine socket " + c.socket + " is missing or the box user may not open it (is the user in the socket's group?)"
+			return res
 		}
 	}
 
 	// 5. Are the hooks firing? Every hook invocation touches a stamp named
 	// after its client process; a client that has run past the grace period
 	// with no stamp since it started is running without our hooks.
-	ps, _, err := c.run(container, "ps", "-eo", "pid=,etimes=,comm=")
+	ps, _, err := c.run.run(container, "ps", "-eo", "pid=,etimes=,comm=")
 	if err != nil {
 		return unknown(err)
 	}
@@ -328,78 +331,111 @@ func (c *checker) evaluate(container, user string) Result {
 		if age < c.opts.StampGrace {
 			continue
 		}
-		out, code, err := c.run(container, "sh", "-c", stampMTimeScript, "sh", strconv.Itoa(pid))
+		out, code, err := c.run.script(container, stampMTimeScript, strconv.Itoa(pid))
 		if err != nil {
 			return unknown(err)
 		}
 		mtime, perr := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
 		if code != 0 || perr != nil || time.Unix(mtime, 0).Before(now.Add(-age-stampSlack)) {
-			return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_HOOKS_NOT_FIRING,
-				Detail:        fmt.Sprintf("client process %d has run for %s with no hook stamp since it started", pid, age.Round(time.Second)),
-				ClientVersion: version}
+			res.Coverage = pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_HOOKS_NOT_FIRING
+			res.Detail = fmt.Sprintf("client process %d has run for %s with no hook stamp since it started", pid, age.Round(time.Second))
+			return res
 		}
 	}
 
-	detail := "the drop-in and hook binary are in place and hooks are firing"
-	if version == "" {
-		detail = "the drop-in and hook binary are in place; no client is installed for the box user"
+	res.Coverage = pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_COVERED
+	res.Detail = "the drop-in and hook binary are in place and hooks are firing"
+	if !res.ClientInstalled {
+		res.Detail = "the drop-in and hook binary are in place; no client is installed for the box user"
 	}
-	return Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_COVERED, Detail: detail, ClientVersion: version}
+	return res
 }
 
 // stampMTimeScript prints the mtime of the stamp for the client process $1.
-// It resolves the stamp directory from that process's own HOME and
-// XDG_STATE_HOME and prints nothing else: no other variable of the process's
-// environment leaves the box.
+// It resolves the state directory the way the hook does, from that
+// process's own environment: XDG_STATE_HOME when it is an absolute path,
+// else HOME/.local/state. Nothing else of the environment leaves the box.
 const stampMTimeScript = `e=/proc/$1/environ
 h=$(tr '\0' '\n' <"$e" | sed -n 's/^HOME=//p' | head -n 1)
 x=$(tr '\0' '\n' <"$e" | sed -n 's/^XDG_STATE_HOME=//p' | head -n 1)
-exec stat -c %Y -- "${x:-$h/.local/state}/` + stampSubdir + `/$1"`
+case "$x" in /*) ;; *) x="$h/.local/state" ;; esac
+exec stat -c %Y -- "$x/` + stampSubdir + `/$1"`
 
-// clientVersion returns the box user's Claude Code version, "" when none is
-// installed, or a non-nil Result when the version fails the check.
-func (c *checker) clientVersion(container, user string) (string, *Result) {
-	fp, code, err := c.run(container, "stat", "-L", "-c", "%i:%Y:%s", "/home/"+user+"/.local/bin/claude")
+// findClientScript prints the client binary for the box user $1 as three
+// lines: an identity of the file (inode, mtime, size), its path, and the
+// user's home. It looks where the installers put it and on a default PATH,
+// then at the executable of any running client process. It runs as root
+// and executes nothing of the user's: no profile, no client. Exit 1 means
+// no client was found.
+const findClientScript = `h=$(getent passwd "$1" | cut -d: -f6)
+[ -n "$h" ] || exit 2
+p=$(PATH="$h/.local/bin:$h/.claude/local:$h/.npm-global/bin:$h/bin:/usr/local/bin:/usr/bin:/bin"; command -v ` + clientProcessName + ` 2>/dev/null)
+if [ -z "$p" ]; then
+  for d in /proc/[0-9]*; do
+    [ "$(cat "$d/comm" 2>/dev/null)" = ` + clientProcessName + ` ] || continue
+    t=$(readlink "$d/exe" 2>/dev/null)
+    case "$t" in ''|*/node|*/bun|*' (deleted)') continue ;; esac
+    p=$t
+    break
+  done
+fi
+[ -n "$p" ] || exit 1
+stat -L -c '%i:%Y:%s' -- "$p" || exit 1
+printf '%s\n%s\n' "$p" "$h"`
+
+// client fills the client fields of res. It returns true when res is final:
+// the version fails the check, or the check could not run.
+func (c *checker) client(container, user string, res *Result) bool {
+	out, code, err := c.run.script(container, findClientScript, user)
 	if err != nil {
-		r := unknown(err)
-		return "", &r
+		*res = unknown(err)
+		return true
 	}
-	if code != 0 {
-		return "", nil
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if code != 0 || len(lines) != 3 {
+		return false // no client for this user
 	}
-	fp = strings.TrimSpace(fp)
+	res.ClientInstalled = true
+	fp, bin, home := lines[0], lines[1], lines[2]
 	c.mu.Lock()
 	cached := c.versions[container]
 	c.mu.Unlock()
 	if cached.fingerprint != fp {
-		// As the box user, never root: the client must not create
-		// root-owned state in the user's home.
-		out, _, err := c.run(container, "su", "-", user, "-c", `"$HOME/.local/bin/claude" --version`)
+		// Read only when the binary changed, and as the box user, never
+		// root: the client must not create root-owned state in the user's
+		// home. No login shell, so the user's profile neither runs nor
+		// prints ahead of the version.
+		out, _, err := c.run.run(container, "runuser", "-u", user, "--",
+			"env", "-i", "HOME="+home, "PATH=/usr/local/bin:/usr/bin:/bin", bin, "--version")
 		if err != nil {
-			r := unknown(err)
-			return "", &r
+			*res = unknown(err)
+			res.ClientInstalled = true
+			return true
 		}
-		cached = clientVersion{fingerprint: fp, version: versionRE.FindString(strings.TrimSpace(out))}
+		cached = clientVersion{fingerprint: fp, version: versionRE.FindString(out)}
 		if cached.version != "" {
 			c.mu.Lock()
 			c.versions[container] = cached
 			c.mu.Unlock()
 		}
 	}
+	res.ClientVersion = cached.version
 	ok, err := versionAtLeast(cached.version, c.opts.MinClientVersion)
-	if err != nil {
-		r := unknown(fmt.Errorf("read the client version: %w", err))
-		return "", &r
+	switch {
+	case err != nil:
+		*res = unknown(fmt.Errorf("read the client version: %w", err))
+		res.ClientInstalled = true
+		return true
+	case !ok:
+		res.Coverage = pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_CLIENT_TOO_OLD
+		res.Detail = "client " + cached.version + " is older than the minimum " + c.opts.MinClientVersion
+		return true
 	}
-	if !ok {
-		return cached.version, &Result{Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_CLIENT_TOO_OLD,
-			Detail:        "client " + cached.version + " is older than the minimum " + c.opts.MinClientVersion,
-			ClientVersion: cached.version}
-	}
-	return cached.version, nil
+	return false
 }
 
-var versionRE = regexp.MustCompile(`^\d+(\.\d+)*`)
+// versionRE finds the first dotted version anywhere in a command's output.
+var versionRE = regexp.MustCompile(`\d+(?:\.\d+)+`)
 
 // versionAtLeast compares dotted numeric versions; a missing part is 0.
 func versionAtLeast(have, min string) (bool, error) {
@@ -427,14 +463,11 @@ func versionAtLeast(have, min string) (bool, error) {
 }
 
 func versionParts(v string) ([]int, error) {
-	if v == "" || versionRE.FindString(v) != v {
-		return nil, fmt.Errorf("version %q is not dotted numbers", v)
-	}
 	var out []int
 	for _, p := range strings.Split(v, ".") {
 		n, err := strconv.Atoi(p)
-		if err != nil {
-			return nil, fmt.Errorf("version %q: %w", v, err)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("version %q is not dotted numbers", v)
 		}
 		out = append(out, n)
 	}

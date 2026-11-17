@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -20,13 +22,16 @@ func (f *fakeGuardrailHookManager) SetEnabled(username string, enabled bool) (gu
 	if username == "ghost" {
 		return guardraildropin.BoxCoverage{}, guardraildropin.ErrBoxNotFound
 	}
+	if username == "broken" {
+		return guardraildropin.BoxCoverage{}, errors.New("open /var/lib/secret/path: permission denied")
+	}
 	f.set = append(f.set, enabled)
 	return guardraildropin.BoxCoverage{Username: username, Enabled: enabled}, nil
 }
 
 func (f *fakeGuardrailHookManager) Coverage(username string) (guardraildropin.BoxCoverage, error) {
 	return guardraildropin.BoxCoverage{Username: username, Enabled: true, Result: guardraildropin.Result{
-		Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_TAMPERED, Detail: "why", ClientVersion: "2.1.326"}}, nil
+		Coverage: pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_TAMPERED, Detail: "why", ClientVersion: "2.1.326", ClientInstalled: true}}, nil
 }
 
 func (f *fakeGuardrailHookManager) List() ([]guardraildropin.BoxCoverage, error) { return f.rows, nil }
@@ -95,12 +100,22 @@ func TestGuardrailHookServerMapsTheTypedResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := resp.GetBox()
-	if b.GetUsername() != "alice" || !b.GetEnabled() || b.GetDetail() != "why" || b.GetClientVersion() != "2.1.326" ||
+	if b.GetUsername() != "alice" || !b.GetEnabled() || !b.GetClientInstalled() || b.GetDetail() != "why" || b.GetClientVersion() != "2.1.326" ||
 		b.GetCoverage() != pb.GuardrailHookCoverage_GUARDRAIL_HOOK_COVERAGE_NOT_COVERED_TAMPERED {
 		t.Fatalf("box = %v", b)
 	}
 	if b.GetCheckedAt() != nil {
 		t.Errorf("a result that was never checked must leave checked_at unset, got %v", b.GetCheckedAt())
+	}
+}
+
+// An internal error's text stays in the daemon's log.
+func TestGuardrailHookServerDoesNotReturnInternalErrorText(t *testing.T) {
+	srv := NewGuardrailHookServer()
+	srv.SetManager(&fakeGuardrailHookManager{})
+	_, err := srv.SetGuardrailHook(adminCtx(), &pb.SetGuardrailHookRequest{Username: "broken", Enabled: true})
+	if status.Code(err) != codes.Internal || strings.Contains(err.Error(), "/var/lib") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

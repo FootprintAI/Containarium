@@ -26,18 +26,21 @@ const (
 	// DropInPath is the one file this package owns there.
 	DropInPath = DropInDir + "/containarium-guardrail.json"
 	// HookBinaryDir is root-owned, so the box user cannot swap the binary
-	// without sudo. The daemon puts a pinned copy of its own CLI here: a box
-	// image carries no `containarium` binary, and a drop-in that names a
-	// missing command blocks every tool.
+	// without sudo. The daemon puts a pinned, statically linked copy of its
+	// own CLI here: a box image carries no `containarium` binary, and a
+	// drop-in that names a command that does not run blocks every tool.
 	HookBinaryDir = "/usr/local/lib/containarium-guardrail"
 	// HookBinaryPath is the command every hook entry runs.
 	HookBinaryPath = HookBinaryDir + "/containarium"
 
 	// DefaultHookTimeout is the per-hook timeout written into the drop-in.
-	// It sits above the engine service's own per-scan deadline (10 s as
-	// packaged) and well above the hook's defaults (a 3 s wait for the
-	// engine plus a 2 s scan deadline), so a slow scan ends in the hook's
-	// own answer, with a reason, before the client kills the hook.
+	// The deadline that applies to a scan is the hook's own (2 s by
+	// default, after a wait of up to 3 s for the engine); the engine
+	// service's longer per-scan deadline is never reached from a hook. 15 s
+	// leaves the hook room to answer for itself, with a reason, in the
+	// common case. It is not a bound on the worst case: an event that scans
+	// many results one after another (PostToolBatch) can exceed it, and
+	// the client then kills the hook and blocks.
 	DefaultHookTimeout = 15 * time.Second
 	// DefaultEngineAddr is where the engine service listens in a box.
 	DefaultEngineAddr = "unix:///run/containarium-engine/engine.sock"

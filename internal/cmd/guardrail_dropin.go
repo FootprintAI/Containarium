@@ -154,7 +154,11 @@ func printGuardrailHookBoxes(w io.Writer, boxes []*pb.GuardrailHookBoxCoverage) 
 		if ts := b.GetCheckedAt(); ts != nil {
 			checked = ts.AsTime().UTC().Format(time.RFC3339)
 		}
-		if version == "" {
+		switch {
+		case version != "":
+		case b.GetCheckedAt() != nil && !b.GetClientInstalled():
+			version = "none"
+		default:
 			version = "-"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", escapeControl(b.GetUsername()), sw,

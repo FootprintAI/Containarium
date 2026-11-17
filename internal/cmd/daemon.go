@@ -169,7 +169,9 @@ func init() {
 	daemonCmd.Flags().StringVar(&daemonGuardrailHook.EngineAddr, "guardrail-hook-engine", guardraildropin.DefaultEngineAddr,
 		"Address of the engine service inside a box, passed to every hook as --engine: unix://<absolute path> or a loopback host:port. \"none\" passes none, and the hook scans with its in-process reference rules")
 	daemonCmd.Flags().StringVar(&daemonGuardrailHook.HookBinary, "guardrail-hook-binary", "",
-		"Host path of the containarium binary copied into boxes as the hook command. Empty = this daemon's own executable")
+		"Host path of the containarium binary copied into boxes as the hook command. It must be statically linked (CGO_ENABLED=0), as the released client binary is. Empty = this daemon's own executable, which is refused if it is dynamically linked")
+	daemonCmd.Flags().DurationVar(&daemonGuardrailHook.ExecTimeout, "guardrail-hook-exec-timeout", guardraildropin.DefaultExecTimeout,
+		"Deadline for each command the guardrail hook install and coverage check run inside a box (whole seconds)")
 	daemonCmd.Flags().StringVar(&daemonGuardrailStagingRoot, "guardrail-staging-root", "",
 		"Absolute directory a guardrail-gated recipe deploy reads its staged dataset from, as <root>/<caller subject>/<staging_ref>. Empty = gated deploys are refused")
 	daemonCmd.Flags().StringVar(&daemonGuardrailSnapshotDir, "guardrail-snapshot-dir", os.Getenv("CONTAINARIUM_GUARDRAIL_SNAPSHOT_DIR"),

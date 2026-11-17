@@ -188,6 +188,8 @@ containarium guardrail dropin coverage [box]   # one box: its tenant or an admin
 (`GuardrailHookService` in `guardrail.proto`; REST under
 `/v1/containers/{username}/guardrail-hook` and `/v1/guardrail/hook-coverage`.)
 It is stored on the box's own config, so it survives a daemon restart.
+A newly created box has the switch off: whoever creates boxes that must be
+covered enables each one after creating it. There is no host-wide default.
 
 **What `enable` writes**, through the daemon's root exec and file path, into
 a running box and again at every start while the switch is on:
@@ -195,9 +197,18 @@ a running box and again at every start while the switch is on:
 1. `/usr/local/lib/containarium-guardrail/containarium`, root-owned: a copy
    of the daemon's own binary, so the hook is pinned to the daemon's
    version. A box image carries no `containarium` binary, and a drop-in
-   naming a command that is not there would block every tool. The binary is
-   written first and removed last. (`--guardrail-hook-binary` names another
-   file; the copy costs the binary's size on each box's disk.)
+   naming a command that does not run would block every tool. So:
+   - the binary must be **statically linked** (`CGO_ENABLED=0`). A box has
+     its own libc, which need not be the host's. The daemon refuses to pin
+     a dynamically linked file, its own executable included; point
+     `--guardrail-hook-binary` at a static `containarium` (the released
+     client binary is one) or build the daemon static. The copy costs the
+     binary's size on each box's disk;
+   - after the push, the daemon **runs it once in the box**, as the box
+     user (`guardrail hook --help`), and writes the drop-in only if that
+     works. If it does not, the box reports `NOT_COVERED_NOT_INSTALLED`
+     with the reason and is left with no drop-in, including one from an
+     earlier install.
 2. `/etc/claude-code/managed-settings.d/containarium-guardrail.json`:
    - one **exec-form** hook (`command` plus `args`, no shell) for each of
      `SessionStart`, `PreToolUse`, `PostToolUse`, `PostToolBatch`,
@@ -217,17 +228,27 @@ a running box and again at every start while the switch is on:
    no `forceLoginOrgUUID`. Any other managed policy in the box is left as it
    is. Managed hooks also fire under `--bare`.
 
+Root's writes do not follow a link the box user placed. The three
+directories must be real directories owned by root and closed to group and
+others, or the install refuses and says which one is not. Each file is
+written under a temporary name in its directory and renamed into place,
+which replaces a link at the final path and never exposes a half-written
+file.
+
 Running sessions pick a change up at their next tool call; nothing is
 restarted.
 
-**Timeouts, from the inside out.** The hook waits up to 3 s for the engine
-and gives one scan 2 s by default; it sends the engine at most 16 KiB at a
-time and gives anything larger a fast in-process pattern pass. The engine
-service has its own per-scan deadline, 10 s as packaged. The hook timeout
-in the drop-in is the outermost and must stay above both: at 15 s a slow
-scan ends in the hook's own answer, with a reason the model sees, and the
-client only kills the hook when the hook itself is stuck. A daemon whose
-engine runs with a longer deadline needs a longer `--guardrail-hook-timeout`.
+**Timeouts.** The deadline that applies to a scan is the hook's own: it
+waits up to 3 s for the engine and gives one scan 2 s by default, sending
+at most 16 KiB at a time (anything larger gets a fast in-process pattern
+pass). The engine service's own per-scan deadline, 10 s as packaged, is
+longer and is never reached from a hook. The hook timeout in the drop-in,
+15 s by default, is the outer limit: in the common case the hook answers
+for itself, with a reason the model sees, well inside it. It does not
+bound the worst case. An event that scans many results one after another
+(`PostToolBatch` after a large batch of slow scans) can pass 15 s, and the
+client then kills the hook and blocks the turn. Raise
+`--guardrail-hook-timeout` if that happens.
 
 **The engine service is not installed by the daemon.** The drop-in and the
 check assume the engine service as packaged: the unit
@@ -251,11 +272,11 @@ on, as root from outside the box user's control. It reports one
 
 | Value | Meaning |
 | --- | --- |
-| `COVERED` | Everything below holds. |
+| `COVERED` | Everything below holds. `client_installed` says whether a client was found: `COVERED` with none means the drop-in is in place and nothing would run without it, not that hooks were seen firing. |
 | `NOT_COVERED_FEATURE_OFF` | The switch is off. |
-| `NOT_COVERED_NOT_INSTALLED` | The drop-in or the hook binary is missing. |
-| `NOT_COVERED_TAMPERED` | The drop-in or binary differs from what the daemon installed, or another file in `/etc/claude-code/` or `managed-settings.d/` sets `disableAllHooks`. A second managed file does turn the hooks off, whichever sorts first. |
-| `NOT_COVERED_CLIENT_TOO_OLD` | Claude Code is older than `--guardrail-hook-min-client-version` (default 2.1.326, the only version this was tested on; the documented floors of the settings used put the true minimum at 2.1.299 or later). The version is read as the box user, and only when the client binary changed. |
+| `NOT_COVERED_NOT_INSTALLED` | The drop-in, the hook binary or one of their directories is missing, or the daemon could not install them (a directory it refuses to write into; a binary that does not run in the box). |
+| `NOT_COVERED_TAMPERED` | A change the daemon did not make: the drop-in or binary differs in content, is not a regular file, is not owned by root, or is writable by group or others; one of the directories is; another file in `/etc/claude-code/` or `managed-settings.d/` sets `disableAllHooks` (a second managed file does turn the hooks off, whichever sorts first), or cannot be checked because it is a link, a FIFO or over 1 MiB. |
+| `NOT_COVERED_CLIENT_TOO_OLD` | Claude Code is older than `--guardrail-hook-min-client-version` (default 2.1.326, the only version this was tested on; the documented floors of the settings used put the true minimum at 2.1.299 or later). The client is looked for in the installers' usual places and on a default `PATH` for the box user, then among running `claude` processes. Its version is read as the box user, with a clean environment and no login shell, and only when the binary changed. |
 | `NOT_COVERED_ENGINE_NOT_RUNNING` | The engine service's systemd unit (`--guardrail-hook-engine-unit`, default `containarium-engine.service`) is not active, or its socket is missing or cannot be opened by the box user (for example, the user is not in the socket's group). The detail says which. |
 | `NOT_COVERED_HOOKS_NOT_FIRING` | A `claude` process has run for more than a few minutes with no hook stamp since it started. Every hook invocation touches a stamp for its client process under the box user's `$XDG_STATE_HOME/containarium-guardrail/stamps/`; the daemon compares them with process start times from `ps`. This catches what the file checks cannot, such as a higher-ranked managed settings source that makes the client skip the drop-in. |
 | `UNKNOWN` | Not checked yet, the box is stopped, or the check could not run. |
@@ -264,10 +285,24 @@ A missing or changed daemon file is reported at the check that sees it and
 then installed again. Another managed file is reported and never deleted:
 it is not the daemon's.
 
-The check execs and reads; it writes nothing into the box or its config.
-Auto-sleep decides on recorded network traffic and the last-start stamp
-only, so a check is not activity, and stopped boxes are skipped, never
-woken.
+A daemon upgrade changes the pinned binary, and a flag change the drop-in.
+That is not tampering. The daemon records the hashes of what it last
+installed on the box's config, on the host where the box user cannot edit
+it; files that match that record are replaced at the next check and the
+box is reported as it is after the update.
+
+Every command the daemon runs in a box has a deadline
+(`--guardrail-hook-exec-timeout`, default 10 s), enforced inside the box
+and again on the daemon's side, and only regular files are opened: much of
+what the check looks at is chosen by the box user. A check that times out
+reports `UNKNOWN`. Boxes are checked one after another, each under its own
+lock. Switching a box off takes no lock at all, so the break-glass never
+waits behind a check, of that box or any other.
+
+The check execs and reads; it writes nothing into the box, and nothing
+into its config unless it had to install again. Auto-sleep decides on
+recorded network traffic and the last-start stamp only, so a check is not
+activity, and stopped boxes are skipped, never woken.
 
 **Limits.** This is tamper-evident, not tamper-proof:
 
@@ -277,7 +312,13 @@ woken.
 - A sample every few minutes misses a session shorter than the grace period.
 - A stopped engine is seen; an engine replaced by a no-op on the same unit
   is not.
-- The socket is tested with a fresh login of the box user. A session that
+- Any long-lived process named `claude` is expected to run hooks. One that
+  never does (a session left at the sign-in screen, the agent run as a
+  server for another tool) reads as `NOT_COVERED_HOOKS_NOT_FIRING`. Not yet
+  checked on a box.
+- Only `disableAllHooks` is looked for in other managed files. Another
+  managed file can also set `CLAUDE_CODE_DISABLE_FILE_MENTIONS` back.
+- The socket is tested with a fresh process of the box user. A session that
   was already running when the user joined the socket's group keeps its old
   groups, and its tools are denied until it is restarted.
 

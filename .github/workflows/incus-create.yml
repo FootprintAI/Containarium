@@ -27,6 +27,8 @@ on:
       - 'pkg/core/stacks/stacks.yaml'
       - 'internal/cmd/daemon.go'
       - 'internal/testsupport/incusenv/**'
+      # The managed guardrail hook drop-in writes into a box as root (#3762).
+      - 'internal/guardraildropin/**'
       # The encrypted-create path this lane now covers (#1199).
       - 'pkg/core/zfscrypt/**'
       - 'pkg/core/zfskey/**'
@@ -54,6 +56,8 @@ on:
       - 'pkg/core/stacks/stacks.yaml'
       - 'internal/cmd/daemon.go'
       - 'internal/testsupport/incusenv/**'
+      # The managed guardrail hook drop-in writes into a box as root (#3762).
+      - 'internal/guardraildropin/**'
       # The encrypted-create path this lane now covers (#1199).
       - 'pkg/core/zfscrypt/**'
       - 'pkg/core/zfskey/**'
@@ -263,6 +267,7 @@ jobs:
           set -euo pipefail
           sudo -E env "PATH=$PATH" go test -tags=incus -v -count=1 -timeout 40m \
             ./pkg/core/box/lxc/ ./pkg/core/incus/ ./internal/server/ ./pkg/core/network/ \
+            ./internal/guardraildropin/ \
             -run 'TestIntegrationIncus|TestIntegrationHairpin' | tee incus-test.log
 
       # #1368 — the daemon BINARY, with its flags.

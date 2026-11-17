@@ -659,6 +659,12 @@ type ContainerInfo struct {
 // managed guardrail hook drop-in (#3762; internal/guardraildropin).
 const GuardrailHookKey = "user.containarium.guardrail_hook"
 
+// GuardrailHookInstalledKey records what the daemon last installed into the
+// box for the guardrail hook ("<binary sha256>:<drop-in sha256>"). It is on
+// the host, out of the box user's reach, and lets the coverage check tell
+// an earlier version of the daemon's own files from tampering (#3762).
+const GuardrailHookInstalledKey = "user.containarium.guardrail_hook_installed"
+
 // GuardrailHookSwitch is the value of GuardrailHookKey.
 type GuardrailHookSwitch string
 

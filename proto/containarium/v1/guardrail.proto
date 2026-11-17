@@ -452,6 +452,10 @@ message GuardrailHookBoxCoverage {
   google.protobuf.Timestamp checked_at = 5;
   // The coding agent version last read in the box; empty when not read.
   string client_version = 6;
+  // Whether the last check found a coding agent for the box user. A box
+  // that is COVERED with this false has the drop-in in place and nothing
+  // that would run without it; it has not shown hooks firing.
+  bool client_installed = 7;
 }
 
 message SetGuardrailHookRequest {

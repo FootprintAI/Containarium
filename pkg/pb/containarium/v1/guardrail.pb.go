@@ -1922,8 +1922,12 @@ type GuardrailHookBoxCoverage struct {
 	CheckedAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=checked_at,json=checkedAt,proto3" json:"checked_at,omitempty"`
 	// The coding agent version last read in the box; empty when not read.
 	ClientVersion string `protobuf:"bytes,6,opt,name=client_version,json=clientVersion,proto3" json:"client_version,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Whether the last check found a coding agent for the box user. A box
+	// that is COVERED with this false has the drop-in in place and nothing
+	// that would run without it; it has not shown hooks firing.
+	ClientInstalled bool `protobuf:"varint,7,opt,name=client_installed,json=clientInstalled,proto3" json:"client_installed,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *GuardrailHookBoxCoverage) Reset() {
@@ -1996,6 +2000,13 @@ func (x *GuardrailHookBoxCoverage) GetClientVersion() string {
 		return x.ClientVersion
 	}
 	return ""
+}
+
+func (x *GuardrailHookBoxCoverage) GetClientInstalled() bool {
+	if x != nil {
+		return x.ClientInstalled
+	}
+	return false
 }
 
 type SetGuardrailHookRequest struct {
@@ -2373,7 +2384,7 @@ const file_containarium_v1_guardrail_proto_rawDesc = "" +
 	"\x1fSetGuardrailBaselineModeRequest\x12:\n" +
 	"\x04mode\x18\x01 \x01(\x0e2&.containarium.v1.GuardrailBaselineModeR\x04mode\"i\n" +
 	" SetGuardrailBaselineModeResponse\x12E\n" +
-	"\bbaseline\x18\x01 \x01(\v2).containarium.v1.GuardrailBaselineSettingR\bbaseline\"\x8e\x02\n" +
+	"\bbaseline\x18\x01 \x01(\v2).containarium.v1.GuardrailBaselineSettingR\bbaseline\"\xb9\x02\n" +
 	"\x18GuardrailHookBoxCoverage\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x18\n" +
 	"\aenabled\x18\x02 \x01(\bR\aenabled\x12B\n" +
@@ -2381,7 +2392,8 @@ const file_containarium_v1_guardrail_proto_rawDesc = "" +
 	"\x06detail\x18\x04 \x01(\tR\x06detail\x129\n" +
 	"\n" +
 	"checked_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcheckedAt\x12%\n" +
-	"\x0eclient_version\x18\x06 \x01(\tR\rclientVersion\"O\n" +
+	"\x0eclient_version\x18\x06 \x01(\tR\rclientVersion\x12)\n" +
+	"\x10client_installed\x18\a \x01(\bR\x0fclientInstalled\"O\n" +
 	"\x17SetGuardrailHookRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x18\n" +
 	"\aenabled\x18\x02 \x01(\bR\aenabled\"W\n" +
