@@ -158,7 +158,7 @@ func runSleep(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		defer func() { _ = httpClient.Close() }()
-		resp, err := httpClient.StopContainer(username, false)
+		resp, err := httpClient.StopContainer(username, false, false)
 		if err != nil {
 			return err
 		}
@@ -170,7 +170,7 @@ func runSleep(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer func() { _ = grpcClient.Close() }()
-	resp, err := grpcClient.StopContainer(username, false)
+	resp, err := grpcClient.StopContainer(username, false, false)
 	if err != nil {
 		return err
 	}

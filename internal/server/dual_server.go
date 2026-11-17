@@ -3507,6 +3507,12 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 	// either way it runs once.
 	ds.revocationCleanup.start(ctx)
 
+	// Operator holds (#3721) live on the instances; log the held boxes and
+	// re-assert boot.autostart=false on them. Never starts or stops a box.
+	if ds.containerServer != nil {
+		go ds.containerServer.ReconcileHolds()
+	}
+
 	// Start auto-sleep ticker. Always-on by daemon policy; per-container
 	// opt-in (AutoSleepEnabled) gates real stop behavior. Wired here so
 	// the traffic collector's store, installed at boot or in-process

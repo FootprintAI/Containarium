@@ -228,6 +228,7 @@ func StatusFromInfo(info *incus.ContainerInfo) box.BoxStatus {
 		IsCore:                    info.Role.IsCoreRole(),
 		MonitoringEnabled:         info.MonitoringEnabled,
 		AutoSleepEnabled:          info.AutoSleepEnabled,
+		Held:                      info.Held,
 		IdleThresholdMinutes:      info.IdleThresholdMinutes,
 		TTLExpiresAt:              info.TTLExpiresAt,
 		StoppedAt:                 info.StoppedAt,

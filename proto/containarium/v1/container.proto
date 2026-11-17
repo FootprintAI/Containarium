@@ -363,6 +363,14 @@ message Container {
   string network_tenant = 31;
   // Which current Provider identity input selected network_tenant.
   NetworkTenantSource network_tenant_source = 32;
+
+  // Whether an operator hold is on the box (#3721). A held box is kept
+  // stopped: the daemon does not start it on a host or Incus restart, on an
+  // HTTP wake, or for a skill or crew run. Set by StopContainer with
+  // hold = true and cleared only by a StartContainer that does not set
+  // respect_hold. Read-only; backed by the user.containarium.hold Incus
+  // config key, so it survives a daemon restart.
+  bool held = 33;
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -810,6 +818,14 @@ message StartContainerRequest {
   // the server-side default (30s). Ignored when wait_for_ready is
   // false.
   int32 ready_timeout_seconds = 3;
+
+  // When true, a held box (see StopContainerRequest.hold) is not started:
+  // the call fails with FAILED_PRECONDITION and the hold stays. When false
+  // (the default) the start is the operator's explicit start, which lifts
+  // the hold. Callers that start a box on someone else's behalf (the
+  // daemon's wake-on-HTTP path, a scheduler) set this so they cannot
+  // release a hold (#3721).
+  bool respect_hold = 4;
 }
 
 // StartContainerResponse is the response from starting a container
@@ -837,6 +853,15 @@ message StopContainerRequest {
 
   // Timeout in seconds for graceful shutdown (default: 30)
   int32 timeout = 3;
+
+  // Put an operator hold on the box (#3721): stop it and keep it stopped
+  // until a StartContainer lifts the hold. While held the daemon does not
+  // start the box on its own (boot.autostart is turned off, HTTP wake is
+  // refused, skill and crew runs fail with FAILED_PRECONDITION). The hold is
+  // stored on the instance, so it survives a daemon or host restart. Valid
+  // on an already-stopped box. A stop without hold never changes an
+  // existing hold.
+  bool hold = 4;
 }
 
 // StopContainerResponse is the response from stopping a container

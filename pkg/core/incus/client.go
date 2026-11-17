@@ -593,6 +593,10 @@ type ContainerInfo struct {
 	// was created with podman support. True for boxes that predate the key.
 	PodmanEnabled bool
 
+	// Held mirrors user.containarium.hold: an operator hold that keeps the
+	// box stopped until an explicit start lifts it (#3721).
+	Held bool
+
 	// AutoSleepEnabled mirrors user.containarium.auto_sleep_enabled
 	// on the Incus config — opt-in flag for the serverless feature.
 	AutoSleepEnabled bool
@@ -651,6 +655,21 @@ type ContainerInfo struct {
 	// never recorded either — e.g. a container created by a very old client.
 	Image string
 }
+
+// HoldKey is the Incus config key marking an operator hold (#3721). "true"
+// means the box must stay stopped until an explicit StartContainer lifts the
+// hold. Stored on the instance, not in daemon memory, so it survives a daemon
+// or host restart.
+const HoldKey = "user.containarium.hold"
+
+// HoldPrevAutostartKey records the boot.autostart value the box had when the
+// hold was placed, so releasing the hold restores it. Absent when the box had
+// no boot.autostart key of its own.
+const HoldPrevAutostartKey = "user.containarium.hold_prev_autostart"
+
+// BootAutostartKey is the Incus key that makes Incus start an instance when
+// the host or Incus itself restarts.
+const BootAutostartKey = "boot.autostart"
 
 // AutoSleepEnabledKey is the Incus config key storing the per-container
 // auto-sleep opt-in flag (Phase 1 of the serverless feature).
@@ -1353,6 +1372,7 @@ func containerInfoFromInstance(inst *api.Instance) ContainerInfo {
 			Managed:                   hasContainariumConfig(inst.Config),
 			MonitoringEnabled:         inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 			AutoSleepEnabled:          inst.Config[AutoSleepEnabledKey] == "true",
+			Held:                      inst.Config[HoldKey] == "true",
 			IdleThresholdMinutes:      parseIdleThresholdMinutes(inst.Config),
 			LastStartedAt:             parseLastStartedAt(inst.Config),
 			TTLExpiresAt:              parseTTLExpiresAt(inst.Config),
@@ -1433,6 +1453,7 @@ func (c *Client) GetContainer(name string) (*ContainerInfo, error) {
 		Managed:              hasContainariumConfig(inst.Config),
 		MonitoringEnabled:    inst.Config["environment.OTEL_EXPORTER_OTLP_ENDPOINT"] != "",
 		AutoSleepEnabled:     inst.Config[AutoSleepEnabledKey] == "true",
+		Held:                 inst.Config[HoldKey] == "true",
 		IdleThresholdMinutes: parseIdleThresholdMinutes(inst.Config),
 		LastStartedAt:        parseLastStartedAt(inst.Config),
 		TTLExpiresAt:         parseTTLExpiresAt(inst.Config),

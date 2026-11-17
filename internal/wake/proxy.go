@@ -2,6 +2,7 @@ package wake
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,6 +16,10 @@ import (
 	"github.com/footprintai/containarium/internal/app"
 	"github.com/footprintai/containarium/internal/auth"
 )
+
+// ErrBoxHeld is returned by a WakeStarter when the box is under an operator
+// hold (#3721). The proxy answers 503 without starting the box.
+var ErrBoxHeld = errors.New("box is held by the operator")
 
 // WakeStarter starts a container and blocks until its primary route
 // is TCP-ready, or until the wake timeout elapses. Returns ready=false
@@ -251,6 +256,16 @@ func (w *WakeProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	latencyMs := time.Since(start).Milliseconds()
+
+	// Operator hold (#3721): the box was not started and will not be until
+	// the operator starts it, so answer without a Retry-After and log the
+	// refusal with the box name.
+	if errors.Is(entry.err, ErrBoxHeld) {
+		log.Printf("[wake] refused: box=%q is held by the operator; not started (host=%q)", username, host)
+		w.logEvent(username, latencyMs, "refused_held", ErrBoxHeld.Error())
+		http.Error(rw, "wake: box is held", http.StatusServiceUnavailable)
+		return
+	}
 
 	if entry.err != nil {
 		w.logEvent(username, latencyMs, "error", entry.err.Error())

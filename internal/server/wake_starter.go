@@ -7,6 +7,10 @@ import (
 	"strconv"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/footprintai/containarium/internal/wake"
 	"github.com/footprintai/containarium/pkg/core/box"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
@@ -52,12 +56,18 @@ func (s *WakeStarter) WakeForRequest(ctx context.Context, username string, targe
 	}
 	started := time.Now()
 	startCtx := context.WithValue(ctx, wakeTargetPortKey{}, targetPort)
+	// A wake is a start nobody asked the daemon for, so it respects an
+	// operator hold (#3721): a held box is refused, never released.
 	resp, err := s.cs.StartContainer(startCtx, &pb.StartContainerRequest{
 		Username:            username,
 		WaitForReady:        true,
 		ReadyTimeoutSeconds: s.readyTimeoutS,
+		RespectHold:         true,
 	})
 	if err != nil {
+		if status.Code(err) == codes.FailedPrecondition && s.cs.boxHeld(username) {
+			return false, "", targetPort, fmt.Errorf("start: %w", wake.ErrBoxHeld)
+		}
 		return false, "", targetPort, fmt.Errorf("start: %w", err)
 	}
 	if resp == nil || resp.ReadyTimedOut {

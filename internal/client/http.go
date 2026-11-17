@@ -761,13 +761,14 @@ func (c *HTTPClient) StartContainer(username string, waitForReady bool, readyTim
 	return out, nil
 }
 
-// StopContainer stops a running container via HTTP.
-func (c *HTTPClient) StopContainer(username string, force bool) (*pb.StopContainerResponse, error) {
+// StopContainer stops a running container via HTTP. hold puts an operator
+// hold on the box (#3721): it stays stopped until an explicit start.
+func (c *HTTPClient) StopContainer(username string, force, hold bool) (*pb.StopContainerResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	path := fmt.Sprintf("/v1/containers/%s/stop", url.PathEscape(username))
-	body, err := json.Marshal(stopContainerRequest{Force: force})
+	body, err := json.Marshal(stopContainerRequest{Force: force, Hold: hold})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}

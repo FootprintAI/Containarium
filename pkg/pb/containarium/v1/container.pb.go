@@ -1012,8 +1012,15 @@ type Container struct {
 	NetworkTenant string `protobuf:"bytes,31,opt,name=network_tenant,json=networkTenant,proto3" json:"network_tenant,omitempty"`
 	// Which current Provider identity input selected network_tenant.
 	NetworkTenantSource NetworkTenantSource `protobuf:"varint,32,opt,name=network_tenant_source,json=networkTenantSource,proto3,enum=containarium.v1.NetworkTenantSource" json:"network_tenant_source,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Whether an operator hold is on the box (#3721). A held box is kept
+	// stopped: the daemon does not start it on a host or Incus restart, on an
+	// HTTP wake, or for a skill or crew run. Set by StopContainer with
+	// hold = true and cleared only by a StartContainer that does not set
+	// respect_hold. Read-only; backed by the user.containarium.hold Incus
+	// config key, so it survives a daemon restart.
+	Held          bool `protobuf:"varint,33,opt,name=held,proto3" json:"held,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Container) Reset() {
@@ -1268,6 +1275,13 @@ func (x *Container) GetNetworkTenantSource() NetworkTenantSource {
 		return x.NetworkTenantSource
 	}
 	return NetworkTenantSource_NETWORK_TENANT_SOURCE_UNSPECIFIED
+}
+
+func (x *Container) GetHeld() bool {
+	if x != nil {
+		return x.Held
+	}
+	return false
 }
 
 // ContainerMetrics contains runtime metrics for a container
@@ -2571,8 +2585,15 @@ type StartContainerRequest struct {
 	// the server-side default (30s). Ignored when wait_for_ready is
 	// false.
 	ReadyTimeoutSeconds int32 `protobuf:"varint,3,opt,name=ready_timeout_seconds,json=readyTimeoutSeconds,proto3" json:"ready_timeout_seconds,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// When true, a held box (see StopContainerRequest.hold) is not started:
+	// the call fails with FAILED_PRECONDITION and the hold stays. When false
+	// (the default) the start is the operator's explicit start, which lifts
+	// the hold. Callers that start a box on someone else's behalf (the
+	// daemon's wake-on-HTTP path, a scheduler) set this so they cannot
+	// release a hold (#3721).
+	RespectHold   bool `protobuf:"varint,4,opt,name=respect_hold,json=respectHold,proto3" json:"respect_hold,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StartContainerRequest) Reset() {
@@ -2624,6 +2645,13 @@ func (x *StartContainerRequest) GetReadyTimeoutSeconds() int32 {
 		return x.ReadyTimeoutSeconds
 	}
 	return 0
+}
+
+func (x *StartContainerRequest) GetRespectHold() bool {
+	if x != nil {
+		return x.RespectHold
+	}
+	return false
 }
 
 // StartContainerResponse is the response from starting a container
@@ -2701,7 +2729,15 @@ type StopContainerRequest struct {
 	// Force stop (kill) instead of graceful shutdown
 	Force bool `protobuf:"varint,2,opt,name=force,proto3" json:"force,omitempty"`
 	// Timeout in seconds for graceful shutdown (default: 30)
-	Timeout       int32 `protobuf:"varint,3,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	Timeout int32 `protobuf:"varint,3,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	// Put an operator hold on the box (#3721): stop it and keep it stopped
+	// until a StartContainer lifts the hold. While held the daemon does not
+	// start the box on its own (boot.autostart is turned off, HTTP wake is
+	// refused, skill and crew runs fail with FAILED_PRECONDITION). The hold is
+	// stored on the instance, so it survives a daemon or host restart. Valid
+	// on an already-stopped box. A stop without hold never changes an
+	// existing hold.
+	Hold          bool `protobuf:"varint,4,opt,name=hold,proto3" json:"hold,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2755,6 +2791,13 @@ func (x *StopContainerRequest) GetTimeout() int32 {
 		return x.Timeout
 	}
 	return 0
+}
+
+func (x *StopContainerRequest) GetHold() bool {
+	if x != nil {
+		return x.Hold
+	}
+	return false
 }
 
 // StopContainerResponse is the response from stopping a container
@@ -7028,7 +7071,7 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\vmac_address\x18\x02 \x01(\tR\n" +
 	"macAddress\x12\x1c\n" +
 	"\tinterface\x18\x03 \x01(\tR\tinterface\x12\x16\n" +
-	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\x91\f\n" +
+	"\x06bridge\x18\x04 \x01(\tR\x06bridge\"\xa5\f\n" +
 	"\tContainer\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x125\n" +
@@ -7071,7 +7114,8 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\vtool_access\x18\x1e \x01(\x0e2\x1e.containarium.v1.BoxToolAccessR\n" +
 	"toolAccess\x12%\n" +
 	"\x0enetwork_tenant\x18\x1f \x01(\tR\rnetworkTenant\x12X\n" +
-	"\x15network_tenant_source\x18  \x01(\x0e2$.containarium.v1.NetworkTenantSourceR\x13networkTenantSource\x1a9\n" +
+	"\x15network_tenant_source\x18  \x01(\x0e2$.containarium.v1.NetworkTenantSourceR\x13networkTenantSource\x12\x12\n" +
+	"\x04held\x18! \x01(\bR\x04held\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcd\x03\n" +
@@ -7184,19 +7228,21 @@ const file_containarium_v1_container_proto_rawDesc = "" +
 	"\x05force\x18\x02 \x01(\bR\x05force\"Z\n" +
 	"\x17DeleteContainerResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12%\n" +
-	"\x0econtainer_name\x18\x02 \x01(\tR\rcontainerName\"\x8d\x01\n" +
+	"\x0econtainer_name\x18\x02 \x01(\tR\rcontainerName\"\xb0\x01\n" +
 	"\x15StartContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12$\n" +
 	"\x0ewait_for_ready\x18\x02 \x01(\bR\fwaitForReady\x122\n" +
-	"\x15ready_timeout_seconds\x18\x03 \x01(\x05R\x13readyTimeoutSeconds\"\x94\x01\n" +
+	"\x15ready_timeout_seconds\x18\x03 \x01(\x05R\x13readyTimeoutSeconds\x12!\n" +
+	"\frespect_hold\x18\x04 \x01(\bR\vrespectHold\"\x94\x01\n" +
 	"\x16StartContainerResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x128\n" +
 	"\tcontainer\x18\x02 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\x12&\n" +
-	"\x0fready_timed_out\x18\x03 \x01(\bR\rreadyTimedOut\"b\n" +
+	"\x0fready_timed_out\x18\x03 \x01(\bR\rreadyTimedOut\"v\n" +
 	"\x14StopContainerRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x14\n" +
 	"\x05force\x18\x02 \x01(\bR\x05force\x12\x18\n" +
-	"\atimeout\x18\x03 \x01(\x05R\atimeout\"k\n" +
+	"\atimeout\x18\x03 \x01(\x05R\atimeout\x12\x12\n" +
+	"\x04hold\x18\x04 \x01(\bR\x04hold\"k\n" +
 	"\x15StopContainerResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x128\n" +
 	"\tcontainer\x18\x02 \x01(\v2\x1a.containarium.v1.ContainerR\tcontainer\"O\n" +

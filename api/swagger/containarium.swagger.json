@@ -13918,6 +13918,10 @@
         "networkTenantSource": {
           "$ref": "#/definitions/NetworkTenantSource",
           "description": "Which current Provider identity input selected network_tenant."
+        },
+        "held": {
+          "type": "boolean",
+          "description": "Whether an operator hold is on the box (#3721). A held box is kept\nstopped: the daemon does not start it on a host or Incus restart, on an\nHTTP wake, or for a skill or crew run. Set by StopContainer with\nhold = true and cleared only by a StartContainer that does not set\nrespect_hold. Read-only; backed by the user.containarium.hold Incus\nconfig key, so it survives a daemon restart."
         }
       }
     },
@@ -23135,6 +23139,10 @@
           "type": "integer",
           "format": "int32",
           "description": "Timeout for the readiness probe in seconds. Zero falls back to\nthe server-side default (30s). Ignored when wait_for_ready is\nfalse."
+        },
+        "respectHold": {
+          "type": "boolean",
+          "description": "When true, a held box (see StopContainerRequest.hold) is not started:\nthe call fails with FAILED_PRECONDITION and the hold stays. When false\n(the default) the start is the operator's explicit start, which lifts\nthe hold. Callers that start a box on someone else's behalf (the\ndaemon's wake-on-HTTP path, a scheduler) set this so they cannot\nrelease a hold (#3721)."
         }
       },
       "title": "StartContainerRequest is the request to start a container"
@@ -23250,6 +23258,10 @@
           "type": "integer",
           "format": "int32",
           "title": "Timeout in seconds for graceful shutdown (default: 30)"
+        },
+        "hold": {
+          "type": "boolean",
+          "description": "Put an operator hold on the box (#3721): stop it and keep it stopped\nuntil a StartContainer lifts the hold. While held the daemon does not\nstart the box on its own (boot.autostart is turned off, HTTP wake is\nrefused, skill and crew runs fail with FAILED_PRECONDITION). The hold is\nstored on the instance, so it survives a daemon or host restart. Valid\non an already-stopped box. A stop without hold never changes an\nexisting hold."
         }
       },
       "title": "StopContainerRequest is the request to stop a container"

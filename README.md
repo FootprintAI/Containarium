@@ -365,6 +365,7 @@ containarium quickstart         Create a box, wire SSH + your agent, optionally 
 containarium create             Create a new container
 containarium list               List all containers
 containarium wake / sleep       Start a stopped box / stop a running one
+containarium stop --hold       Stop a box and keep it stopped until an explicit `wake`
 containarium delete             Delete a container
 containarium code               Run a coding agent ON a box (install / run / attach / logs / runs / status / stop / egress-policy)
 containarium expose-port        Expose container:port on a public hostname
@@ -718,6 +719,7 @@ containarium list
 containarium info
 containarium wake alice     # start a stopped box
 containarium sleep alice    # stop it
+containarium stop --hold alice   # stop it and hold it: no autostart, no HTTP wake, until `wake`
 containarium delete alice
 ```
 

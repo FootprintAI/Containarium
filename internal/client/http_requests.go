@@ -131,6 +131,9 @@ type startContainerRequest struct {
 // stopContainerRequest is POST /v1/containers/{name}/stop.
 type stopContainerRequest struct {
 	Force bool `json:"force"`
+	// Hold is sent only when set, so a plain stop is the same request as
+	// before the field existed (#3721).
+	Hold bool `json:"hold,omitempty"`
 }
 
 // resizeContainerRequest is PUT /v1/containers/{name}/resize.

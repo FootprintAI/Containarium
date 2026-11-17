@@ -1786,3 +1786,94 @@ func (m *Manager) markSSHDPolicy(containerName string) {
 		log.Printf("[sshd-policy] %q: set %s: %v", containerName, sshdpolicy.MarkerKey, err)
 	}
 }
+
+// Hold places an operator hold on the box (#3721): it marks the instance
+// held and turns boot.autostart off, so neither the daemon nor a host or
+// Incus restart starts it. The boot.autostart value the box had is recorded
+// so Release can put it back. Idempotent: holding a held box keeps the value
+// recorded by the first hold and re-asserts boot.autostart=false.
+//
+// The hold key is written before boot.autostart, so an interrupted Hold
+// leaves a box that is marked held (wake and skill runs already refuse it)
+// and ReassertHolds finishes the job at the next daemon start.
+func (m *Manager) Hold(username string) error {
+	name := username + "-container"
+	cfg, _, err := m.incus.GetRawInstance(name)
+	if err != nil {
+		return fmt.Errorf("read config of %s: %w", name, err)
+	}
+	if cfg[incus.HoldKey] != "true" {
+		if prev := cfg[incus.BootAutostartKey]; prev != "" {
+			err = m.incus.SetConfig(name, incus.HoldPrevAutostartKey, prev)
+		} else {
+			err = m.incus.UnsetConfig(name, incus.HoldPrevAutostartKey)
+		}
+		if err != nil {
+			return fmt.Errorf("record %s of %s: %w", incus.BootAutostartKey, name, err)
+		}
+		if err := m.incus.SetConfig(name, incus.HoldKey, "true"); err != nil {
+			return fmt.Errorf("set %s on %s: %w", incus.HoldKey, name, err)
+		}
+	}
+	if err := m.incus.SetConfig(name, incus.BootAutostartKey, "false"); err != nil {
+		return fmt.Errorf("set %s=false on %s: %w", incus.BootAutostartKey, name, err)
+	}
+	return nil
+}
+
+// Release lifts an operator hold (#3721) and restores the boot.autostart
+// value recorded by Hold (removing the key when the box had none). released
+// is false, with no write made, when the box was not held. The hold key is
+// removed after boot.autostart is restored, so an interrupted Release leaves
+// the box held and can be retried.
+func (m *Manager) Release(username string) (released bool, err error) {
+	name := username + "-container"
+	cfg, _, err := m.incus.GetRawInstance(name)
+	if err != nil {
+		return false, fmt.Errorf("read config of %s: %w", name, err)
+	}
+	if cfg[incus.HoldKey] != "true" {
+		return false, nil
+	}
+	if prev := cfg[incus.HoldPrevAutostartKey]; prev != "" {
+		err = m.incus.SetConfig(name, incus.BootAutostartKey, prev)
+	} else {
+		err = m.incus.UnsetConfig(name, incus.BootAutostartKey)
+	}
+	if err != nil {
+		return false, fmt.Errorf("restore %s on %s: %w", incus.BootAutostartKey, name, err)
+	}
+	if err := m.incus.UnsetConfig(name, incus.HoldKey); err != nil {
+		return false, fmt.Errorf("unset %s on %s: %w", incus.HoldKey, name, err)
+	}
+	// Hold overwrites or removes this key, so a leftover is harmless.
+	_ = m.incus.UnsetConfig(name, incus.HoldPrevAutostartKey)
+	return true, nil
+}
+
+// ReassertHolds turns boot.autostart off again on every held box whose value
+// drifted (an interrupted Hold) and returns the held boxes (#3721). Called at
+// daemon start. A box whose config cannot be read or written is still
+// returned; the first such failure is returned alongside the list.
+func (m *Manager) ReassertHolds() ([]incus.ContainerInfo, error) {
+	all, err := m.incus.ListContainers()
+	if err != nil {
+		return nil, err
+	}
+	var held []incus.ContainerInfo
+	var firstErr error
+	for _, c := range all {
+		if !c.Held {
+			continue
+		}
+		held = append(held, c)
+		cfg, _, err := m.incus.GetRawInstance(c.Name)
+		if err == nil && cfg[incus.BootAutostartKey] != "false" {
+			err = m.incus.SetConfig(c.Name, incus.BootAutostartKey, "false")
+		}
+		if err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("re-assert %s=false on %s: %w", incus.BootAutostartKey, c.Name, err)
+		}
+	}
+	return held, firstErr
+}
