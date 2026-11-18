@@ -260,6 +260,25 @@ jobs:
         # Makefile target, not >) rather than a separate checksum file.
         run: make build-caddy
 
+      - name: Scan Caddy release asset (#3579)
+        # The asset is not an image, so no image scan covers it. Same Trivy
+        # version, severity and --ignore-unfixed as the image scans; a fixed
+        # HIGH/CRITICAL finding in the embedded Go modules fails the release.
+        run: |
+          mkdir -p "$RUNNER_TEMP/caddy-scan"
+          cp bin/caddy-linux-amd64 "$RUNNER_TEMP/caddy-scan/"
+
+      - name: Run Trivy on Caddy release asset (#3579)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
+          scan-type: rootfs
+          scan-ref: ${{ runner.temp }}/caddy-scan
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
       - name: Set up Node
         # agent-runtime is a Node/TS sibling package (the in-box agent loop);
         # `make bundle-agent-runtime` runs npm ci + tsc and tars it.
