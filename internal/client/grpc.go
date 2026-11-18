@@ -492,14 +492,16 @@ func (c *GRPCClient) StartContainer(username string, waitForReady bool, readyTim
 	return resp, nil
 }
 
-// StopContainer stops a running container via gRPC.
-func (c *GRPCClient) StopContainer(username string, force bool) (*pb.StopContainerResponse, error) {
+// StopContainer stops a running container via gRPC. hold puts an operator
+// hold on the box (#3721): it stays stopped until an explicit start.
+func (c *GRPCClient) StopContainer(username string, force, hold bool) (*pb.StopContainerResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	resp, err := c.client.StopContainer(ctx, &pb.StopContainerRequest{
 		Username: username,
 		Force:    force,
+		Hold:     hold,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to stop container: %w", err)

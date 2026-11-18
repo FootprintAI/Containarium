@@ -1947,6 +1947,33 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 		return nil, err
 	}
 
+	// Operator hold (#3721). An explicit start by an operator-level caller
+	// (admin role) lifts the hold; a tenant-level start is refused, and a
+	// start made on someone else's behalf (respect_hold: wake-on-HTTP) is
+	// refused and leaves it. Checked before the dataset is unlocked or
+	// anything starts. A box that is not on this backend is left to its own
+	// backend: the flag and the caller's token travel with the forwarded
+	// request.
+	if _, isK8s := s.k8sBoxes(); !isK8s {
+		if cur, gerr := s.manager.Get(req.Username); gerr == nil && cur != nil && cur.Held {
+			if req.RespectHold {
+				return nil, status.Errorf(codes.FailedPrecondition,
+					"box %s is held by the operator and was not started; an explicit start lifts the hold", req.Username)
+			}
+			if err := auth.RequireRole(ctx, auth.RoleAdmin); err != nil {
+				if status.Code(err) != codes.PermissionDenied {
+					return nil, err
+				}
+				return nil, status.Errorf(codes.PermissionDenied,
+					"box %s is held by the operator and was not started; only an operator can release the hold", req.Username)
+			}
+			if _, err := s.manager.Release(req.Username); err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to lift the hold on %s, box not started: %v", req.Username, err)
+			}
+			log.Printf("[hold] released box=%q reason=explicit-start", req.Username)
+		}
+	}
+
 	alreadyRunning := false
 	if bb, isK8s := s.k8sBoxes(); isK8s {
 		// K8s runtime: resume the Sandbox (operatingMode=Running); the
@@ -1979,6 +2006,7 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 					body, _ := json.Marshal(map[string]interface{}{
 						"wait_for_ready":        req.WaitForReady,
 						"ready_timeout_seconds": req.ReadyTimeoutSeconds,
+						"respect_hold":          req.RespectHold,
 					})
 					_, _, fwdErr := peer.ForwardRequest("POST", fmt.Sprintf("/v1/containers/%s/start", req.Username), authToken, body)
 					if fwdErr == nil {
@@ -2055,6 +2083,12 @@ func (s *ContainerServer) StartContainer(ctx context.Context, req *pb.StartConta
 				log.Printf("[secrets] re-delivered %d secret(s) to %q's box at start time", n, req.Username)
 			}
 		}
+	}
+
+	// A start the daemon made on its own is logged with its reason (#3721),
+	// so a start the operator did not ask for is visible in the daemon log.
+	if _, isWake := ctx.Value(wakeTargetPortKey{}).(int); isWake && !alreadyRunning {
+		log.Printf("[wake] started box=%q reason=wake-on-http", req.Username)
 	}
 
 	info, err := s.boxes().Get(ctx, box.BoxRef{Tenant: req.Username})
@@ -2156,6 +2190,24 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 		return nil, err
 	}
 
+	// Operator hold (#3721): store the hold BEFORE stopping, and fail the
+	// call if it cannot be stored, so a box is never reported held when it
+	// is not. A held box that is still running for a moment is safe (wake
+	// and skill runs already refuse it); a stopped box that silently is not
+	// held is the failure this field exists to remove. A box that is not on
+	// this backend gets its hold from its own backend via the forwarded stop.
+	if req.Hold {
+		if _, isK8s := s.k8sBoxes(); isK8s {
+			return nil, status.Error(codes.Unimplemented, "hold is not supported on the Kubernetes runtime")
+		}
+		if cur, gerr := s.manager.Get(req.Username); gerr == nil && cur != nil {
+			if err := s.manager.Hold(req.Username); err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to hold %s, box not stopped: %v", req.Username, err)
+			}
+			log.Printf("[hold] placed box=%q", req.Username)
+		}
+	}
+
 	alreadyStopped := false
 	if bb, isK8s := s.k8sBoxes(); isK8s {
 		// K8s runtime: suspend the Sandbox (operatingMode=Suspended); the
@@ -2175,7 +2227,7 @@ func (s *ContainerServer) StopContainer(ctx context.Context, req *pb.StopContain
 					req.Username, len(unreachablePeers), unreachablePeers[0].Reason)
 			}
 			if peer != nil {
-				body, _ := json.Marshal(map[string]bool{"force": req.Force})
+				body, _ := json.Marshal(map[string]bool{"force": req.Force, "hold": req.Hold})
 				_, _, fwdErr := peer.ForwardRequest("POST", fmt.Sprintf("/v1/containers/%s/stop", req.Username), authToken, body)
 				if fwdErr == nil {
 					return &pb.StopContainerResponse{
@@ -4836,6 +4888,7 @@ func toProtoContainer(st *box.BoxStatus) *pb.Container {
 		AutoSleepEnabled:     st.AutoSleepEnabled,
 		IdleThresholdMinutes: st.IdleThresholdMinutes,
 		Image:                st.Image,
+		Held:                 st.Held,
 	}
 	// TTL — populated by SetContainerTTL on the writer side. Zero value means
 	// no TTL set (parser silently drops missing/unparseable keys; a corrupted
@@ -5543,6 +5596,38 @@ func (s *ContainerServer) deregisterGuacamoleConnection(username string) {
 	}
 
 	log.Printf("Guacamole RDP connection removed for %q (id=%s)", username, connID)
+}
+
+// boxHeld reports whether a box on this backend is under an operator hold.
+func (s *ContainerServer) boxHeld(username string) bool {
+	if s.manager == nil {
+		return false
+	}
+	info, err := s.manager.Get(username)
+	return err == nil && info != nil && info.Held
+}
+
+// ReconcileHolds runs once at daemon start (#3721). The hold lives on the
+// instance, so it is still there after a daemon or host restart; this pass
+// only makes it visible in the daemon log and turns boot.autostart off again
+// where an interrupted hold left it on. It never starts, stops or releases a
+// box: a held box found running (started outside the daemon) is reported and
+// left for the operator.
+func (s *ContainerServer) ReconcileHolds() {
+	if s.manager == nil {
+		return
+	}
+	held, err := s.manager.ReassertHolds()
+	if err != nil {
+		log.Printf("[hold] WARNING: startup reconciliation incomplete: %v", err)
+	}
+	for _, c := range held {
+		username := strings.TrimSuffix(c.Name, "-container")
+		log.Printf("[hold] box=%q is held (state=%s); it stays stopped until an explicit start", username, c.State)
+		if c.State == "Running" {
+			log.Printf("[hold] WARNING: box=%q is held but running; it was not started by the daemon and is left as it is", username)
+		}
+	}
 }
 
 // SetBoxStartedHook registers a callback run, in its own goroutine, after a

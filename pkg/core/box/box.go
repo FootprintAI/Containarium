@@ -186,8 +186,10 @@ type BoxStatus struct {
 	IsCore bool
 
 	// Lifecycle metadata (LXC: user.containarium.* config keys).
-	MonitoringEnabled         bool
-	AutoSleepEnabled          bool
+	MonitoringEnabled bool
+	AutoSleepEnabled  bool
+	// Held is the operator hold (#3721). LXC only (user.containarium.hold).
+	Held                      bool
 	IdleThresholdMinutes      int32
 	TTLExpiresAt              time.Time
 	StoppedAt                 time.Time
