@@ -35,6 +35,7 @@ var boxRunToolAllowlist = []boxRunToolSpec{
 	{"tsc", []string{"--version"}},
 	{"python3", []string{"--version"}},
 	{"pip3", []string{"--version"}},
+	{"pytest", []string{"--version"}},
 	{"buf", []string{"--version"}},
 	{"protoc", []string{"--version"}},
 	{"staticcheck", []string{"-version"}},

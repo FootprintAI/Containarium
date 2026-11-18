@@ -33,7 +33,8 @@ var toolAccessSetCmd = &cobra.Command{
 	Long: `Record what a platform-started (unattended) agent run on this box may do (#2944):
 
   none         nothing that needs approval
-  build-tools  the platform-managed build and test toolchains
+  build-tools  the platform-managed build and test toolchains, and pytest
+               (pytest or python3 -m pytest; python3 itself is not opened up)
   full-sudo    passwordless sudo for the unprivileged run user (an explicit,
                per-box choice; software installed this way is the owner's to maintain)
 

@@ -26,6 +26,15 @@ database and an explicit module checksum; no tool is built from `latest`.
 git and gcc as **system tools supplied by the box image**. Their measured
 versions come from the run wrapper's tool report. The release does not copy
 those OS tools into the shared volume. npm has its own inventory entry.
+
+A `BUILD_TOOLS` run may run the Python test runner as `pytest` or
+`python3 -m pytest` (bare or with arguments, #3788). Only those two spellings
+are allowed: `python3 -c`, `python3 script.py`, `python3 -m pip` and bare
+`python3` stay refused. pytest and the repository's dependencies must already
+be on the box; the platform does not install them. The rule names the command
+so the audit trail reads clearly. It is not a new security boundary:
+`BUILD_TOOLS` already lets a run execute repository code through `make`,
+`npm run` or `go test -exec`.
 Each architecture's tree is catalogued into an SPDX SBOM and scanned by
 Trivy during both PR checks and the host release build. The scan uses
 `rootfs`, which checks deployed binaries and installed npm packages. Trivy's

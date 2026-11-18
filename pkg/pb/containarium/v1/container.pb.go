@@ -330,7 +330,8 @@ const (
 	BoxToolAccess_BOX_TOOL_ACCESS_UNSPECIFIED BoxToolAccess = 0
 	// Nothing that needs approval.
 	BoxToolAccess_BOX_TOOL_ACCESS_NONE BoxToolAccess = 1
-	// The platform-managed build and test toolchains.
+	// The platform-managed build and test toolchains, and the Python test runner
+	// (`pytest` or `python3 -m pytest`; python3 itself is not opened up).
 	BoxToolAccess_BOX_TOOL_ACCESS_BUILD_TOOLS BoxToolAccess = 2
 	// Passwordless sudo for the unprivileged run user. An explicit, per-box
 	// choice; software installed this way is the owner's to maintain.
