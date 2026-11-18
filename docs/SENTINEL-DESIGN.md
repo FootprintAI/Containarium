@@ -123,8 +123,18 @@ During MAINTENANCE mode, the sentinel serves HTTPS on port 443. To avoid browser
 
 1. The daemon on the spot VM exposes a `/certs` endpoint on its HTTP gateway port
 2. The endpoint walks Caddy's certificate directory and returns all cert/key pairs as JSON
-3. The sentinel periodically fetches from `http://<spot-internal-ip>:<http-port>/certs`
+3. The sentinel periodically fetches from `<scheme>://<spot-internal-ip>:<http-port>/certs` (see [Sentinel-to-Backend Transport](#sentinel-to-backend-transport))
 4. Certificates are stored in memory and served via SNI-based lookup
+
+### Sentinel-to-Backend Transport
+
+`/certs` returns certificates **and their private keys**, and the same hop carries `/authorized-keys`, `/authorized-keys/sentinel`, the SSH authorization requests and the SSH session shipper (which sends the audit-ingest bearer). Request signatures authenticate the sentinel but encrypt nothing.
+
+- **`--backend-tls`**: every one of these calls uses `https://<backend-ip>:<health-port>` and is verified against the pool's peer CA, with the backend ID as the expected certificate name. A daemon whose peer PKI bootstrap succeeded serves its peer leaf on the gateway port; plain http keeps working on the same port for other callers. A wrong or missing CA, or a backend without a peer leaf, fails the call.
+- **Without `--backend-tls`** (the default in this release): plain http, and **every call logs** `WARNING: plaintext http to backend ...`.
+- **`--backend-insecure-http`**: the explicit plaintext opt-in. A later release makes TLS the default; from then on plain http is refused unless this flag is set, and it still warns on every call.
+
+Rollout: upgrade the daemons first and confirm each logged a completed peer PKI bootstrap, then set `--backend-tls` on the sentinel.
 
 ### Per-Backend Certificate Scoping
 
@@ -294,6 +304,8 @@ containariumd sentinel [flags]
 | `--binary-port` | `8888` | Port to serve binary (0 to disable) |
 | `--recovery-timeout` | `10m` | Warn if recovery exceeds this duration |
 | `--cert-sync-interval` | `6h` | TLS cert sync interval |
+| `--backend-tls` | `false` | Call backends over TLS verified against the pool's peer CA (see [Sentinel-to-Backend Transport](#sentinel-to-backend-transport)) |
+| `--backend-insecure-http` | `false` | Explicit opt-in to plain http to backends; required once TLS becomes the default. Every plaintext call logs a warning |
 | `--backend-hostname` / `--backend-alias` / `--backend-base-domain` | | Domains the in-fleet backend may supply certificates for (see [Per-Backend Certificate Scoping](#per-backend-certificate-scoping)) |
 
 ### Service Management

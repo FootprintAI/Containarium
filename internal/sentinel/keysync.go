@@ -73,6 +73,27 @@ type KeyStore struct {
 	// trusted_user_ca_keys file untouched in that case.
 	caTrustContent string
 	caTrustVersion string
+
+	// transport carries the /authorized-keys calls (#3515); nil means
+	// plain http with a warning.
+	transport *BackendTransport
+}
+
+// SetTransport sets the sentinel→backend transport for key sync (#3515).
+func (ks *KeyStore) SetTransport(t *BackendTransport) {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	ks.transport = t
+}
+
+// backendBaseURL resolves backendID's gateway base URL and the transport to
+// call it with.
+func (ks *KeyStore) backendBaseURL(backendID, backendIP string, httpPort int) (*BackendTransport, string, error) {
+	ks.mu.RLock()
+	tr := orDefaultTransport(ks.transport)
+	ks.mu.RUnlock()
+	base, err := tr.BaseURL(backendID, backendIP, httpPort)
+	return tr, base, err
 }
 
 // NewKeyStore creates a new KeyStore.
@@ -85,9 +106,16 @@ func NewKeyStore() *KeyStore {
 // Sync fetches authorized keys from a backend's /authorized-keys endpoint.
 // Each backend's users are tracked separately for per-user routing.
 func (ks *KeyStore) Sync(backendID, backendIP string, httpPort int) error {
-	url := fmt.Sprintf("http://%s:%d/authorized-keys", backendIP, httpPort)
+	tr, base, err := ks.backendBaseURL(backendID, backendIP, httpPort)
+	if err != nil {
+		ks.mu.Lock()
+		ks.ensureBackendLocked(backendID, backendIP).lastErr = err
+		ks.mu.Unlock()
+		return fmt.Errorf("key sync: %w", err)
+	}
+	url := base + "/authorized-keys"
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := tr.Client(10 * time.Second)
 	req, err := newSignedRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("key sync: build request: %w", err)
@@ -302,17 +330,21 @@ func (ks *KeyStore) Apply() error {
 }
 
 // PushSentinelKey sends the sentinel's upstream public key to a backend.
-func (ks *KeyStore) PushSentinelKey(backendIP string, httpPort int) error {
+func (ks *KeyStore) PushSentinelKey(backendID, backendIP string, httpPort int) error {
 	pubKeyPath := sshpiperUpstreamKey + ".pub"
 	pubKey, err := os.ReadFile(pubKeyPath)
 	if err != nil {
 		return fmt.Errorf("failed to read sentinel upstream public key %s: %w", pubKeyPath, err)
 	}
 
-	url := fmt.Sprintf("http://%s:%d/authorized-keys/sentinel", backendIP, httpPort)
+	tr, base, err := ks.backendBaseURL(backendID, backendIP, httpPort)
+	if err != nil {
+		return fmt.Errorf("push sentinel key: %w", err)
+	}
+	url := base + "/authorized-keys/sentinel"
 	body, _ := json.Marshal(gateway.SentinelKeyRequest{PublicKey: strings.TrimSpace(string(pubKey))})
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := tr.Client(10 * time.Second)
 	req, err := newSignedRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("push sentinel key: build request: %w", err)
@@ -383,7 +415,7 @@ func (ks *KeyStore) syncAndApply(backendID, backendIP string, httpPort int) erro
 	// A failed push is worth retrying but must not abort the cycle: the
 	// pull already succeeded, and applying it is what keeps SSH working.
 	// Reported at the end so the loop still sees the cycle as incomplete.
-	pushErr := ks.PushSentinelKey(backendIP, httpPort)
+	pushErr := ks.PushSentinelKey(backendID, backendIP, httpPort)
 	if pushErr != nil {
 		log.Printf("[keysync] push sentinel key failed for %q: %v", backendID, pushErr)
 	}

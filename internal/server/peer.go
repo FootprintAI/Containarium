@@ -332,6 +332,23 @@ func (p *PeerPool) PeerMTLSEnabled() bool {
 	return p.pki != nil
 }
 
+// PeerTLSCertificate returns the daemon's current peer leaf for serving TLS,
+// or nil when peer PKI is not bootstrapped. Reads the live leaf, so a renewal
+// applies on the next handshake (#3515).
+func (p *PeerPool) PeerTLSCertificate() *tls.Certificate {
+	if p == nil {
+		return nil
+	}
+	p.mu.RLock()
+	pki := p.pki
+	p.mu.RUnlock()
+	cert := pki.ClientCertificate()
+	if len(cert.Certificate) == 0 {
+		return nil
+	}
+	return &cert
+}
+
 // PeerTransportRelevant reports whether this daemon has any peer calls to
 // describe: a sentinel URL (discovery can add peers at any time) or at least
 // one peer. Evaluated at read time so peers added later are picked up. A
