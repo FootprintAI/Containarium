@@ -31,7 +31,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("scripts/toolchains/package.sh", text)
         self.assertIn("amd64 arm64", text)
         scans = [s for s in job["steps"] if s.get("uses", "").startswith("aquasecurity/trivy-action")]
-        self.assertEqual({s["with"]["scan-ref"] for s in scans}, {"dist/toolchains-amd64", "dist/toolchains-arm64"})
+        self.assertEqual({s["with"]["scan-ref"] for s in scans}, {"dist/toolchains-amd64", "dist/toolchains-arm64", "${{ runner.temp }}/caddy-scan"})
         for scan in scans:
             self.assertEqual(scan["with"]["scan-type"], "rootfs")
             self.assertEqual(scan["with"]["exit-code"], "1")
