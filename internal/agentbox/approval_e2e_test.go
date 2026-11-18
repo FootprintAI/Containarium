@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"testing"
 	"time"
@@ -49,7 +50,14 @@ func TestApprovalEndToEnd(t *testing.T) {
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build agent-box: %v\n%s", err, out)
 	}
-	if err := os.MkdirAll(DefaultLogDir, 0o755); err != nil {
+	// The approval server runs as this user and keeps its files in this user's
+	// own run directory (#3682).
+	me, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	boxUser := me.Username
+	if err := EnsureLogDir(UserLogDir(boxUser)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -71,7 +79,7 @@ func TestApprovalEndToEnd(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			run := fmt.Sprintf("e2e-%s-%d", c.name, os.Getpid())
 			t.Cleanup(func() {
-				for _, p := range []string{coderun.ApprovalJournalPath(run), coderun.ApprovalAnswersDir(run)} {
+				for _, p := range []string{coderun.ApprovalJournalPath(boxUser, run), coderun.ApprovalAnswersDir(boxUser, run)} {
 					_ = os.RemoveAll(p)
 				}
 			})
@@ -82,7 +90,7 @@ func TestApprovalEndToEnd(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.MkdirAll(coderun.ApprovalAnswersDir(run), 0o700); err != nil {
+			if err := os.MkdirAll(coderun.ApprovalAnswersDir(boxUser, run), 0o700); err != nil {
 				t.Fatal(err)
 			}
 
@@ -99,7 +107,7 @@ func TestApprovalEndToEnd(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 			defer cancel()
 			if c.answer != "" {
-				go answerEveryRequest(ctx, priv, run, c.answer)
+				go answerEveryRequest(ctx, priv, boxUser, run, c.answer)
 			}
 			cmd := exec.CommandContext(ctx, "sh", "-c", command)
 			cmd.Dir = work
@@ -107,7 +115,7 @@ func TestApprovalEndToEnd(t *testing.T) {
 			out, runErr := cmd.CombinedOutput()
 			t.Logf("claude output:\n%s", out)
 
-			journal, _ := os.ReadFile(coderun.ApprovalJournalPath(run))
+			journal, _ := os.ReadFile(coderun.ApprovalJournalPath(boxUser, run))
 			t.Logf("journal:\n%s", journal)
 			s := coderun.SummarizeApprovals(coderun.ParseInputJournal(journal))
 			if s.Requests < 1 {
@@ -137,16 +145,16 @@ func TestApprovalEndToEnd(t *testing.T) {
 
 // answerEveryRequest answers each request in run's journal with a, signed
 // with priv, until ctx ends.
-func answerEveryRequest(ctx context.Context, priv ed25519.PrivateKey, run string, a coderun.Answer) {
+func answerEveryRequest(ctx context.Context, priv ed25519.PrivateKey, boxUser, run string, a coderun.Answer) {
 	answered := map[string]bool{}
 	for ctx.Err() == nil {
-		b, _ := os.ReadFile(coderun.ApprovalJournalPath(run))
+		b, _ := os.ReadFile(coderun.ApprovalJournalPath(boxUser, run))
 		for _, e := range coderun.ParseInputJournal(b) {
 			if e.Kind != coderun.KindInputRequest || answered[e.RequestID] {
 				continue
 			}
 			answered[e.RequestID] = true
-			path := filepath.Join(coderun.ApprovalAnswersDir(run), e.RequestID)
+			path := filepath.Join(coderun.ApprovalAnswersDir(boxUser, run), e.RequestID)
 			tmp := path + ".tmp"
 			if os.WriteFile(tmp, []byte(coderun.FormatAnswer(priv, run, e.RequestID, coderun.RequestDigest(e.Tool, e.Input), a)), 0o600) == nil {
 				_ = os.Rename(tmp, path)

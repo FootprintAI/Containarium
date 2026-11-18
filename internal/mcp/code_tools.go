@@ -41,7 +41,7 @@ func mcpCodeSession(client API, box string) (*coderun.Session, func(), error) {
 		return nil, nil, err
 	}
 	// No remote command — Connect appends "agent-box" itself.
-	sess, err := coderun.Connect(context.Background(), connectcore.BuildSSHArgs(target, privPath, ""))
+	sess, err := coderun.Connect(context.Background(), connectcore.BuildSSHArgs(target, privPath, ""), target.User)
 	if err != nil {
 		cleanup()
 		// Same sentence the CLI gives (#2030): a box with no agent-box used to
@@ -196,10 +196,11 @@ func codeRunReply(started *coderun.ProcessStartResult, box, out string, next int
 		started.LogPath, next, out, started.Name, next)
 }
 
-// mcpSessionSidecar is where the run called name keeps its session sidecar:
-// process_start puts every run's files under coderun.RunLogDir.
-func mcpSessionSidecar(name string) string {
-	return coderun.RunLogDir + "/" + name + ".session"
+// mcpSessionSidecar is where box user's run called name keeps its session
+// sidecar: process_start puts every run's files under that user's
+// coderun.RunLogDir.
+func mcpSessionSidecar(user, name string) string {
+	return coderun.RunLogDir(user) + "/" + name + ".session"
 }
 
 // mcpSnapshotSessionDirectory records the engine's existing session entries
@@ -210,7 +211,7 @@ func mcpSnapshotSessionDirectory(ctx context.Context, sess *coderun.Session, nam
 	if err != nil {
 		return false
 	}
-	cmd, ok := engine.SessionDiscoveryPrepareCommand(engine.NameClaude, home, coderun.RunCwd(home, cwd), mcpSessionSidecar(name))
+	cmd, ok := engine.SessionDiscoveryPrepareCommand(engine.NameClaude, home, coderun.RunCwd(home, cwd), mcpSessionSidecar(sess.BoxUser(), name))
 	if !ok {
 		return false
 	}
@@ -229,7 +230,7 @@ func mcpStartSessionDiscovery(ctx context.Context, sess *coderun.Session, name, 
 	if err != nil {
 		return
 	}
-	cmd, ok := engine.SessionDiscoveryBackgroundCommand(engine.NameClaude, home, coderun.RunCwd(home, cwd), mcpSessionSidecar(name))
+	cmd, ok := engine.SessionDiscoveryBackgroundCommand(engine.NameClaude, home, coderun.RunCwd(home, cwd), mcpSessionSidecar(sess.BoxUser(), name))
 	if !ok {
 		return
 	}

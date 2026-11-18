@@ -24,7 +24,7 @@ import (
 // the box side (internal/agentbox) and the client side (`code status`, the MCP
 // code_status tool, and later `code answer`) cannot drift.
 //
-// Files, both next to the run's log under RunLogDir:
+// Files, both next to the run's log under the box user's RunLogDir:
 //
 //	<name>.input.jsonl   append-only journal of InputEvent lines
 //	<name>.answers/<id>  one answer per request: "<allow|deny> <hex signature>\n"
@@ -68,11 +68,15 @@ func ParseApprovalMode(s string) (ApprovalMode, error) {
 // deny (PRD open question 5: long enough to answer from a phone in a meeting).
 const DefaultApprovalTimeout = 30 * time.Minute
 
-// ApprovalJournalPath is the run's input journal.
-func ApprovalJournalPath(name string) string { return RunLogDir + "/" + name + ".input.jsonl" }
+// ApprovalJournalPath is the input journal of user's run name.
+func ApprovalJournalPath(user, name string) string {
+	return RunLogDir(user) + "/" + name + ".input.jsonl"
+}
 
-// ApprovalAnswersDir is where answers to the run's requests are dropped.
-func ApprovalAnswersDir(name string) string { return RunLogDir + "/" + name + ".answers" }
+// ApprovalAnswersDir is where answers to user's run name's requests are dropped.
+func ApprovalAnswersDir(user, name string) string {
+	return RunLogDir(user) + "/" + name + ".answers"
+}
 
 // ValidApprovalRunName accepts the run names whose approval files can sit
 // next to the run's log as-is: exactly the names agent-box's process name
@@ -408,11 +412,11 @@ func readApprovalJournal(ctx context.Context, r LogReader, path string) ([]byte,
 // A journal over the size limit is summarized from the part read, with a note
 // saying so.
 func (s *Session) ApprovalStatus(ctx context.Context, name string, running bool, now time.Time) (string, error) {
-	return approvalStatus(ctx, s, name, running, now)
+	return approvalStatus(ctx, s, s.user, name, running, now)
 }
 
-func approvalStatus(ctx context.Context, r LogReader, name string, running bool, now time.Time) (string, error) {
-	blob, err := readApprovalJournal(ctx, r, ApprovalJournalPath(name))
+func approvalStatus(ctx context.Context, r LogReader, user, name string, running bool, now time.Time) (string, error) {
+	blob, err := readApprovalJournal(ctx, r, ApprovalJournalPath(user, name))
 	tooLarge := errors.Is(err, ErrJournalTooLarge)
 	if err != nil && !tooLarge {
 		if errors.Is(err, ErrFileNotFound) {

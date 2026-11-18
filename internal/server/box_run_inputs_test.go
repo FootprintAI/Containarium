@@ -36,7 +36,7 @@ func startInputsRun(t *testing.T, expiresIn time.Duration) *inputsRun {
 	s, owner, run := startLongRun(t, "{{READY}}\nsleep 60")
 	s.approvalSecret = []byte("test-jwt-secret")
 	s.runInputConfirmWait = 2 * time.Second
-	r := &inputsRun{s: s, owner: owner, run: run.GetRunName(), dir: s.boxRunDir()}
+	r := &inputsRun{s: s, owner: owner, run: run.GetRunName(), dir: s.boxRunDir(owner)}
 	if err := os.MkdirAll(filepath.Join(r.dir, r.run+".answers"), 0o700); err != nil {
 		t.Fatal(err)
 	}

@@ -25,7 +25,7 @@ import (
 
 // The daemon-side reader over a box's `code run` records (#2123): the
 // TailRunLog contract (#2096) for the durable run records and logs agent-box
-// keeps under /tmp/agent-box (#1672/#1674).
+// keeps under /tmp/agent-box/<box user> (#1672/#1674, per user since #3682).
 //
 // It only ever reads. Records and logs keep the lifecycle agent-box gives
 // them — rotated aside when a later run reuses the name, gone when /tmp is
@@ -63,12 +63,31 @@ b64_3() { base64 <&3 | tr -d '\n'; exec 3<&-; }
 // (not JSON, unlike the record/exit sidecar), so it is still read through
 // open3's same symlink/regular-file guard — it lives in the same
 // box-user-owned directory as everything else here.
-func boxRunListScript(dir string) string {
-	return fmt.Sprintf(`d=%s
-%s[ -d "$d" ] || exit 0
-echo "B $(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
-echo "P $(ls /proc | grep -E '^[0-9]+$' | tr '\n' ' ')"
+//
+// It reads every one of dirs (a box's runs are split across its users' own
+// directories, #3682) and prints "D <dir>" before the records of each, so a
+// record is reported under the directory it is in. Nothing is printed when no
+// dir exists.
+func boxRunListScript(dirs ...string) string {
+	quoted := make([]string, len(dirs))
+	for i, d := range dirs {
+		quoted[i] = shellSingleQuote(d)
+	}
+	// A file name with a newline in it is skipped: echoed, it could forge a "D"
+	// line and move the records after it into another directory.
+	return fmt.Sprintf(`%sseen=
+nl='
+'
+for d in %s; do
+[ -d "$d" ] || continue
+if [ -z "$seen" ]; then
+  seen=1
+  echo "B $(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
+  echo "P $(ls /proc | grep -E '^[0-9]+$' | tr '\n' ' ')"
+fi
+echo "D $d"
 for f in "$d"/*.json; do
+  case "$f" in *"$nl"*) continue;; esac
   open3 "$f" || continue
   r=$(b64_3)
   x=-
@@ -83,7 +102,8 @@ for f in "$d"/*.json; do
   if open3 "${f%%.json}.tools"; then tl=$(head -c %d <&3 | base64 | tr -d '\n'); exec 3<&-; fi
   echo "R ${f##*/} ${r:--} ${x:--} ${sid:--} ${res:--} ${tl:--}"
 done
-`, shellSingleQuote(dir), boxRunOpenFn, boxRunResultReadLimit, boxRunToolsReadLimit)
+done
+`, boxRunOpenFn, strings.Join(quoted, " "), boxRunResultReadLimit, boxRunToolsReadLimit)
 }
 
 // boxRunResultReadLimit caps how much of an exited structured run's log the
@@ -130,7 +150,10 @@ tail -c +%d <&3 | head -c %d
 
 // boxRunView is one record as the reader sees it.
 type boxRunView struct {
-	fileName  string
+	fileName string
+	// dir is the run directory the record was read from (the list script's
+	// "D" line); "" when the output names none.
+	dir       string
 	record    agentbox.RunRecord
 	sessionID string
 	tools     []*pb.BoxRunTool
@@ -152,9 +175,12 @@ func decodeB64Field(s string) ([]byte, error) {
 // hide every other run.
 func parseBoxRunViews(out string) (views []boxRunView, boot string, alive map[int]bool) {
 	alive = map[int]bool{}
+	dir := ""
 	for _, line := range strings.Split(out, "\n") {
 		kind, rest, _ := strings.Cut(line, " ")
 		switch kind {
+		case "D":
+			dir = strings.TrimSpace(rest)
 		case "B":
 			boot = strings.TrimSpace(rest)
 		case "P":
@@ -207,6 +233,7 @@ func parseBoxRunViews(out string) (views []boxRunView, boot string, alive map[in
 			}
 			views = append(views, boxRunView{
 				fileName:  name,
+				dir:       dir,
 				record:    agentbox.FoldExitSidecar(record, sidecar),
 				sessionID: sessionID,
 				tools:     tools,
@@ -224,13 +251,24 @@ func parseBoxRunViews(out string) (views []boxRunView, boot string, alive map[in
 	return views, boot, alive
 }
 
+// viewDir is the directory v was read from, or def when the list output named
+// none.
+func (v boxRunView) viewDir(def string) string {
+	if v.dir != "" {
+		return v.dir
+	}
+	return def
+}
+
 // parseBoxRunList turns the list script's output into protos, newest first.
+// Each run's paths are in the directory it was listed from; dir is used only
+// for output that names no directory.
 func parseBoxRunList(out, dir string) []*pb.BoxRun {
 	views, boot, alive := parseBoxRunViews(out)
 	runs := make([]*pb.BoxRun, 0, len(views))
 	for _, v := range views {
 		outcome := agentbox.ResolveOutcome(v.record, boot, func(pid int) bool { return pid > 0 && alive[pid] })
-		run := boxRunProto(v.fileName, dir, v.record, outcome)
+		run := boxRunProto(v.fileName, v.viewDir(dir), v.record, outcome)
 		run.SessionId = v.sessionID
 		run.Tools = v.tools
 		// Usage only once the run has exited: the list script ships a result
@@ -286,6 +324,18 @@ type boxRunWindow struct {
 	unsafe  bool   // the log is not a plain file at its own path
 	size    int64  // the log's size, read after the record
 	raw     []byte // up to limit bytes from the offset
+}
+
+// readBoxRunWindowIn reads run name from the first of dirs that holds it, and
+// returns that directory. Not found in any is a window with found false.
+func readBoxRunWindowIn(exec boxScriptFunc, box string, dirs []string, name string, offset int64, limit int) (boxRunWindow, string, error) {
+	for _, dir := range dirs {
+		w, err := readBoxRunWindow(exec, box, dir, name, offset, limit)
+		if err != nil || w.found {
+			return w, dir, err
+		}
+	}
+	return boxRunWindow{}, "", nil
 }
 
 func readBoxRunWindow(exec boxScriptFunc, box, dir, name string, offset int64, limit int) (boxRunWindow, error) {
@@ -403,11 +453,25 @@ func (s *ContainerServer) boxRunExecFn() boxScriptFunc {
 	}
 }
 
-func (s *ContainerServer) boxRunDir() string {
+// boxRunDir is the run directory of user, the OS user a run executes as in the
+// box: its own <root>/<user>, 0700 and owned by it (#3682). boxRunLogDir, when
+// set (tests), replaces every user's directory with one.
+func (s *ContainerServer) boxRunDir(user string) string {
 	if s.boxRunLogDir != "" {
 		return s.boxRunLogDir
 	}
-	return agentbox.DefaultLogDir
+	return agentbox.UserLogDir(user)
+}
+
+// boxRunDirs are the run directories of owner's box, in the order they are
+// read: the owner's own (its SSH runs and its platform runs without a
+// tool-access level) and the unprivileged run user's (platform runs under a
+// level, #2944). A run name is unique across them.
+func (s *ContainerServer) boxRunDirs(owner string) []string {
+	if s.boxRunLogDir != "" {
+		return []string{s.boxRunLogDir}
+	}
+	return []string{s.boxRunDir(owner), s.boxRunDir(boxRunUnprivilegedUser)}
 }
 
 // authorizeBoxRuns is the access check for both RPCs: the same ssh:write
@@ -462,12 +526,12 @@ func (s *ContainerServer) ListBoxRuns(ctx context.Context, req *pb.ListBoxRunsRe
 	if exec == nil {
 		return nil, status.Error(codes.Unavailable, "no container backend to read run records from")
 	}
-	dir := s.boxRunDir()
-	out, err := exec(req.GetUsername()+"-container", boxRunListScript(dir))
+	dirs := s.boxRunDirs(req.GetUsername())
+	out, err := exec(req.GetUsername()+"-container", boxRunListScript(dirs...))
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "read run records of %q: %v", req.GetUsername(), err)
 	}
-	return &pb.ListBoxRunsResponse{Runs: parseBoxRunList(out, dir)}, nil
+	return &pb.ListBoxRunsResponse{Runs: parseBoxRunList(out, dirs[0])}, nil
 }
 
 // TailBoxRunLog returns one byte window of a box run's log (#2123).
@@ -503,13 +567,17 @@ func (s *ContainerServer) TailBoxRunLog(ctx context.Context, req *pb.TailBoxRunL
 		poll = tailRunLogPoll
 	}
 
-	box, dir, name, offset := req.GetUsername()+"-container", s.boxRunDir(), req.GetRunName(), req.GetStartOffset()
+	box, dirs, name, offset := req.GetUsername()+"-container", s.boxRunDirs(req.GetUsername()), req.GetRunName(), req.GetStartOffset()
 	// One extra byte tells a full window from a truncated one; a framed log
 	// is read at least one whole frame deep.
 	readLimit := maxBytes + 1
 	deadline := time.Now().Add(follow)
 	for {
-		w, err := readBoxRunWindow(exec, box, dir, name, offset, max(readLimit, boxRunMaxFrameLine+1))
+		w, dir, err := readBoxRunWindowIn(exec, box, dirs, name, offset, max(readLimit, boxRunMaxFrameLine+1))
+		if w.found {
+			// Followed in the directory it was found in.
+			dirs = []string{dir}
+		}
 		if err != nil {
 			if _, ok := status.FromError(err); ok && status.Code(err) != codes.Unknown {
 				return nil, err

@@ -75,7 +75,7 @@ func (s *ContainerServer) StopBoxRun(ctx context.Context, req *pb.StopBoxRunRequ
 		return nil, status.Error(codes.Unavailable, "no container backend to stop a run on")
 	}
 	box := req.GetUsername() + "-container"
-	dir := s.boxRunDir()
+	dirs := s.boxRunDirs(req.GetUsername())
 
 	// Serialized with StartBoxRun for the same (box, name): a stop must not
 	// land between a start's collision check and its record write.
@@ -84,7 +84,7 @@ func (s *ContainerServer) StopBoxRun(ctx context.Context, req *pb.StopBoxRunRequ
 	defer lock.Unlock()
 
 	read := func() (boxRunView, string, map[int]bool, error) {
-		out, err := exec(box, boxRunListScript(dir))
+		out, err := exec(box, boxRunListScript(dirs...))
 		if err != nil {
 			return boxRunView{}, "", nil, status.Errorf(codes.Unavailable, "read run records of %q: %v", req.GetUsername(), err)
 		}
@@ -106,7 +106,7 @@ func (s *ContainerServer) StopBoxRun(ctx context.Context, req *pb.StopBoxRunRequ
 	}
 	switch resolve(view, boot, alive) {
 	case agentbox.RunOutcomeExited:
-		return &pb.StopBoxRunResponse{Run: boxRunView2Proto(dir, view, agentbox.RunOutcomeExited), Signal: pb.BoxRunStopSignal_BOX_RUN_STOP_SIGNAL_NONE, Exited: true}, nil
+		return &pb.StopBoxRunResponse{Run: boxRunView2Proto(view.viewDir(dirs[0]), view, agentbox.RunOutcomeExited), Signal: pb.BoxRunStopSignal_BOX_RUN_STOP_SIGNAL_NONE, Exited: true}, nil
 	case agentbox.RunOutcomeRunning:
 	default:
 		// Unknown on THIS boot is a run whose wrapper died (a soft stop does
@@ -120,7 +120,7 @@ func (s *ContainerServer) StopBoxRun(ctx context.Context, req *pb.StopBoxRunRequ
 		}
 	}
 
-	out, err := exec(box, boxRunStopScript(dir, name, req.GetUsername(), view.record.PID, req.GetForce()))
+	out, err := exec(box, boxRunStopScript(view.viewDir(dirs[0]), name, req.GetUsername(), view.record.PID, req.GetForce()))
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "stop run %q on %q: %v", name, req.GetUsername(), err)
 	}
@@ -145,7 +145,7 @@ func (s *ContainerServer) StopBoxRun(ctx context.Context, req *pb.StopBoxRunRequ
 		s.sweepBoxRunCheckoutsAfterRun(req.GetUsername())
 	}
 	return &pb.StopBoxRunResponse{
-		Run:    boxRunView2Proto(dir, view, resolve(view, boot, alive)),
+		Run:    boxRunView2Proto(view.viewDir(dirs[0]), view, resolve(view, boot, alive)),
 		Signal: signal,
 		Exited: result == "dead" || result == "gone",
 	}, nil

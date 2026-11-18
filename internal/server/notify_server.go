@@ -62,8 +62,8 @@ type NotifyServer struct {
 	// store installed after a degraded start (#3327) reaches the service.
 	secretsSource func() notifySecretStore
 	sender        notifySender
-	// exec runs a script in a box (ContainerServer.boxRunExecFn); dir is
-	// agent-box's log dir.
+	// exec runs a script in a box (ContainerServer.boxRunExecFn); dir, when
+	// set (tests), replaces every user's agent-box run directory (runDir).
 	exec func() boxScriptFunc
 	dir  string
 
@@ -86,6 +86,15 @@ type NotifyServer struct {
 	inflight map[string]bool
 	sem      chan struct{}
 	wg       sync.WaitGroup
+}
+
+// runDir is the run directory of user's own agent-box runs, where their
+// approval journals are (#3682): dir when set, else the user's own.
+func (s *NotifyServer) runDir(user string) string {
+	if s.dir != "" {
+		return s.dir
+	}
+	return agentbox.UserLogDir(user)
 }
 
 // secretStore is the secrets store for this call: secretsSource when set,
@@ -557,7 +566,7 @@ func (s *NotifyServer) execBounded(ctx context.Context, exec boxScriptFunc, user
 	}
 	done := make(chan result, 1)
 	go func() {
-		out, err := exec(user+"-container", notifyJournalScript(s.dir))
+		out, err := exec(user+"-container", notifyJournalScript(s.runDir(user)))
 		done <- result{out, err}
 	}()
 	t := time.NewTimer(s.execTimeout)

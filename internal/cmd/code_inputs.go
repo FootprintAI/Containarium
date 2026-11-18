@@ -346,8 +346,9 @@ func (w *inlineAnswers) read(ctx context.Context, in io.Reader) {
 }
 
 // runUsesApprovals reports whether run was started with --approvals ask: its
-// approval server creates the answers directory when it starts.
-func runUsesApprovals(ctx context.Context, sess approvalSession, run string) bool {
-	out, err := sess.ShellExec(ctx, "[ -d "+coderun.ShellQuoteSingle(coderun.ApprovalAnswersDir(run))+" ] && echo yes")
+// approval server creates the answers directory, in the run directory of the box
+// user it runs as, when it starts.
+func runUsesApprovals(ctx context.Context, sess approvalSession, user, run string) bool {
+	out, err := sess.ShellExec(ctx, "[ -d "+coderun.ShellQuoteSingle(coderun.ApprovalAnswersDir(user, run))+" ] && echo yes")
 	return err == nil && strings.TrimSpace(out) == "yes"
 }

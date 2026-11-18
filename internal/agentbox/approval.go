@@ -88,7 +88,7 @@ func RunApprovalCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) in
 	fs.SetOutput(stderr)
 	run := fs.String("run", "", "run name whose permission requests this serves (required)")
 	timeout := fs.Duration("timeout", coderun.DefaultApprovalTimeout, "how long a request waits before it expires into a deny")
-	dir := fs.String("dir", DefaultLogDir, "run log directory")
+	dir := fs.String("dir", processLogDir, "run log directory")
 	publicKey := fs.String("public-key", "", "hex Ed25519 public key answers must be signed for")
 	probe := fs.Bool("probe", false, "print a readiness line and exit")
 	if err := fs.Parse(args); err != nil {

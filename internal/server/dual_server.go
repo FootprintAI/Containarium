@@ -1148,7 +1148,7 @@ func NewDualServer(config *DualServerConfig) (*DualServer, error) {
 					log.Printf("Warning: %v; notifications reach public ntfy servers only", aerr)
 					allowed = nil
 				}
-				notifyServer = NewNotifyServer(ntfStore, nil, containerServer.boxRunExecFn, containerServer.boxRunDir(), allowed)
+				notifyServer = NewNotifyServer(ntfStore, nil, containerServer.boxRunExecFn, containerServer.boxRunLogDir, allowed)
 				// Read the secrets store on every call, so one installed
 				// after a degraded start (#3327) reaches the service.
 				notifyServer.secretsSource = containerServer.notifySecrets

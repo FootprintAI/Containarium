@@ -408,7 +408,8 @@ re-insert them as new rows, because their dedupe keys went with them.
 These stores are not covered by the retention classes:
 
 - **Stores inside a box.** These include code-run records under
-  `/tmp/agent-box/` (their `command` field holds the prompt) and a coding
+  `/tmp/agent-box/<user>/`, private to that box user (their `command` field
+  holds the prompt), and a coding
   tool's own session files. They live and die with the box.
   - The agent run journals in the inventory are also inside the box. They
     are listed because the daemon already removes them after 7 days, but

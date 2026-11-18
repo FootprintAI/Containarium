@@ -192,8 +192,8 @@ func TestApprovalNamesMatchTheClientsPromptTool(t *testing.T) {
 	if engine.ApprovalProbeOK != approvalProbeOK {
 		t.Errorf("engine.ApprovalProbeOK = %q, server prints %q", engine.ApprovalProbeOK, approvalProbeOK)
 	}
-	if coderun.ApprovalJournalPath("code") != filepath.Join(DefaultLogDir, "code.input.jsonl") ||
-		coderun.ApprovalAnswersDir("code") != filepath.Join(DefaultLogDir, "code.answers") {
+	if coderun.ApprovalJournalPath("alice", "code") != filepath.Join(UserLogDir("alice"), "code.input.jsonl") ||
+		coderun.ApprovalAnswersDir("alice", "code") != filepath.Join(UserLogDir("alice"), "code.answers") {
 		t.Error("coderun's approval paths drifted from the server's")
 	}
 }

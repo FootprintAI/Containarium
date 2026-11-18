@@ -17,11 +17,15 @@ import (
 // <box>` started without the user tracking an identifier.
 const DefaultRunName = "code"
 
+// RunLogRoot is the shared parent of every box user's run directory. It
+// mirrors agentbox.LogRoot, which this package cannot import (agentbox is not
+// built for Windows, and the client is); a server test pins the two equal.
+const RunLogRoot = "/tmp/agent-box"
+
 // RunLogDir is the box directory process_start keeps every run's files in
-// (<name>.log, .json, .exit, .session). It mirrors agentbox.DefaultLogDir,
-// which this package cannot import (agentbox is not built for Windows, and
-// the client is); a server test pins the two equal.
-const RunLogDir = "/tmp/agent-box"
+// (<name>.log, .json, .exit, .session) for the box user it runs as: one
+// private directory per user (#3682). It mirrors agentbox.UserLogDir.
+func RunLogDir(user string) string { return RunLogRoot + "/" + user }
 
 // ShellQuoteSingle single-quotes s for a POSIX shell, escaping any embedded
 // single quote by closing the quoted string, emitting a backslash-escaped

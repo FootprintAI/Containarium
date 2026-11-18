@@ -641,10 +641,16 @@ func mustWriteFile(t *testing.T, path, content string, dir bool) {
 }
 
 // TestRunLogDirMirrorsAgentBox pins coderun.RunLogDir (used by the CLI and
-// MCP, which cannot import agentbox) to the directory process_start uses.
+// MCP, which cannot import agentbox) to the directory process_start uses: the
+// same root, and the same per-user directory under it (#3682).
 func TestRunLogDirMirrorsAgentBox(t *testing.T) {
-	if coderun.RunLogDir != agentbox.DefaultLogDir {
-		t.Errorf("coderun.RunLogDir = %q, agentbox.DefaultLogDir = %q", coderun.RunLogDir, agentbox.DefaultLogDir)
+	if coderun.RunLogRoot != agentbox.LogRoot {
+		t.Errorf("coderun.RunLogRoot = %q, agentbox.LogRoot = %q", coderun.RunLogRoot, agentbox.LogRoot)
+	}
+	for _, u := range []string{"alice", "bob", boxRunUnprivilegedUser} {
+		if coderun.RunLogDir(u) != agentbox.UserLogDir(u) {
+			t.Errorf("coderun.RunLogDir(%q) = %q, agentbox.UserLogDir = %q", u, coderun.RunLogDir(u), agentbox.UserLogDir(u))
+		}
 	}
 }
 

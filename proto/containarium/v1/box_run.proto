@@ -14,7 +14,8 @@ option go_package = "github.com/footprintai/containarium/pkg/pb/containarium/v1;
 // Box run records (#2123): the daemon-side reader over the durable run
 // records `containarium code run` leaves on a box (agent-box process_start,
 // #1672/#1674). A record is <log-dir>/<run_name>.json beside its log
-// <run_name>.log (log-dir is /tmp/agent-box). The reader never changes
+// <run_name>.log (log-dir is /tmp/agent-box/<box user>, one 0700 directory
+// per box user, #3682). The reader never changes
 // either file: their lifecycle stays agent-box's (rotation on name reuse,
 // /tmp cleanup).
 
@@ -149,7 +150,7 @@ message StartBoxRunRequest {
   // any other engine is FAILED_PRECONDITION, before anything on the box is
   // touched). The run's log (<run_name>.log) is then exactly the engine's one
   // JSON result object (type, subtype, is_error, result, session_id, usage,
-  // ...); stderr is kept apart in /tmp/agent-box/<run_name>.stderr.log, which
+  // ...); stderr is kept apart in <log-dir>/<run_name>.stderr.log, which
   // TailBoxRunLog does not serve. Once the run has exited, ListBoxRuns reads
   // the object and reports its TOP-LEVEL session_id as BoxRun.session_id
   // (nested keys are ignored; truncated or invalid JSON, or an object over
