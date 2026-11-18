@@ -359,7 +359,7 @@ func (c *Client) DetachACLFromContainer(containerName, deviceName string) error 
 		return fmt.Errorf("failed to detach ACL from container: %w", err)
 	}
 
-	if err := waitOp(context.Background(), op, opTimeout); err != nil {
+	if err := waitOp(context.Background(), "detach acl "+containerName, op, opTimeout); err != nil {
 		return fmt.Errorf("failed to detach ACL (operation failed): %w", err)
 	}
 
