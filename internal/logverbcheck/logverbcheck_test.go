@@ -63,6 +63,8 @@ func TestCheckFile_FlagsEveryTenantField(t *testing.T) {
 		// #3468 / #3473 classifications
 		"c.Owner", "accountName", "box.ReleasedBy", "claims.KeyOwner", "ev.Tenant",
 		"r.FullDomain", "subdomain", "appName", "skill", "req.SkillId", "spotID",
+		// #3343: a box's label map, printed whole or one value at a time
+		"info.Labels", "labels[key]",
 	}
 	for _, f := range fields {
 		got := check(t, "", `log.Printf("x %s", `+f+`)`, false)
@@ -106,6 +108,8 @@ func TestCheckFile_Flagged(t *testing.T) {
 		{"table tab row", "", `fmt.Printf("%s\t%d\n", c.ContainerName, n)`, true, []string{"c.ContainerName %s table"}},
 		{"table padded row", "", `fmt.Printf("%-25s %s\n", c.ContainerName, ip)`, true, []string{"c.ContainerName %s table"}},
 		{"table Fprintf row", "", `fmt.Fprintf(os.Stdout, "%-20s %v\n", ip, p.Tenant)`, true, []string{"p.Tenant %v table"}},
+		{"table star-padded row (#3343)", "", `fmt.Printf("  %-*s  %s\n", w, key, labels[key])`, true, []string{"labels[key] %s table"}},
+		{"label map value (#3343)", "", `log.Printf("%s", info.Labels[k])`, false, []string{"info.Labels[k] %s log"}},
 		{"tabwriter writer", "", "w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)\nfmt.Fprintf(w, \"%s\\n\", username)", true, []string{"username %s table"}},
 		{"tabwriter var", "", "var w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)\nfmt.Fprintf(w, \"%s\\n\", username)", true, []string{"username %s table"}},
 		{"tabwriter param", "func g(w *tabwriter.Writer) { fmt.Fprintf(w, \"%s\\n\", username) }", ``, true, []string{"username %s table"}},
@@ -151,6 +155,8 @@ func TestCheckFile_NotFlagged(t *testing.T) {
 		{"Fprintf to non-tabwriter", "", "var b strings.Builder\nfmt.Fprintf(&b, \"%s\\n\", username)", true},
 		{"tabwriter header only", "", "w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)\nfmt.Fprintf(w, \"NAME\\tSTATE\\n\")", true},
 		{"non-constant format", "", `log.Printf(format, username)`, false},
+		{"star precision is not a row", "", `fmt.Printf("%.*s\n", n, username)`, true},
+		{"index into a non-tenant map", "", `log.Printf("%s", ports[username])`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -168,7 +174,8 @@ func TestVerbUses(t *testing.T) {
 	}{
 		{"%s", []verbUse{{arg: 0, verb: 's', off: 1}}},
 		{"a %d %-5s", []verbUse{{0, 'd', false, 3}, {1, 's', true, 8}}},
-		{"%*d %s", []verbUse{{1, 'd', false, 2}, {2, 's', false, 5}}},
+		{"%*d %s", []verbUse{{1, 'd', true, 2}, {2, 's', false, 5}}},
+		{"%.*s %-*s", []verbUse{{1, 's', false, 3}, {3, 's', true, 8}}},
 		{"%[2]s %[1]q %v", []verbUse{{1, 's', false, 4}, {0, 'q', false, 10}, {1, 'v', false, 13}}},
 		{"%%s %.3f", []verbUse{{0, 'f', false, 7}}},
 	}

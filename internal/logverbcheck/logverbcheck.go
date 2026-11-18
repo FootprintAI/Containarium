@@ -92,6 +92,10 @@ var TenantFields = map[string]string{
 	"subdomain":  "app subdomain",
 	"fulldomain": "route domain",
 
+	// A box's label map: keys and values are free-form request input
+	// (#3343). Matched whole (%v of the map) or indexed (labels[key]).
+	"labels": "box label map",
+
 	// Skills and tunnels (external catalogs, tunnelled spots).
 	"skill":   "skill id from an external catalog",
 	"skillid": "skill id from an external catalog",
@@ -246,6 +250,9 @@ func tenantValued(e ast.Expr) bool {
 		return false
 	case *ast.ParenExpr:
 		return tenantValued(x.X)
+	case *ast.IndexExpr:
+		// One value out of a tenant map: labels[key] (#3343).
+		return tenantValued(x.X)
 	case *ast.StarExpr:
 		return tenantValued(x.X)
 	case *ast.BinaryExpr:
@@ -381,10 +388,17 @@ func verbUses(format string) []verbUse {
 				}
 			case c == '.':
 				i++
+				if i < len(format) && format[i] == '*' {
+					arg++ // a '*' precision takes an argument but pads nothing
+					i++
+				}
 				for i < len(format) && format[i] >= '0' && format[i] <= '9' {
 					i++
 				}
 			case c == '*':
+				// A '*' width pads the cell like a literal one: "%-*s" is a
+				// table column (#3343).
+				width = true
 				arg++
 				i++
 			case c == '[':
