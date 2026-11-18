@@ -117,7 +117,7 @@ func (th *TerminalHandler) checkRunUserExists(containerName string) (bool, error
 	// A one-shot probe: bounded by the default operation deadline (#3470),
 	// unlike the interactive session waits below, which last as long as the
 	// user's connection.
-	if err := coreincus.WaitOperation(context.Background(), op); err != nil {
+	if err := coreincus.WaitOperation(context.Background(), "probe run user in "+containerName, op); err != nil {
 		return false, err
 	}
 	ret, ok := op.Get().Metadata["return"].(float64)

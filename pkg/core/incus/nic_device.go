@@ -141,7 +141,7 @@ func (c *Client) updateInstanceDevices(containerName string, inst *api.Instance,
 
 	op, updateErr := c.server.UpdateInstance(containerName, inst.Writable(), etag)
 	if updateErr == nil {
-		updateErr = waitOp(context.Background(), op, opTimeout)
+		updateErr = waitOp(context.Background(), what+" "+containerName, op, opTimeout)
 		if updateErr != nil {
 			updateErr = fmt.Errorf("%s on %s (operation failed): %w", what, containerName, updateErr)
 		}

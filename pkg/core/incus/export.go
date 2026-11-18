@@ -88,7 +88,7 @@ func (c *Client) ExportInstance(name string) (io.ReadCloser, error) {
 	req.ExpiresAt = time.Now().Add(exportBackupTTL)
 	op, err := c.server.CreateInstanceBackup(name, req)
 	if err == nil {
-		err = waitOp(context.Background(), op, longOpTimeout)
+		err = waitOp(context.Background(), "export "+name, op, longOpTimeout)
 	}
 	if err != nil {
 		_ = pr.Close()
@@ -101,7 +101,7 @@ func (c *Client) ExportInstance(name string) (io.ReadCloser, error) {
 	return &storedExport{PipeReader: pr, remove: func() error {
 		op, err := c.server.DeleteInstanceBackup(name, backupName)
 		if err == nil {
-			err = waitOp(context.Background(), op, opTimeout)
+			err = waitOp(context.Background(), "delete backup "+name+"/"+backupName, op, opTimeout)
 		}
 		if err != nil {
 			log.Printf("[incus] export %s: remove stored backup %s: %v (Incus expires it in %s)", name, backupName, err, exportBackupTTL)
@@ -152,7 +152,7 @@ func (c *Client) ImportInstance(name, pool string, r io.Reader, opts ImportOptio
 	if err != nil {
 		return fmt.Errorf("import %s: %w", name, err)
 	}
-	if err := waitOp(context.Background(), op, longOpTimeout); err != nil {
+	if err := waitOp(context.Background(), "import "+name, op, longOpTimeout); err != nil {
 		return fmt.Errorf("import %s (operation failed): %w", name, err)
 	}
 	return nil
@@ -169,7 +169,7 @@ func (c *Client) RenameInstance(name, newName string) error {
 	if err != nil {
 		return fmt.Errorf("rename %s to %s: %w", name, newName, err)
 	}
-	if err := waitOp(context.Background(), op, opTimeout); err != nil {
+	if err := waitOp(context.Background(), "rename "+name, op, opTimeout); err != nil {
 		return fmt.Errorf("rename %s to %s (operation failed): %w", name, newName, err)
 	}
 	return nil

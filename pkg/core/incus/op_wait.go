@@ -23,10 +23,15 @@ const (
 	// DefaultOperationTimeout bounds control-plane operations that Incus
 	// finishes in seconds when healthy: state changes (start, stop, freeze;
 	// Incus's own action timeout for these is 30s), config, label and
-	// device updates, renames, deletes. Ten minutes is far past the slowest
-	// healthy case (deleting a large dataset with snapshots) while still
-	// turning a wedge into an error.
-	DefaultOperationTimeout = 10 * time.Minute
+	// device updates, renames. Sixty seconds is the default chosen in
+	// #3685; an operation that can legitimately take longer passes one of
+	// the longer classes below explicitly.
+	DefaultOperationTimeout = 60 * time.Second
+
+	// DeleteOperationTimeout bounds deleting an instance, which can outlast
+	// the default when it removes a large dataset with snapshots. It keeps
+	// the ten minutes every control-plane wait had before #3685.
+	DeleteOperationTimeout = 10 * time.Minute
 
 	// LongOperationTimeout bounds operations whose length grows with the
 	// data they move: creating an instance (may pull and unpack an image),
@@ -47,9 +52,10 @@ const (
 // The deadlines waits actually use. vars, not consts, so tests can shrink
 // them; production keeps the named defaults above.
 var (
-	opTimeout     = DefaultOperationTimeout
-	longOpTimeout = LongOperationTimeout
-	execOpTimeout = ExecOperationTimeout
+	opTimeout       = DefaultOperationTimeout
+	deleteOpTimeout = DeleteOperationTimeout
+	longOpTimeout   = LongOperationTimeout
+	execOpTimeout   = ExecOperationTimeout
 )
 
 // ErrOperationTimeout matches (errors.Is) every error a wait returns because
@@ -62,6 +68,9 @@ var ErrOperationTimeout = errors.New("incus operation did not complete before it
 // OperationTimeoutError is the error a wait returns on timeout. It matches
 // ErrOperationTimeout and context.DeadlineExceeded.
 type OperationTimeoutError struct {
+	// Operation names the wait that expired, e.g. "stop <instance>".
+	Operation string
+
 	// Timeout is the deadline this package applied. Zero means the deadline
 	// came from the caller's context.
 	Timeout time.Duration
@@ -69,9 +78,9 @@ type OperationTimeoutError struct {
 
 func (e *OperationTimeoutError) Error() string {
 	if e.Timeout == 0 {
-		return "incus operation did not complete before the caller's deadline (it may still finish on the server)"
+		return fmt.Sprintf("incus operation %q did not complete before the caller's deadline (it may still finish on the server)", e.Operation)
 	}
-	return fmt.Sprintf("incus operation did not complete within %s (likely wedged; it may still finish on the server)", e.Timeout)
+	return fmt.Sprintf("incus operation %q did not complete within %s (likely wedged; it may still finish on the server)", e.Operation, e.Timeout)
 }
 
 // Is makes errors.Is(err, ErrOperationTimeout) true.
@@ -89,11 +98,12 @@ type OperationWaiter interface {
 // WaitOperation waits for op until ctx's deadline, or for
 // DefaultOperationTimeout when ctx has none. For code outside this package
 // that holds a raw Incus operation.
-func WaitOperation(ctx context.Context, op OperationWaiter) error {
-	return waitOp(ctx, op, opTimeout)
+func WaitOperation(ctx context.Context, name string, op OperationWaiter) error {
+	return waitOp(ctx, name, op, opTimeout)
 }
 
-// waitOp waits for op to complete. ctx's own deadline wins; without one,
+// waitOp waits for op, which name identifies in a timeout error, to
+// complete. ctx's own deadline wins; without one,
 // fallback applies. It returns op's own result when op completes in time,
 // an *OperationTimeoutError when the deadline passes first, and ctx's error
 // when the caller cancels.
@@ -101,7 +111,7 @@ func WaitOperation(ctx context.Context, op OperationWaiter) error {
 // The wait runs in a goroutine so the bound holds even for an operation
 // whose WaitContext does not watch ctx. Incus's does, so that goroutine
 // normally ends with the wait.
-func waitOp(ctx context.Context, op OperationWaiter, fallback time.Duration) error {
+func waitOp(ctx context.Context, name string, op OperationWaiter, fallback time.Duration) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -127,7 +137,7 @@ func waitOp(ctx context.Context, op OperationWaiter, fallback time.Duration) err
 		}
 	}
 	if err != nil && errors.Is(err, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return &OperationTimeoutError{Timeout: applied}
+		return &OperationTimeoutError{Operation: name, Timeout: applied}
 	}
 	return err
 }
