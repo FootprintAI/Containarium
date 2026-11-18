@@ -5,6 +5,8 @@
 #  1. Every "Derive image tags" step is executed for real with GITHUB_OUTPUT
 #     pointed at a temp file: a malicious dispatched version must fail the step
 #     and write nothing; a valid dispatched version and a real tag push must pass.
+#  3. In every publishing job, the scan runs before publish and sign, and blocks
+#     (#3578); mutated copies must fail this check.
 #  2. Every publish/sign/scan condition that keys on the tag ref must also
 #     require github.event_name == 'push', so a dispatch run on a tag ref
 #     cannot publish.
@@ -83,6 +85,101 @@ for name in FILES:
             continue
         if "github.event_name == 'push'" not in ln:
             err(f"{name}:{i}: tag-ref condition without event_name == 'push': {ln.strip()}")
+
+# 3. Scan before publish (#3578): in every job that publishes, the image is
+#    built into the job's own scan registry, scanned with a blocking Trivy
+#    step, and only then copied to GHCR and signed. A mutated copy of each
+#    workflow (scan made non-blocking, or moved after publish) must fail, so a
+#    green check here cannot be a check that never looks.
+STEP_RE = re.compile(r"^      - name: (.+?)\s*$")
+JOB_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
+
+def job_steps(text):
+    """Map job name -> list of (step name, block text), in file order."""
+    jobs, cur, step = {}, None, None
+    for ln in text.split("\n"):
+        jm = JOB_RE.match(ln)
+        if jm:
+            cur, step = jm.group(1), None
+            jobs[cur] = []
+            continue
+        if cur is None:
+            continue
+        sm = STEP_RE.match(ln)
+        if sm:
+            step = [sm.group(1), []]
+            jobs[cur].append(step)
+        elif step is not None:
+            step[1].append(ln)
+    return {j: [(n, "\n".join(b)) for n, b in steps] for j, steps in jobs.items()}
+
+def order_errors(name, text):
+    errs = []
+    for job, steps in job_steps(text).items():
+        names = [n for n, _ in steps]
+        pub = [i for i, n in enumerate(names) if n.startswith("Publish the scanned image to GHCR")]
+        # A publishing job is one that pushes or signs. Identified by what it does,
+        # not by the new step name, so an unmigrated job cannot pass by omission.
+        publishes = any("push: ${{" in b or "sign-image" in b or "imagetools create" in b
+                        for _, b in steps)
+        if not publishes:
+            continue  # a job that does not publish has nothing to order
+        if not pub:
+            errs.append(f"{name}:{job}: publishes without a 'Publish the scanned image to GHCR' step after the scan")
+            continue
+        sign = [i for i, n in enumerate(names) if n.startswith("Sign and verify the image")]
+        scan = [i for i, n in enumerate(names) if "Trivy" in n and "before publish" in n]
+        build = [i for i, n in enumerate(names) if n.startswith("Build ")]
+        where = f"{name}:{job}"
+        if not scan:
+            errs.append(f"{where}: publishes with no blocking scan named '... before publish'")
+            continue
+        s = scan[0]
+        if not (build and build[0] < s):
+            errs.append(f"{where}: image is not built before the scan")
+        if not (s < pub[0] and (not sign or pub[0] < sign[0])):
+            errs.append(f"{where}: publish/sign does not come after the scan")
+        if "exit-code: '1'" not in steps[s][1]:
+            errs.append(f"{where}: pre-publish scan is not blocking (exit-code must be '1')")
+        for n, b in steps[:s]:
+            if "push: ${{" in b or "imagetools create" in b:
+                errs.append(f"{where}: step '{n}' pushes before the scan")
+        if build and "push: true" not in steps[build[0]][1]:
+            errs.append(f"{where}: build does not push to the scan registry only (push: true)")
+    return errs
+
+def mutate_each(text, fn):
+    return fn(text)
+
+if os.environ.get("SKIP_SCAN_ORDER") != "1":
+    for name in FILES:
+        text = open(os.path.join(root, ".github/workflows", name)).read()
+        found = order_errors(name, text)
+        for e in found:
+            err("scan-before-publish: " + e)
+        if not found and not job_steps(text):
+            err(f"{name}: no jobs parsed")
+        # Mutation checks: each must be caught.
+        m_block = text.replace("exit-code: '1'", "exit-code: '0'", 1)
+        if not order_errors(name + "(mutant: non-blocking)", m_block) and m_block != text:
+            err(f"{name}: mutant with a non-blocking scan was not caught")
+        m_name = text.replace("(image, before publish)", "(image)", 1)
+        if not order_errors(name + "(mutant: unnamed scan)", m_name) and m_name != text:
+            err(f"{name}: mutant with no 'before publish' scan was not caught")
+        # Mutant: the job's Sign step moved ahead of its Publish step. Spliced by
+        # position, so the mutation is asserted to have happened, not assumed.
+        pub_at = text.find("      - name: Publish the scanned image to GHCR")
+        sign_at = text.find("      - name: Sign and verify the image", pub_at)
+        if pub_at < 0 or sign_at < 0:
+            err(f"{name}: no Publish/Sign pair to mutate")
+            continue
+        m = re.search(r"\n  [A-Za-z0-9_-]+:\s*\n|\n\S", text[sign_at:])
+        sign_end = sign_at + (m.start() + 1 if m else len(text[sign_at:]))
+        m_order = text[:pub_at] + text[sign_at:sign_end] + text[pub_at:sign_at] + text[sign_end:]
+        if m_order == text:
+            err(f"{name}: sign-before-publish mutant did not change the file")
+        elif not order_errors(name + "(mutant: sign before publish)", m_order):
+            err(f"{name}: mutant with sign before publish was not caught")
 
 if not fail:
     print("ok: sidecars.yml and containarium-daemon.yml dispatch guards")

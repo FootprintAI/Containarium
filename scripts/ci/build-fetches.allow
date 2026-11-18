@@ -6,7 +6,6 @@
 # and a row in docs/security/BUILD-SUPPLY-CHAIN.md saying how it is pinned.
 # Add a line only for a pinned fetch.
 .github/workflows/agent-runtime.yml	npm ci	9db3f780def6	npm ci
-.github/workflows/containarium-daemon.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
 .github/workflows/distros-py-ci.yml	pip install	e0778e5f27e6	pip install --upgrade pip
 .github/workflows/distros-py-ci.yml	pip install	3a3de063bbb2	pip install -e ".[dev]"
 .github/workflows/distros-py-release.yml	pip install	e0778e5f27e6	pip install --upgrade pip
@@ -29,10 +28,6 @@
 .github/workflows/release.yml	curl	d3ab302517e7	curl -L -o /usr/local/bin/agent-box https://github.com/footprintai/con
 .github/workflows/release.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
 .github/workflows/security.yml	go install	1cd36a9816f8	go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
-.github/workflows/sidecars.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
-.github/workflows/sidecars.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
-.github/workflows/sidecars.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
-.github/workflows/sidecars.yml	docker pull	cac5be989ff7	docker pull ${{ steps.tags.outputs.scan_ref }}
 .github/workflows/ssh-approval-spike.yml	git clone	ef6dbf43ff6c	git clone --depth 1 --branch v1.6.1 https://github.com/tg123/sshpiper 
 .github/workflows/tenant-guard-e2e.yml	curl	d4caf07f25aa	curl -fsSL https://pkgs.zabbly.com/key.asc | sudo gpg --dearmor -o /us
 .github/workflows/workflow-lint.yml	curl	afe7011db51b	curl -fsSL -o "$RUNNER_TEMP/actionlint.tgz" "https://github.com/rhysd/
@@ -106,3 +101,8 @@ scripts/lib/deploy-install.sh	curl	6da37ede2a0e	curl -fsS --max-time 3 '$url' >/
 scripts/ci/offline-install-guest.sh	curl	427e4b79b1f0	curl
 scripts/ci/offline-install-vm.sh	curl	944df6386d5c	curl -fsSL --retry 3 --connect-timeout 30 --max-time 300 "$1" -o "$2";
 scripts/ci/managed-key-verify.sh	curl	944df6386d5c	curl -fsSL --retry 3 --connect-timeout 30 --max-time 300 "$1" -o "$2";
+.github/workflows/containarium-daemon.yml	docker pull	300a69281f8c	docker pull localhost:5000/containarium:scan
+.github/workflows/sidecars.yml	docker pull	ee0ef4b739ed	docker pull localhost:5000/containarium-otel-sidecar:scan
+.github/workflows/sidecars.yml	docker pull	d6a5755fd2d5	docker pull localhost:5000/containarium-sshpiper:scan
+.github/workflows/sidecars.yml	docker pull	1ee38bb3a9da	docker pull localhost:5000/containarium-agent-box:scan
+.github/workflows/sidecars.yml	docker pull	98c1df4a9372	docker pull localhost:5000/containarium-slides-agent:scan
