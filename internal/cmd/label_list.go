@@ -98,11 +98,13 @@ func printLabelsTable(username string, labels map[string]string) {
 	}
 	sort.Strings(keys)
 
-	// Find max key length for alignment
+	// Keys and values are tenant-supplied: print them through
+	// escapeControl so they cannot drive the terminal or forge a row
+	// (#3343). Align on the escaped key, which is what gets printed.
 	maxKeyLen := 0
 	for _, k := range keys {
-		if len(k) > maxKeyLen {
-			maxKeyLen = len(k)
+		if n := len(escapeControl(k)); n > maxKeyLen {
+			maxKeyLen = n
 		}
 	}
 
@@ -110,7 +112,7 @@ func printLabelsTable(username string, labels map[string]string) {
 	fmt.Printf("  %s  %s\n", strings.Repeat("-", maxKeyLen), strings.Repeat("-", 30))
 
 	for _, key := range keys {
-		fmt.Printf("  %-*s  %s\n", maxKeyLen, key, labels[key])
+		fmt.Printf("  %-*s  %s\n", maxKeyLen, escapeControl(key), escapeControl(labels[key]))
 	}
 
 	fmt.Printf("\nTotal: %d label(s)\n", len(labels))
