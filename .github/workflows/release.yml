@@ -38,6 +38,14 @@ jobs:
           # against the previous tag, which a depth-1 clone cannot see.
           fetch-depth: 0
 
+      # A tag push is the point of no return, so an open release hold stops it
+      # here, before anything is built or published (release-holds/README.md).
+      # Not on the publish-free workflow_dispatch rehearsal: a hold must not
+      # stop you from checking that the build works.
+      - name: No open release holds
+        if: github.event_name == 'push'
+        run: scripts/ci/check-release-holds.sh
+
       - name: Set up Go
         uses: ./.github/actions/setup-go-cached
         with:
