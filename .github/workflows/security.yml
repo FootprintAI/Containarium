@@ -190,6 +190,16 @@ jobs:
       - name: Run test-deploy-binary-rollback.sh
         run: ./scripts/test-deploy-binary-rollback.sh
 
+  binary-source-policy:
+    name: installers refuse a binary not owned by root or the operator (#3681)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Run test-binary-source-policy.sh
+        run: ./scripts/test-binary-source-policy.sh
+
   redeploy-workhorse-toolchain:
     name: redeploy-workhorse.sh reports the managed toolchain (#3360)
     runs-on: ubuntu-latest

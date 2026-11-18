@@ -32,6 +32,9 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+# shellcheck source=lib/binary-source-policy.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/binary-source-policy.sh"
+
 BINARY_SRC="${BINARY_SRC:-/tmp/containariumd}"
 BINARY_DST="/usr/local/bin/containariumd"
 
@@ -65,6 +68,10 @@ if [[ ! -f "$BINARY_SRC" ]]; then
     echo "  scp bin/containariumd-linux-amd64 ubuntu@<host>:/tmp/containariumd"
     exit 1
 fi
+
+# Source policy (#3681): only a regular file owned by root or by the operator
+# who ran sudo is installed; anything else in a shared dir is refused.
+binary_src_check "$BINARY_SRC" "${SUDO_UID:-0}" || exit 1
 
 echo "==> Installing binary -> $BINARY_DST"
 install -m 0755 "$BINARY_SRC" "$BINARY_DST"
