@@ -78,6 +78,16 @@ func TestCaddyModulesInSyncWithMakefile(t *testing.T) {
 			t.Errorf("Makefile's build-caddy target has --with %s, which is no longer in dnsProviderModules — remove it or re-add the provider", mod)
 		}
 	}
+	// The release asset is built from the same Caddy source as the images, which
+	// pin golang.org/x/net past the golang.org/x/net/html advisory (#3579). Without
+	// --replace the asset takes whatever x/net Caddy's go.mod resolves, and no
+	// image scan covers it.
+	if !strings.Contains(target, "--replace golang.org/x/net=golang.org/x/net@$(CADDY_XNET_VERSION)") {
+		t.Error("Makefile's build-caddy has no --replace golang.org/x/net=golang.org/x/net@$(CADDY_XNET_VERSION) pin; the release asset would float to Caddy's resolved x/net (#3579)")
+	}
+	if !strings.Contains(makefile, "\nCADDY_XNET_VERSION=v") {
+		t.Error("Makefile has no CADDY_XNET_VERSION=v... line; build-caddy references it to pin golang.org/x/net (#3579)")
+	}
 	if !strings.Contains(makefile, "\nCADDY_L4_VERSION=v") {
 		t.Error("Makefile has no CADDY_L4_VERSION=v... line; build-caddy references it to pin caddy-l4 (#3714)")
 	}

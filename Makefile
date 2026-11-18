@@ -354,11 +354,17 @@ CADDY_VERSION=v2.11.4
 # Keep it at the newest caddy-l4 whose go.mod requires CADDY_VERSION or older,
 # and bump the two together, deliberately.
 CADDY_L4_VERSION=v0.1.2
+# CADDY_XNET_VERSION replaces golang.org/x/net in the Caddy build, matching the
+# image builds (sshpiper, slides-agent): Caddy's own go.mod resolves an x/net
+# older than the golang.org/x/net/html fix (#3579). The release build scans the
+# asset, so drop this only once the scan passes without it.
+CADDY_XNET_VERSION=v0.62.0
 build-caddy: ## Build the pre-configured Caddy release binary (caddy-l4 + every DNS-01 provider)
 	@echo "==> Installing xcaddy..."
 	@scripts/install-xcaddy.sh $$(go env GOPATH)/bin/xcaddy
 	@echo "==> Building Caddy $(CADDY_VERSION) with caddy-l4 + every DNS-01 provider (this takes a few minutes)..."
 	@$$(go env GOPATH)/bin/xcaddy build $(CADDY_VERSION) \
+	    --replace golang.org/x/net=golang.org/x/net@$(CADDY_XNET_VERSION) \
 	    --with github.com/mholt/caddy-l4@$(CADDY_L4_VERSION) \
 	    --with github.com/caddy-dns/azure \
 	    --with github.com/caddy-dns/cloudflare \
