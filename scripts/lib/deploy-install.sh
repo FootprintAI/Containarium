@@ -35,6 +35,9 @@
 # value never reaches the terminal. The check runs under LC_ALL=C, so digits of
 # other scripts never match. scripts/deploy-binary.sh calls this before
 # its first remote call; deploy_install_cmd calls it again.
+# shellcheck source=binary-source-policy.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/binary-source-policy.sh"
+
 deploy_validate_knobs() {
     local LC_ALL=C tries="$1" interval="$2" err="" q
     case "$tries" in
@@ -94,7 +97,12 @@ deploy_install_cmd() {
         # the whole window is watched.
         final="{ $check; }"
     fi
+    # Source policy (#3681), checked on the host before anything is stopped or
+    # replaced: the operator is the remote user running this command.
+    local policy; policy="$(declare -f binary_src_check)"
     cat <<CMD
+$policy
+binary_src_check '$src' "\$(id -u)" || exit 1
 had_old=0
 sudo systemctl stop '$svc' && sleep 1 || exit 1
 if [ -f '$bin' ]; then sudo cp -p '$bin' '$bin.old' && had_old=1 || exit 1; fi

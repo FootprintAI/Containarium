@@ -86,8 +86,8 @@ grep -q 'ROLLBACK FAILED' "$CASE_DIR/out" && ok "restart fails: reports the fail
 
 # The restore itself (mv) fails: .old missing at restore time.
 mkdir -p "$work/mvfail/bin"; : > "$work/mvfail/log"
-cmd="$(BIN_DIR="$work/mvfail/bin" SRC=/dev/null HEALTH_TRIES=1 HEALTH_INTERVAL=0 deploy_install_cmd containarium http://x)"
-printf old-good > "$work/mvfail/bin/containariumd"
+cmd="$(BIN_DIR="$work/mvfail/bin" SRC="$work/mvfail/src" HEALTH_TRIES=1 HEALTH_INTERVAL=0 deploy_install_cmd containarium http://x)"
+printf old-good > "$work/mvfail/bin/containariumd"; : > "$work/mvfail/src"
 cat > "$work/fakebin/sudo2" <<'F'
 #!/usr/bin/env bash
 if [ "$1" = mv ]; then exit 1; fi
