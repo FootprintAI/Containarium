@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.139.0] - 2026-11-18
+
+
+### Added
+
+- **`containarium guardrail hook <event>` redacts what a coding agent gives the model, inside the box** (#3761). It is a Claude Code hook handler: it replaces a tool result with a copy in which secrets and personal data are `[[TYPE:…]]` markers, restores personal-data markers in file paths and in the new content of `Edit` / `Write` / `NotebookEdit`, denies an edit that uses a secret marker or an unknown one, denies `WebFetch`, blocks a prompt that contains a finding, and denies every tool call while the detection engine is not ready. Detection is a `GuardrailEngineService` on a local socket (`--engine`), or the in-tree reference rules engine by default; nothing leaves the machine and no credential is read. The marker key, the marker map and a bounded findings spool are kept 0600 under `$XDG_STATE_HOME/containarium-guardrail`. This release adds the handler only: nothing installs the hooks yet (#3762), so nothing changes until you configure them. The reference engine's private-key rule now flags a key through its `END` line, not only the header, which also applies to `guardrail scan` and `guardrail apply`. See "Coding-agent hooks" in `docs/architecture/guardrail.md` for what the hooks do not cover.
+- **Guardrail hook as a managed drop-in, with a per-box coverage check** (#3762).
+  `containarium guardrail dropin enable <box>` makes the daemon install a
+  pinned hook binary and a root-owned Claude Code managed-settings drop-in
+  into the box, which the box user's own settings cannot switch off;
+  `disable` removes both and is the break-glass for a broken hook, because
+  the hooks block on failure. `guardrail dropin coverage [box]` shows the
+  result of a periodic check (every 5 minutes by default): `COVERED`, or
+  why not (not installed, tampered, client too old, engine not running,
+  hooks not firing). Coverage is tamper-evident, not tamper-proof. New
+  daemon flags: `--guardrail-hook-check-interval`,
+  `--guardrail-hook-min-client-version`, `--guardrail-hook-timeout`,
+  `--guardrail-hook-engine-unit`, `--guardrail-hook-engine`,
+  `--guardrail-hook-binary`, `--guardrail-hook-exec-timeout`. The hook
+  binary must be statically linked; the daemon runs it once in the box
+  before it writes the drop-in. The hooks run
+  `containarium guardrail hook <event>` (#3761).
+- **The daemon installs a guardrail engine service with the managed hook drop-in** (#3767).
+  `containarium guardrail dropin enable <box>` now also installs and starts
+  the in-tree reference engine in the box as
+  `containarium-guardrail-reference-engine.service`, run from the pinned
+  binary as a non-root system user on
+  `/run/containarium-guardrail-reference/engine.sock` (mode 0660, group
+  `guardrail`), and adds the box user to that group. The drop-in is written
+  only once that socket opens for the box user, so a box with no engine
+  ends `COVERED` instead of blocked; `disable` stops and removes the unit
+  (the group and the membership are left). New subcommand, in the client
+  and the server binary: `containarium guardrail engine serve --listen
+  unix://<path>`. **Changed defaults:** `--guardrail-hook-engine-unit` now
+  defaults to `builtin` (was `containarium-engine.service`) and
+  `--guardrail-hook-engine` to empty, meaning the built-in engine's socket.
+  If you run your own engine in boxes, set
+  `--guardrail-hook-engine-unit=<your unit>`: the daemon then installs
+  none, and `--guardrail-hook-engine` defaults to
+  `unix:///run/containarium-engine/engine.sock` as before. The daemon never
+  writes a unit named `containarium-engine.service`. A `claude` session
+  that was already running when the box user was added to the group must be
+  restarted. The reference engine is regular expressions for proving the
+  flow, not a detector to rely on; see "Built-in engine service" in
+  `docs/architecture/guardrail.md`.
+
+### Security
+
+- **The sentinel can reach backends over verified TLS** (#3515). `/certs` (which returns private keys), `/authorized-keys`, SSH authorization and the SSH session shipper ran over plain http between the sentinel and a backend. A daemon with peer PKI now serves its peer certificate on the gateway port, and `containarium sentinel --backend-tls` verifies each of these calls against the pool's peer CA. Plain http stays the default in this release but logs a warning on every call; a later release makes TLS the default, after which plaintext needs `--backend-insecure-http`. Upgrade the daemons before setting `--backend-tls` on the sentinel.
+- **Traffic metrics and the `cloud_container_id` label can no longer be steered by a tenant** (#3690). The traffic cache attributed flows by the address a box reports about itself, so a box could claim another box's address and have that box's traffic counted as its own. The cache now attributes a box only when its reported address is the one the host assigned (device config or a DHCP lease that agrees); a box whose address the host did not assign gets no traffic attribution, which is a failure for that box only. Separately, `cloud_container_id`, the identity telemetry is attributed by, is now an admin-only label at create time and on the label API, like `cloud_org_id`.
+- **An operator can hold a box stopped** (#3721). `containarium stop --hold <box>` (`StopContainer` with `hold: true`) stops a box and keeps it stopped: the daemon turns `boot.autostart` off for it, refuses wake-on-HTTP for its routes with `503` and logs the refusal, and fails `ProvisionSkillBox`, `RunAgentSkill` and `RunCrew` with `FailedPrecondition` instead of starting it. The hold is stored on the instance, so it survives a daemon, Incus or host restart, and `GetContainer` / `ListContainers` report it as `held`. Only an explicit start by an operator-level caller (admin role: `containarium wake <box>`, `StartContainer`) lifts it and restores autostart and wake, and the release is logged; a tenant-level token starting a held box is refused with `PermissionDenied`. Before this, a box stopped on purpose was started again by a host restart or by any request to one of its routes. LXC runtime only; on the Kubernetes runtime `hold` returns `Unimplemented`.
+- **Cluster machine certificates must name the current cluster's id** (#3689, stage 3b). A cluster autoscaler credential issued by name only is refused, so the autoscaler must be re-issued its credential. This follows the re-issue that every ready cluster received earlier. Re-issue the credential for any cluster reporting the refusal.
+
 ## [0.138.1] - 2026-11-16
 
 
