@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/footprintai/containarium/internal/limitio"
 	"io"
@@ -1652,7 +1653,10 @@ func (c *HTTPClient) ApplyBoxBootstrap(req *pb.ApplyBoxBootstrapRequest) (*pb.Ap
 		return nil, fmt.Errorf("apply bootstrap bundle: %w", err)
 	}
 	defer drainClose(resp)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, err := limitio.ReadAll(resp.Body, limitio.MaxHTTPResponseBytes)
+	if errors.Is(err, limitio.ErrTooLarge) {
+		return nil, fmt.Errorf("apply bootstrap bundle: response body: %w", err)
+	}
 	if resp.StatusCode >= 400 {
 		return nil, bootstrapHTTPError(resp.StatusCode, bodyBytes)
 	}

@@ -36,6 +36,11 @@ const (
 	// transfers use the streaming read.
 	MaxFileReadBytes int64 = 64 << 20 // 64 MiB
 
+	// MaxConsoleLogBytes caps a box's console log read whole into memory.
+	// Whatever runs in the box writes that log, so it gets the same 16 MiB
+	// ceiling as exec output (#3684).
+	MaxConsoleLogBytes int64 = 16 << 20 // 16 MiB
+
 	// MaxHTTPResponseBytes caps an HTTP response body read whole into
 	// memory from a peer daemon, a box's A2A server or the daemon API.
 	// Those bodies are grpc-gateway JSON renderings of gRPC messages,

@@ -1947,7 +1947,8 @@ func (c *Client) GetConsoleLog(name string) (string, error) {
 	}
 	defer func() { _ = r.Close() }()
 
-	data, err := io.ReadAll(r)
+	// Capped at limitio.MaxConsoleLogBytes (#3684): the box writes this log.
+	data, err := limitio.ReadAll(r, limitio.MaxConsoleLogBytes)
 	if err != nil {
 		return "", fmt.Errorf("failed to read console log for %s: %w", name, err)
 	}
