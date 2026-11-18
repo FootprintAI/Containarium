@@ -1155,7 +1155,7 @@ func (e *NetworkPolicyEnforcer) gather(_ context.Context) ([]containerView, map[
 	running := make(map[string]bool, len(containers))
 	leases := newLeaseReader(e.leaseDir, time.Now())
 	for _, c := range containers {
-		v := containerView{Name: c.Name}
+		v := containerView{Name: c.Name, CoreRole: c.Role.IsCoreRole()}
 		// The control plane is platform infrastructure, not a tenant (#780).
 		// Keeping it out of tenant tagging means (1) its IP never enters
 		// ip_tenant, so a tenant reaching its auth-gated API hits the
@@ -1168,8 +1168,9 @@ func (e *NetworkPolicyEnforcer) gather(_ context.Context) ([]containerView, map[
 		// with the source-validation mark and nothing else, so that a frame
 		// without the mark can only be the host's own or routed in from outside.
 		tenant := resolveTenant(c.Tenant, c.Labels[cloudOrgIDLabel], c.Name)
-		// The guest-reported address: ip_tenant tagging for tenants, and the
-		// cross-check a DHCP lease must agree with before it is trusted (S4).
+		// The guest-reported address: the cross-check a DHCP lease must agree
+		// with before it is trusted (S4), and the ip_tenant fallback for core
+		// roles only (#3774). A tenant box's guest address names nothing.
 		if ip, err := netip.ParseAddr(c.IPAddress); err == nil && ip.Is4() {
 			v.IP = ip.As4()
 			v.HasIP = true
@@ -1490,6 +1491,34 @@ func (e *NetworkPolicyEnforcer) SetIncusDataDir(dir string) {
 	if dir != "" {
 		e.leaseDir = leaseDirFor(dir)
 	}
+}
+
+// HostKnownAddress is a box's address as the host knows it, for the source-IP
+// attribution map (#3774). It uses the same NIC facts and lease cross-check as
+// the policy path, read on demand: a box that was just created has no cached
+// reconcile state yet. ok is false when the host knows no address, or the
+// instance cannot be inspected.
+func (e *NetworkPolicyEnforcer) HostKnownAddress(name string, guest netip.Addr) (netip.Addr, bool) {
+	cfg, _, err := e.insp.GetRawInstance(name)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	devices, err := e.insp.GetRawInstanceDevices(name)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	nic := hostNICFor(cfg, devices)
+	var g [4]byte
+	hasGuest := guest.Is4()
+	if hasGuest {
+		g = guest.As4()
+	}
+	leases := newLeaseReader(e.leaseDir, time.Now())
+	ip, ok := hostIPv4For(nic, leases, g, hasGuest)
+	if !ok {
+		return netip.Addr{}, false
+	}
+	return netip.AddrFrom4(ip), true
 }
 
 // applyTrustedUplinks converges the kernel trusted_iif map with the host's

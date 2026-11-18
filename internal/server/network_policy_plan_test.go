@@ -86,13 +86,13 @@ func TestPlanReconcile(t *testing.T) {
 
 	plan := planReconcile(views, policies, true)
 
-	// ip_tenant: all four containers with IPs. Host-known addresses come first;
-	// stopped carol has none, so her guest-reported IP is the fallback (#3690).
-	if len(plan.ipTenant) != 4 {
-		t.Errorf("ipTenant size = %d, want 4: %v", len(plan.ipTenant), plan.ipTenant)
+	// ip_tenant: only host-known addresses. Stopped carol has none, and her
+	// guest-reported IP attributes nothing (#3774).
+	if len(plan.ipTenant) != 3 {
+		t.Errorf("ipTenant size = %d, want 3: %v", len(plan.ipTenant), plan.ipTenant)
 	}
-	if plan.ipTenant[[4]byte{10, 100, 0, 30}] != 3 {
-		t.Errorf("stopped carol IP should still map to tenant 3 (guest fallback)")
+	if _, ok := plan.ipTenant[[4]byte{10, 100, 0, 30}]; ok {
+		t.Errorf("stopped carol's guest-reported IP must not map to any tenant")
 	}
 
 	// veth_policy: the 3 running+veth tenant containers plus the validate-only one.
@@ -372,6 +372,22 @@ func TestPlanIPTenantIgnoresGuestClaimedAddress(t *testing.T) {
 	}
 }
 
+// #3774: the guest-address fallback is for host-provisioned core roles only. A
+// tenant box that claims an address with no host-known one attributes nothing.
+func TestPlanIPTenant_GuestFallbackOnlyForCoreRoles(t *testing.T) {
+	views := []containerView{
+		{Name: "postgres", Tenant: "org", TenantID: 1, IP: [4]byte{10, 0, 0, 40}, HasIP: true, CoreRole: true, Running: true},
+		{Name: "tenant-box", Tenant: "mallory", TenantID: 9, IP: [4]byte{10, 0, 0, 50}, HasIP: true, Running: true},
+	}
+	plan := planReconcile(views, nil, true)
+	if got := plan.ipTenant[[4]byte{10, 0, 0, 40}]; got != 1 {
+		t.Errorf("core role with no host-known address: ip_tenant = %d, want 1 (isolation tag kept)", got)
+	}
+	if _, ok := plan.ipTenant[[4]byte{10, 0, 0, 50}]; ok {
+		t.Error("tenant box's guest-reported address reached ip_tenant")
+	}
+}
+
 // ipBox follows ip_tenant's precedence (#3690): a host-known address names the
 // box, a guest-reported one is only a fallback and never overrides a host-known
 // row, and a validate-only instance is never named.
@@ -382,7 +398,8 @@ func TestPlanReconcile_IPBox(t *testing.T) {
 		// A box that reports a host-known box's address as its own must not
 		// take the name over.
 		{Name: "liar-container", Tenant: "other", TenantID: 2, IP: [4]byte{10, 0, 0, 10}, HasIP: true, Running: false},
-		// No host-known address: the guest-reported one is the fallback.
+		// No host-known address: no attribution at all. The guest's own claim is
+		// never a fallback (#3774, per #3690's per-box decision).
 		{Name: "stopped-container", Tenant: "org", TenantID: 1, IP: [4]byte{10, 0, 0, 30}, HasIP: true, Running: false},
 		{Name: "infra", ValidateOnly: true, HostIP: [4]byte{10, 0, 0, 99}, HasHostIP: true, Ifindex: 30, HasVeth: true, Running: true},
 	}
@@ -390,7 +407,6 @@ func TestPlanReconcile_IPBox(t *testing.T) {
 	want := map[[4]byte]string{
 		{10, 0, 0, 10}: "a-container",
 		{10, 0, 0, 21}: "b-container", // host-leased, not the guest-reported .20
-		{10, 0, 0, 30}: "stopped-container",
 	}
 	if len(plan.ipBox) != len(want) {
 		t.Fatalf("ipBox = %v, want %v", plan.ipBox, want)
@@ -399,6 +415,11 @@ func TestPlanReconcile_IPBox(t *testing.T) {
 		if plan.ipBox[ip] != name {
 			t.Errorf("ipBox[%v] = %q, want %q", ip, plan.ipBox[ip], name)
 		}
+	}
+	// A box with no host-known address gets no ip_tenant row, so its guest-reported
+	// address attributes nothing (#3774).
+	if _, ok := plan.ipTenant[[4]byte{10, 0, 0, 30}]; ok {
+		t.Error("guest-only address 10.0.0.30 must not be in ip_tenant")
 	}
 	// Same keys as ip_tenant: the two maps never disagree on which IPs exist.
 	for ip := range plan.ipTenant {
