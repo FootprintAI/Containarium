@@ -706,7 +706,7 @@ func (s *ContainerServer) ApplyBoxSkillSets(ctx context.Context, req *pb.ApplyBo
 	defer releaseMarker()
 
 	// A run in progress: a RUNNING code run, or a skill run in this box.
-	out, err := rootExec(boxName, boxRunListScript(s.boxRunDir()))
+	out, err := rootExec(boxName, boxRunListScript(s.boxRunDirs(username)...))
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "read run records of %q: %v", username, err)
 	}

@@ -331,7 +331,7 @@ func journalOfSize(t *testing.T, size int) []byte {
 func TestApprovalStatusOverLimitIsPartialAndClaimsNothingOpen(t *testing.T) {
 	t0 := time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC)
 	r := &windowReader{data: journalOfSize(t, maxApprovalJournalBytes+1024*1024), window: 256 * 1024}
-	out, err := approvalStatus(context.Background(), r, "run", true, t0)
+	out, err := approvalStatus(context.Background(), r, "alice", "run", true, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +353,7 @@ func TestApprovalStatusJournalOfExactlyTheLimitIsComplete(t *testing.T) {
 	// A window size that divides the limit, so the last full window ends
 	// exactly at the cap with truncated=true.
 	r := &windowReader{data: journalOfSize(t, maxApprovalJournalBytes), window: 256 * 1024}
-	out, err := approvalStatus(context.Background(), r, "run", true, t0)
+	out, err := approvalStatus(context.Background(), r, "alice", "run", true, t0)
 	if err != nil {
 		t.Fatal(err)
 	}

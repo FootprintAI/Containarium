@@ -202,9 +202,29 @@ func boxRunSpawnScript(sp boxRunSpawn) string {
 	return script
 }
 
+// boxRunEnsureDirScript, run as the run's user under set -e, makes dir that
+// user's private run directory (#3682), the shell twin of agentbox.EnsureLogDir:
+// created 0700 when absent; refused when it or its parent is a symlink, it is
+// not a directory, or another user owns it; closed to 0700 when it is the user's
+// own but open to others. A missing parent is created sticky and
+// world-writable, like /tmp, so each box user can create its own directory in it.
+func boxRunEnsureDirScript(dir string) string {
+	return "rd=" + shellSingleQuote(dir) + "\n" +
+		`rp=$(dirname -- "$rd")
+if [ -L "$rp" ]; then echo "refusing run directory root $rp: it is a symlink" >&2; exit 1; fi
+if [ ! -d "$rp" ]; then mkdir -p -- "$rp"; chmod 1777 -- "$rp" 2>/dev/null || true; fi
+if [ -L "$rd" ]; then echo "refusing run directory $rd: it is a symlink" >&2; exit 1; fi
+[ -e "$rd" ] || mkdir -m 0700 -- "$rd" 2>/dev/null || true
+if [ -L "$rd" ] || [ ! -d "$rd" ]; then echo "refusing run directory $rd: not a directory" >&2; exit 1; fi
+if [ "$(stat -c %u -- "$rd")" != "$(id -u)" ]; then echo "refusing run directory $rd: owned by uid $(stat -c %u -- "$rd"), not $(id -un)" >&2; exit 1; fi
+chmod 0700 -- "$rd"
+`
+}
+
 // boxRunSpawnPrepareScript is the part of the spawn that runs, as the run's
-// user, before the launch: the run's fresh log, the previous sidecars removed,
-// the working directory and the prelaunch.
+// user, before the launch: the run's private directory (boxRunEnsureDirScript),
+// the run's fresh log, the previous sidecars removed, the working directory and
+// the prelaunch.
 func boxRunSpawnPrepareScript(sp boxRunSpawn) string {
 	q := shellSingleQuote
 	dir, name := sp.dir, sp.name
@@ -218,7 +238,7 @@ func boxRunSpawnPrepareScript(sp boxRunSpawn) string {
 
 	script := "set -e\n" +
 		"d=" + q(dir) + "\n" +
-		"mkdir -p \"$d\"\n" +
+		boxRunEnsureDirScript(dir) +
 		": > " + q(logPath) + "\n" +
 		"chmod 600 " + q(logPath) + " 2>/dev/null || true\n"
 	if sp.structured {
@@ -401,12 +421,14 @@ func boxRunUnrotateScript(dir, name string, startedAtUnix int64) string {
 // refusals, such as an untrusted agent-box, are start-time preconditions).
 // The setup stays after the rotation: the sink reads the run directory and
 // could take a not-yet-rotated previous run's record for the new run's.
-func setUpBoxRunAuditOrRestore(listExec boxScriptFunc, startExec boxRunStartFunc, box, dir, name, ownerHome, username string, level boxRunPolicy, req *pb.StartBoxRunRequest, rotated bool, startedAtUnix int64, asRoot bool) error {
+// dir is the new run's directory; rotatedDir is the one the finished run was
+// rotated aside in, which is another box user's when the run's user changed.
+func setUpBoxRunAuditOrRestore(listExec boxScriptFunc, startExec boxRunStartFunc, box, dir, rotatedDir, name, ownerHome, username string, level boxRunPolicy, req *pb.StartBoxRunRequest, rotated bool, startedAtUnix int64, asRoot bool) error {
 	err := setUpBoxRunAudit(listExec, box, dir, name, ownerHome, username, level, req)
 	if err == nil || !rotated {
 		return err
 	}
-	undo := boxRunUnrotateScript(dir, name, startedAtUnix)
+	undo := boxRunUnrotateScript(rotatedDir, name, startedAtUnix)
 	var out string
 	if asRoot {
 		out, _ = listExec(box, undo)
@@ -423,22 +445,25 @@ func setUpBoxRunAuditOrRestore(listExec boxScriptFunc, startExec boxRunStartFunc
 // listing ListBoxRuns uses, so "is a previous run for this name still going?"
 // is answered with the identical outcome logic a caller would see from
 // `code runs`. running="" means no collision; rotate=true means a finished
-// run under this name must be rotated aside before a fresh one starts.
-func checkBoxRunCollision(exec boxScriptFunc, box, dir, name string) (collision *pb.BoxRun, rotate bool, err error) {
-	out, err := exec(box, boxRunListScript(dir))
+// run under this name must be rotated aside before a fresh one starts. The
+// name is checked across every one of the box's run directories (dirs), and
+// dir is the one the colliding run is in.
+func checkBoxRunCollision(exec boxScriptFunc, box string, dirs []string, name string) (collision *pb.BoxRun, dir string, rotate bool, err error) {
+	out, err := exec(box, boxRunListScript(dirs...))
 	if err != nil {
-		return nil, false, status.Errorf(codes.Unavailable, "list existing runs on %q: %v", box, err)
+		return nil, "", false, status.Errorf(codes.Unavailable, "list existing runs on %q: %v", box, err)
 	}
-	for _, r := range parseBoxRunList(out, dir) {
-		if r.GetRunName() != name {
+	views, boot, alive := parseBoxRunViews(out)
+	for _, v := range views {
+		if v.fileName != name {
 			continue
 		}
-		if r.GetOutcome() == pb.BoxRunOutcome_BOX_RUN_OUTCOME_EXITED {
-			return r, true, nil
-		}
-		return r, false, nil
+		dir = v.viewDir(dirs[0])
+		outcome := agentbox.ResolveOutcome(v.record, boot, func(pid int) bool { return pid > 0 && alive[pid] })
+		r := boxRunProto(v.fileName, dir, v.record, outcome)
+		return r, dir, outcome == agentbox.RunOutcomeExited, nil
 	}
-	return nil, false, nil
+	return nil, "", false, nil
 }
 
 // boxRunLockKey is s.boxRunLocks' key for a given (box, name) pair.
@@ -534,7 +559,6 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	}
 
 	box := req.GetUsername() + "-container"
-	dir := s.boxRunDir()
 
 	// #2260 review (should-fix): serialize the whole check-then-write span
 	// per (box, name) so two concurrent calls for the same new name can't
@@ -561,7 +585,9 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	}
 	defer releaseGate()
 
-	collision, rotate, err := checkBoxRunCollision(listExec, box, dir, name)
+	// The name is unique across the box's run directories (#3682): the owner's
+	// and the run user's. collisionDir is where a colliding run is.
+	collision, collisionDir, rotate, err := checkBoxRunCollision(listExec, box, s.boxRunDirs(req.GetUsername()), name)
 	if err != nil {
 		return nil, err
 	}
@@ -593,7 +619,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		return nil, err
 	}
 	if commandMode {
-		return s.startBoxRunCommand(ctx, req, box, dir, name, home, listExec, startExec, collision, rotate)
+		return s.startBoxRunCommand(ctx, req, box, collisionDir, name, home, listExec, startExec, collision, rotate)
 	}
 	if cfg.Credential == engine.KindGateway {
 		// #2193 scope boundary (documented in the PR, not a silent gap): a
@@ -676,7 +702,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	// The level and required mount are ready; now provision the run user.
 	ownerHome := home
 	if level != "" {
-		runHome, err := prepareUnprivilegedRun(listExec, box, dir, home, level)
+		runHome, err := prepareUnprivilegedRun(listExec, box, s.boxRunDir(boxRunUnprivilegedUser), home, level)
 		if err != nil {
 			return nil, status.Errorf(codes.Unavailable, "prepare the unprivileged run user on %q: %v", req.GetUsername(), err)
 		}
@@ -701,14 +727,18 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		return nil, err
 	}
 
+	// The run keeps its files in the directory of the user it runs as (#3682).
+	dir := s.boxRunDir(runAs)
+	rotateAsRoot := boxRunRotateAsRoot(level, dir, collisionDir)
+
 	// Only now does a finished prior run under this name get rotated aside. In
 	// the unprivileged path the rotate runs as root: the finished run's files may
-	// belong to the owner (a run from before a level was recorded), which the
-	// run user could not rename in the sticky run directory.
+	// belong to the owner (a run from before a level was recorded), in the
+	// owner's own directory, which the run user cannot write.
 	if rotate {
-		rotateScript := boxRunRotateScript(dir, name, collision.GetStartedAt().AsTime().Unix())
+		rotateScript := boxRunRotateScript(collisionDir, name, collision.GetStartedAt().AsTime().Unix())
 		var err error
-		if level != "" {
+		if rotateAsRoot {
 			_, err = listExec(box, rotateScript)
 		} else {
 			_, err = startExec(box, req.GetUsername(), rotateScript)
@@ -731,7 +761,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	if req.GetCommandPolicy() != nil {
 		// Root-owned configuration and sink first: the run must not start
 		// before its first command can be recorded (#3582).
-		if err := setUpBoxRunAuditOrRestore(listExec, startExec, box, dir, name, ownerHome, req.GetUsername(), policy, req, rotate, collision.GetStartedAt().AsTime().Unix(), level != ""); err != nil {
+		if err := setUpBoxRunAuditOrRestore(listExec, startExec, box, dir, collisionDir, name, ownerHome, req.GetUsername(), policy, req, rotate, collision.GetStartedAt().AsTime().Unix(), rotateAsRoot); err != nil {
 			return nil, err
 		}
 		policy.Settings = boxRunHookSettingsJSON(name)
@@ -822,7 +852,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 // engine-specific happens: no code.json engine is resolved, no gateway token,
 // no sign-in probe (nothing is signed in), no session discovery. The caller has
 // validated the request and holds the (box, name) lock.
-func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartBoxRunRequest, box, dir, name, home string, listExec boxScriptFunc, startExec boxRunStartFunc, collision *pb.BoxRun, rotate bool) (*pb.StartBoxRunResponse, error) {
+func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartBoxRunRequest, box, collisionDir, name, home string, listExec boxScriptFunc, startExec boxRunStartFunc, collision *pb.BoxRun, rotate bool) (*pb.StartBoxRunResponse, error) {
 	level, err := s.boxRunRecordedToolAccess(ctx, req.GetUsername())
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "read the tool-access level of %q: %v", req.GetUsername(), err)
@@ -861,7 +891,7 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 	if level != "" {
 		// The run user, its sudo grant for the level and its staged home, as for an
 		// engine run; the engine sign-in is not checked, because no engine starts.
-		runHome, err := prepareUnprivilegedRun(listExec, box, dir, home, level)
+		runHome, err := prepareUnprivilegedRun(listExec, box, s.boxRunDir(boxRunUnprivilegedUser), home, level)
 		if err != nil {
 			return nil, status.Errorf(codes.Unavailable, "prepare the unprivileged run user on %q: %v", req.GetUsername(), err)
 		}
@@ -872,10 +902,13 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 	if err != nil {
 		return nil, err
 	}
+	// The run keeps its files in the directory of the user it runs as (#3682).
+	dir := s.boxRunDir(runAs)
+	rotateAsRoot := boxRunRotateAsRoot(level, dir, collisionDir)
 	if rotate {
-		rotateScript := boxRunRotateScript(dir, name, collision.GetStartedAt().AsTime().Unix())
+		rotateScript := boxRunRotateScript(collisionDir, name, collision.GetStartedAt().AsTime().Unix())
 		var err error
-		if level != "" {
+		if rotateAsRoot {
 			_, err = listExec(box, rotateScript)
 		} else {
 			_, err = startExec(box, req.GetUsername(), rotateScript)
@@ -890,7 +923,7 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 		// The same sink, decision and events as an engine run's shell commands
 		// (#3582): the command is in the root-owned configuration, and the
 		// root-owned agent-box decides it before running it.
-		if err := setUpBoxRunAuditOrRestore(listExec, startExec, box, dir, name, ownerHome, req.GetUsername(), policy, req, rotate, collision.GetStartedAt().AsTime().Unix(), level != ""); err != nil {
+		if err := setUpBoxRunAuditOrRestore(listExec, startExec, box, dir, collisionDir, name, ownerHome, req.GetUsername(), policy, req, rotate, collision.GetStartedAt().AsTime().Unix(), rotateAsRoot); err != nil {
 			return nil, err
 		}
 		command = boxRunPolicyCommandLine(name, int(req.GetTimeoutSeconds()))
@@ -986,10 +1019,18 @@ func boxRunNameCollidesWithDerivedFile(name string) bool {
 	return true
 }
 
+// boxRunRotateAsRoot reports whether a finished run's rotate-aside (and its
+// undo) runs as root: always under a tool-access level, and whenever the run is
+// in another user's directory than the new run's (#3682), which the new run's
+// user cannot write.
+func boxRunRotateAsRoot(level, dir, collisionDir string) bool {
+	return level != "" || collisionDir != dir
+}
+
 // prepareUnprivilegedRun makes the box ready for an unprivileged run (all as
-// root, all idempotent): the run user exists, the run directory is writable by
-// it, and its home holds a fresh staged copy of what the run reads. Returns the
-// run user's home.
+// root, all idempotent): the run user exists, the root of its run directory dir
+// lets it create that directory, and its home holds a fresh staged copy of what
+// the run reads. Returns the run user's home.
 func prepareUnprivilegedRun(rootExec func(box, script string) (string, error), box, dir, ownerHome, level string) (string, error) {
 	runHome, err := provisionBoxRunUser(rootExec, box)
 	if err != nil {

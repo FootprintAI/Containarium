@@ -129,8 +129,8 @@ func TestPrepareApprovalsHooklessEngineWarnsAndJournals(t *testing.T) {
 		t.Errorf("setup touched the box before process_start: execs=%v writes=%v", sess.execs, sess.writes)
 	}
 
-	journalApprovalNote(context.Background(), sess, "code", note, &diag)
-	w, ok := sess.writes[coderun.ApprovalJournalPath("code")]
+	journalApprovalNote(context.Background(), sess, "alice", "code", note, &diag)
+	w, ok := sess.writes[coderun.ApprovalJournalPath("alice", "code")]
 	if !ok {
 		t.Fatal("nothing journaled")
 	}

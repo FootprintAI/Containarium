@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -39,7 +41,7 @@ var ErrProcessNameInUse = errors.New("process name already in use")
 //
 // State lives in-memory (a package-level registry). Processes survive
 // tool calls but NOT agent-box restarts. Output is captured to
-// /tmp/agent-box/<name>.log so even after the process exits the agent
+// /tmp/agent-box/<user>/<name>.log so even after the process exits the agent
 // can still read what it produced (until /tmp gets cleared).
 
 // processLogDir is a var, not a const, so tests can point it at t.TempDir()
@@ -68,13 +70,80 @@ func defaultProcessLogDir() string {
 	if dir := os.Getenv("AGENTBOX_LOG_DIR"); dir != "" {
 		return dir
 	}
-	return DefaultLogDir
+	// The box user agent-box runs as (#3682). Without a name, the numeric uid
+	// still keeps this user's runs out of every other user's directory.
+	name := strconv.Itoa(os.Getuid())
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		name = u.Username
+	}
+	return UserLogDir(name)
 }
 
-// DefaultLogDir is where run logs, records, and exit sidecars live unless
-// AGENTBOX_LOG_DIR says otherwise. The daemon's box-run reader (#2123) reads
-// the same directory from outside the box.
-const DefaultLogDir = "/tmp/agent-box"
+// LogRoot is the shared parent of every box user's run directory. It is never
+// a run directory itself (#3682): run logs, records, and exit sidecars live in
+// UserLogDir, one directory per box user, unless AGENTBOX_LOG_DIR says
+// otherwise. The daemon's box-run reader (#2123) reads the same per-user
+// directories from outside the box.
+const LogRoot = "/tmp/agent-box"
+
+// UserLogDir is the box user's own run directory: <LogRoot>/<user>, created
+// mode 0700 and owned by that user (EnsureLogDir).
+func UserLogDir(user string) string { return LogRoot + "/" + user }
+
+// EnsureLogDir makes dir the calling user's private run directory: created
+// mode 0700 when absent, and refused when it (or its parent) is a symlink,
+// is not a directory, or is owned by someone else (#3682). An existing
+// directory of the user's own that is open to others is closed to 0700.
+// A missing parent is created sticky and world-writable, like /tmp, so every
+// box user can create its own directory there and none can remove another's.
+func EnsureLogDir(dir string) error { return ensureLogDir(dir, os.Getuid()) }
+
+func ensureLogDir(dir string, uid int) error {
+	root := filepath.Dir(dir)
+	fi, err := os.Lstat(root)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			return fmt.Errorf("create %s: %w", root, err)
+		}
+		// #nosec G302 -- the shared root is sticky like /tmp: each user's
+		// own directory in it is 0700, and only its owner may remove it.
+		if err := os.Chmod(root, 0o777|os.ModeSticky); err != nil {
+			return fmt.Errorf("chmod %s: %w", root, err)
+		}
+	case err != nil:
+		return fmt.Errorf("stat %s: %w", root, err)
+	case fi.Mode()&os.ModeSymlink != 0:
+		return fmt.Errorf("refusing run directory root %s: it is a symlink", root)
+	}
+
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	fi, err = os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", dir, err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing run directory %s: it is a symlink", dir)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("refusing run directory %s: not a directory", dir)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("refusing run directory %s: its owner cannot be read", dir)
+	}
+	if int(st.Uid) != uid {
+		return fmt.Errorf("refusing run directory %s: owned by uid %d, not %d", dir, st.Uid, uid)
+	}
+	if fi.Mode().Perm() != 0o700 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("chmod %s: %w", dir, err)
+		}
+	}
+	return nil
+}
 
 const processKillWaitTime = 2 * time.Second
 
@@ -115,7 +184,7 @@ func processStartTool() mcp.Tool {
 		mcp.WithDescription(
 			"Spawn a long-running shell command in the background. Returns the "+
 				"process name (caller-supplied or auto-generated), PID, and a log "+
-				"path under /tmp/agent-box where stdout+stderr are captured. The "+
+				"path under /tmp/agent-box/<user> where stdout+stderr are captured. The "+
 				"agent watches output via tail_log on the log_path and reaps the "+
 				"process via process_kill. Use this when the work outlives a single "+
 				"shell_exec call — dev servers, watchers, builds.",
@@ -229,14 +298,14 @@ func spawnBackgroundProcess(name, command, cwd string, captureMode CaptureMode, 
 	// unsynchronized cross-goroutine read of it would be a data race
 	// regardless.
 	logDir := processLogDir
-	if err := os.MkdirAll(logDir, 0o750); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", logDir, err)
+	if err := EnsureLogDir(logDir); err != nil {
+		return nil, err
 	}
 	logPath := filepath.Join(logDir, sanitizeName(name)+".log")
 	// #nosec G304 -- sanitizeName strips every char outside [A-Za-z0-9_.-],
-	// so logPath is always logDir/<safe>.log (logDir is /tmp/agent-box in
-	// production, a test's own TempDir in tests). Path traversal is not
-	// reachable from this construction.
+	// so logPath is always logDir/<safe>.log (logDir is the box user's own
+	// /tmp/agent-box/<user> in production, a test's own TempDir in tests).
+	// Path traversal is not reachable from this construction.
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open log %s: %w", logPath, err)

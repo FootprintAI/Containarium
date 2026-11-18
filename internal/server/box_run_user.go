@@ -105,13 +105,17 @@ func provisionBoxRunUser(rootExec func(box, script string) (string, error), box 
 	return runHome, nil
 }
 
-// boxRunDirScript is run as root: the run directory must exist and be writable
-// by the run user as well as the owner. Sticky and world-writable like /tmp: the
-// files in it are created 0600, and only their creator (or root) may rename or
-// remove them.
+// boxRunDirScript is run as root: the ROOT of the run directory dir must exist
+// and let every box user create its own directory in it (#3682). Sticky and
+// world-writable like /tmp: each user's directory in it is 0700 (made by the
+// run's own shell, boxRunEnsureDirScript), and only its owner (or root) may
+// rename or remove it. A symlinked root is refused.
 func boxRunDirScript(dir string) string {
-	q := shellSingleQuote
-	return "set -e\nmkdir -p " + q(dir) + "\nchmod 1777 " + q(dir) + "\n"
+	return "set -e\nr=$(dirname -- " + shellSingleQuote(dir) + ")\n" +
+		`if [ -L "$r" ]; then echo "refusing run directory root $r: it is a symlink" >&2; exit 1; fi
+mkdir -p -- "$r"
+chmod 1777 -- "$r"
+`
 }
 
 // boxRunStagedPlatformCredentials are the PLATFORM'S OWN credential for the

@@ -131,7 +131,7 @@ func stubDial(t *testing.T, conn mcpConn, dialErr error, probeErr error) *[]stri
 func TestSessionDial_PathIncludesLocalBin(t *testing.T) {
 	got := stubDial(t, &fakeMCPConn{initErr: errors.New("transport closed")}, nil, nil)
 
-	_, _ = Connect(context.Background(), []string{"-p", "22", "alice@example.test"})
+	_, _ = Connect(context.Background(), []string{"-p", "22", "alice@example.test"}, "alice")
 
 	if len(*got) == 0 {
 		t.Fatal("dialer was never called")
@@ -155,7 +155,7 @@ func TestSessionDial_MissingAgentBoxIsNamedError(t *testing.T) {
 	conn := &fakeMCPConn{initErr: errors.New("transport error: transport closed")}
 	stubDial(t, conn, nil, errors.New("exit status 1"))
 
-	_, err := Connect(context.Background(), []string{"alice@example.test"})
+	_, err := Connect(context.Background(), []string{"alice@example.test"}, "alice")
 	if err == nil {
 		t.Fatal("expected an error when agent-box is absent")
 	}
@@ -183,7 +183,7 @@ func TestSessionDial_MissingAgentBoxIsNamedError(t *testing.T) {
 func TestSessionDial_ProbeSaysPresentKeepsTransportError(t *testing.T) {
 	stubDial(t, &fakeMCPConn{initErr: errors.New("transport error: transport closed")}, nil, nil)
 
-	_, err := Connect(context.Background(), []string{"alice@example.test"})
+	_, err := Connect(context.Background(), []string{"alice@example.test"}, "alice")
 	if err == nil {
 		t.Fatal("expected an error")
 	}

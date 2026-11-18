@@ -1098,7 +1098,7 @@ type StartBoxRunRequest struct {
 	// any other engine is FAILED_PRECONDITION, before anything on the box is
 	// touched). The run's log (<run_name>.log) is then exactly the engine's one
 	// JSON result object (type, subtype, is_error, result, session_id, usage,
-	// ...); stderr is kept apart in /tmp/agent-box/<run_name>.stderr.log, which
+	// ...); stderr is kept apart in <log-dir>/<run_name>.stderr.log, which
 	// TailBoxRunLog does not serve. Once the run has exited, ListBoxRuns reads
 	// the object and reports its TOP-LEVEL session_id as BoxRun.session_id
 	// (nested keys are ignored; truncated or invalid JSON, or an object over

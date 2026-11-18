@@ -3,7 +3,8 @@
 `StartBoxRun` (`POST /v1/containers/{username}/code-runs`, see `proto/containarium/v1/box_run.proto`)
 starts or resumes a coding-agent run on a box through the daemon, with no SSH
 client. The run leaves the same on-disk contract `containarium code run` leaves
-in the box's run directory (`/tmp/agent-box`), so `ListBoxRuns`, `TailBoxRunLog`
+in the box user's run directory (`/tmp/agent-box/<user>`, mode 0700, one per
+box user; a run under a tool-access level is in the run user's), so `ListBoxRuns`, `TailBoxRunLog`
 and `containarium code runs|attach|status|logs` read it the same way. This page
 covers what a platform caller (a control plane starting runs for members) needs
 beyond the CLI.
@@ -76,7 +77,7 @@ finished run of the same name is not rotated) the engine runs with
 | File | Content |
 | --- | --- |
 | `<run_name>.log` | Exactly the engine's one JSON result object: `type` (`result`), `subtype` (for example `success` or an error subtype), `is_error`, `result` (the final text), `session_id`, `usage`, and the engine's other result fields. |
-| `/tmp/agent-box/<run_name>.stderr.log` | The engine's stderr, kept apart so the main log stays valid JSON. It is not served by `TailBoxRunLog` (no RPC reads it yet); read it on the box. |
+| `/tmp/agent-box/<user>/<run_name>.stderr.log` | The engine's stderr, kept apart so the main log stays valid JSON. It is not served by `TailBoxRunLog` (no RPC reads it yet); read it on the box. |
 
 The object is written when the run ends; while it runs the main log is empty.
 `TailBoxRunLog` and `containarium code logs` return the log as opaque bytes, so

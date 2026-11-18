@@ -236,8 +236,8 @@ func writeRunRecord(record RunRecord) error {
 // changes after startup, but the read would still be an unsynchronized
 // cross-goroutine access to a mutable package var).
 func writeRunRecordAt(dir string, record RunRecord) error {
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dir, err)
+	if err := EnsureLogDir(dir); err != nil {
+		return err
 	}
 	data, err := json.Marshal(record)
 	if err != nil {

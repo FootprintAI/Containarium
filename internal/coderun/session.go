@@ -95,6 +95,9 @@ var probeAgentBox = func(ctx context.Context, sshArgs []string) error {
 // self-heal on one reconnect attempt.
 type Session struct {
 	sshArgs []string // ssh's own flags/target; "agent-box" is appended as the remote command
+	// user is the box user the session logs in as: agent-box runs as it, so
+	// its runs' files are in RunLogDir(user) (#3682).
+	user string
 
 	mu  sync.Mutex
 	mcp mcpConn
@@ -102,9 +105,13 @@ type Session struct {
 
 // Connect spawns ssh with sshArgs (host/user/identity/port flags — NOT
 // including a remote command) plus "agent-box" appended as the remote
-// command, and initializes an MCP session over its stdio.
-func Connect(ctx context.Context, sshArgs []string) (*Session, error) {
-	s := &Session{sshArgs: sshArgs}
+// command, and initializes an MCP session over its stdio. boxUser is the user
+// sshArgs log in as; it names the run directory, so it is required.
+func Connect(ctx context.Context, sshArgs []string, boxUser string) (*Session, error) {
+	if boxUser == "" {
+		return nil, errors.New("connect to agent-box: no box user to name its run directory")
+	}
+	s := &Session{sshArgs: sshArgs, user: boxUser}
 	c, err := s.dial(ctx)
 	if err != nil {
 		return nil, err
@@ -112,6 +119,10 @@ func Connect(ctx context.Context, sshArgs []string) (*Session, error) {
 	s.mcp = c
 	return s, nil
 }
+
+// BoxUser is the box user the session logs in as; its runs keep their files in
+// RunLogDir(BoxUser()).
+func (s *Session) BoxUser() string { return s.user }
 
 func (s *Session) dial(ctx context.Context) (mcpConn, error) {
 	args := append(append([]string{}, s.sshArgs...), AgentBoxRemoteCommand)

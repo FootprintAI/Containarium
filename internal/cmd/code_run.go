@@ -240,7 +240,7 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("start run on %q: %w", box, err)
 	}
 	if approvalNote != "" {
-		journalApprovalNote(ctx, sess, name, approvalNote, diag)
+		journalApprovalNote(ctx, sess, sess.BoxUser(), name, approvalNote, diag)
 	}
 
 	switch {
@@ -248,7 +248,7 @@ func runCodeRun(cmd *cobra.Command, args []string) error {
 		startSessionDiscovery(ctx, sess, eng, name, cwd, diag)
 	case codeRunSession != "":
 		// Known from the flag: record it so `code runs` reports it at once.
-		sidecar := coderun.ShellQuoteSingle(sessionSidecarFor(name))
+		sidecar := coderun.ShellQuoteSingle(sessionSidecarFor(sess.BoxUser(), name))
 		write := "printf '%s' " + coderun.ShellQuoteSingle(codeRunSession) + " > " + sidecar + ".tmp 2>/dev/null && mv -f " + sidecar + ".tmp " + sidecar
 		if _, err := sess.ShellExec(ctx, write); err != nil {
 			fmt.Fprintf(diag, "note: could not record this run's session id (non-fatal): %v\n", err)
@@ -359,10 +359,11 @@ func validateCodeRunWorkdir() error {
 	return err
 }
 
-// sessionSidecarFor is where the run called name keeps its session sidecar:
-// process_start puts every run's files under coderun.RunLogDir.
-func sessionSidecarFor(name string) string {
-	return coderun.RunLogDir + "/" + name + ".session"
+// sessionSidecarFor is where box user's run called name keeps its session
+// sidecar: process_start puts every run's files under that user's
+// coderun.RunLogDir.
+func sessionSidecarFor(user, name string) string {
+	return coderun.RunLogDir(user) + "/" + name + ".session"
 }
 
 // snapshotSessionDirectory best-effort records the engine's existing session
@@ -378,7 +379,7 @@ func snapshotSessionDirectory(ctx context.Context, sess *coderun.Session, eng en
 		fmt.Fprintf(diag, "note: could not resolve $HOME to look for this run's session id: %v\n", err)
 		return false
 	}
-	cmd, ok := engine.SessionDiscoveryPrepareCommand(eng.Name(), home, coderun.RunCwd(home, cwd), sessionSidecarFor(name))
+	cmd, ok := engine.SessionDiscoveryPrepareCommand(eng.Name(), home, coderun.RunCwd(home, cwd), sessionSidecarFor(sess.BoxUser(), name))
 	if !ok {
 		return false
 	}
@@ -407,7 +408,7 @@ func startSessionDiscovery(ctx context.Context, sess *coderun.Session, eng engin
 		fmt.Fprintf(diag, "note: could not resolve $HOME to look for this run's session id: %v\n", err)
 		return
 	}
-	cmd, ok := engine.SessionDiscoveryBackgroundCommand(eng.Name(), home, coderun.RunCwd(home, cwd), sessionSidecarFor(name))
+	cmd, ok := engine.SessionDiscoveryBackgroundCommand(eng.Name(), home, coderun.RunCwd(home, cwd), sessionSidecarFor(sess.BoxUser(), name))
 	if !ok {
 		return
 	}
@@ -447,7 +448,7 @@ func runCodeAttach(cmd *cobra.Command, args []string) error {
 
 	// #2184: a human at a terminal can answer the run's permission requests
 	// inline.
-	if stdinIsTerminal() && runUsesApprovals(ctx, sess, name) {
+	if stdinIsTerminal() && runUsesApprovals(ctx, sess, sess.BoxUser(), name) {
 		defer startInlineAnswers(ctx, newRunInputsClient, box, name, os.Stdin, diag)()
 	}
 	return streamAndWait(ctx, sess, name, logPath, cmd.OutOrStdout(), diag, codeAttachStreamJSON)

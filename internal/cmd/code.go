@@ -426,7 +426,7 @@ func resolveCodeSession(ctx context.Context, box string, diag io.Writer) (*coder
 	}
 	sshArgs := connectcore.BuildSSHArgs(target, privPath, "") // no remote command — Connect appends "agent-box"
 	sess, err := connectCodeSession(ctx, kw, probeSSHArgs(sshArgs), func(ctx context.Context) (*coderun.Session, error) {
-		return coderun.Connect(ctx, sshArgs)
+		return coderun.Connect(ctx, sshArgs, target.User)
 	})
 	if err != nil {
 		if errors.Is(err, connectcore.ErrKeyNotLearned) {

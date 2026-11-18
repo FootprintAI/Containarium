@@ -79,11 +79,12 @@ func fetchApprovalKey(newClient func() (runInputsAPI, error), box string) (ed255
 
 // journalApprovalNote writes note as the run's approval journal. Called right
 // after process_start, so it lands after the previous run's journal was
-// rotated aside. Best-effort: the run is already going.
-func journalApprovalNote(ctx context.Context, sess approvalSession, name, note string, diag io.Writer) {
+// rotated aside. Best-effort: the run is already going. user is the box user
+// the run runs as, whose run directory holds the journal.
+func journalApprovalNote(ctx context.Context, sess approvalSession, user, name, note string, diag io.Writer) {
 	line, err := coderun.InputEvent{Kind: coderun.KindInputStatus, T: time.Now().UTC(), Text: note}.MarshalLine()
 	if err == nil {
-		err = sess.WriteFile(ctx, coderun.ApprovalJournalPath(name), string(line), "0600")
+		err = sess.WriteFile(ctx, coderun.ApprovalJournalPath(user, name), string(line), "0600")
 	}
 	if err != nil {
 		fmt.Fprintf(diag, "note: could not journal that (non-fatal): %v\n", err)

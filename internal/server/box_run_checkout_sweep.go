@@ -382,7 +382,7 @@ func (s *ContainerServer) sweepBoxRunCheckouts(username, toolAccess string, dryR
 	lock.Lock()
 	defer lock.Unlock()
 
-	out, err := exec(boxName, boxRunListScript(s.boxRunDir()))
+	out, err := exec(boxName, boxRunListScript(s.boxRunDirs(username)...))
 	if err != nil {
 		return false, nil, status.Errorf(codes.Unavailable, "read run records of %q: %v", username, err)
 	}

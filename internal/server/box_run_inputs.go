@@ -142,38 +142,47 @@ else echo "J -"; fi
 type runInputsState struct {
 	running bool
 	events  []coderun.InputEvent
+	// dir is the run directory the run is in.
+	dir string
 }
 
 // boxRunRunning reports whether run name on box is running. NotFound when
 // there is no run record by that name.
 func (s *ContainerServer) boxRunRunning(box, username, name string) (bool, error) {
+	running, _, err := s.boxRunFind(box, username, name)
+	return running, err
+}
+
+// boxRunFind reports whether run name on username's box is running, and the
+// run directory it is in. NotFound when there is no run record by that name.
+func (s *ContainerServer) boxRunFind(box, username, name string) (bool, string, error) {
 	exec := s.boxRunExecFn()
 	if exec == nil {
-		return false, status.Error(codes.Unavailable, "no container backend to read the run on")
+		return false, "", status.Error(codes.Unavailable, "no container backend to read the run on")
 	}
-	out, err := exec(box, boxRunListScript(s.boxRunDir()))
+	dirs := s.boxRunDirs(username)
+	out, err := exec(box, boxRunListScript(dirs...))
 	if err != nil {
-		return false, status.Errorf(codes.Unavailable, "read run records of %q: %v", username, err)
+		return false, "", status.Errorf(codes.Unavailable, "read run records of %q: %v", username, err)
 	}
 	views, boot, alive := parseBoxRunViews(out)
 	for _, v := range views {
 		if v.fileName == name {
-			return agentbox.ResolveOutcome(v.record, boot, func(pid int) bool { return pid > 0 && alive[pid] }) == agentbox.RunOutcomeRunning, nil
+			return agentbox.ResolveOutcome(v.record, boot, func(pid int) bool { return pid > 0 && alive[pid] }) == agentbox.RunOutcomeRunning, v.viewDir(dirs[0]), nil
 		}
 	}
-	return false, status.Errorf(codes.NotFound, "no run named %q on %q", name, username)
+	return false, "", status.Errorf(codes.NotFound, "no run named %q on %q", name, username)
 }
 
 // readRunInputs reads the run's record and journal. NotFound when there is no
 // run by that name.
 func (s *ContainerServer) readRunInputs(box, username, name string) (runInputsState, error) {
-	running, err := s.boxRunRunning(box, username, name)
+	running, dir, err := s.boxRunFind(box, username, name)
 	if err != nil {
 		return runInputsState{}, err
 	}
-	st := runInputsState{running: running}
+	st := runInputsState{running: running, dir: dir}
 	exec := s.boxRunExecFn()
-	dir := s.boxRunDir()
 	jout, err := exec(box, runInputsJournalScript(dir, name, s.journalCap()))
 	if err != nil {
 		return runInputsState{}, status.Errorf(codes.Unavailable, "read the permission requests of run %q: %v", name, err)
@@ -407,7 +416,7 @@ func (s *ContainerServer) AnswerRunInput(ctx context.Context, req *pb.AnswerRunI
 	}
 
 	content := coderun.FormatAnswer(priv, name, id, req.GetRequestSha256(), answer)
-	out, err := write(box, username, runInputAnswerScript(s.boxRunDir()+"/"+name+".answers", id, content))
+	out, err := write(box, username, runInputAnswerScript(st.dir+"/"+name+".answers", id, content))
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "write the answer to %q on %q: %v", id, username, err)
 	}
