@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/footprintai/containarium/internal/hostaddr"
 	"github.com/footprintai/containarium/pkg/core/incus"
 )
 
@@ -24,6 +25,12 @@ type containerLister interface {
 type ContainerCache struct {
 	incusClient containerLister
 	network     *net.IPNet
+	// hostAddr reports whether guestIP, the address a box reports about
+	// itself, is the one the HOST assigned it (device ipv4.address, or a DHCP
+	// lease that agrees). Root in the box controls the reported address, so a
+	// box whose address the host did not assign gets no attribution (#3690).
+	// nil attributes nothing.
+	hostAddr func(name, guestIP string) bool
 
 	mu       sync.RWMutex
 	ipToName map[string]string
@@ -49,8 +56,27 @@ func NewContainerCache(incusClient *incus.Client, networkCIDR string) *Container
 	// calling through a nil pointer.
 	if incusClient != nil {
 		cache.incusClient = incusClient
+		cache.hostAddr = incusHostAddr(incusClient)
 	}
 	return cache
+}
+
+// incusHostAddr checks a box's reported address against the host-side sources
+// the network-policy enforcer trusts (internal/hostaddr): the NIC device's
+// static ipv4.address, else a DHCP lease that agrees with the report.
+func incusHostAddr(cl *incus.Client) func(name, guestIP string) bool {
+	leaseDir := hostaddr.LeaseDirFor(cl.DataDir())
+	return func(name, guestIP string) bool {
+		cfg, _, err := cl.GetRawInstance(name)
+		if err != nil {
+			return false
+		}
+		devices, err := cl.GetRawInstanceDevices(name)
+		if err != nil {
+			return false
+		}
+		return hostaddr.GuestAddressAssigned(hostaddr.NICFor(cfg, devices), hostaddr.NewLeaseReader(leaseDir, time.Now()), guestIP)
+	}
 }
 
 // errNoIncusClient is Refresh's error on a cache built without a client.
@@ -147,6 +173,13 @@ func (c *ContainerCache) Refresh() error {
 			// transient error — skip it this cycle, same "best effort,
 			// try again next tick" behavior ListContainers has always had.
 			continue
+		}
+		if info.IPAddress != "" && (c.hostAddr == nil || !c.hostAddr(name, info.IPAddress)) {
+			// Hard failure for this box only (#3690): the address it reports
+			// is not one the host assigned, so nothing is attributed to it. It
+			// stays uncached and is checked again next tick.
+			log.Printf("Container cache: %s reports an address the host did not assign; not attributing traffic to it", name)
+			info = &incus.ContainerInfo{Name: info.Name, Labels: info.Labels}
 		}
 		fetched[name] = info
 	}

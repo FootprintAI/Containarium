@@ -143,6 +143,45 @@ func TestGuardLabelRoute_CloudOrgIDIsAdminOnly(t *testing.T) {
 	}
 }
 
+// cloud_container_id is the identity telemetry is attributed by (container.id
+// on metrics, the traffic plane and the collector's IP map), so a tenant that
+// could write it on its own box could have its telemetry counted as another
+// tenant's box (#3690). Only an admin may write or remove it.
+func TestGuardLabelRoute_CloudContainerIDIsAdminOnly(t *testing.T) {
+	tm, h, reached := labelGuardFixture(t)
+	mk := func(user string, roles []string) string {
+		tok, err := tm.GenerateAccessToken(user, roles, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+	do := func(method, path, body, tok string) int {
+		*reached = false
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+tok)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec.Code
+	}
+	owner, admin := mk("bob", []string{"user"}), mk("ops", []string{auth.RoleAdmin})
+	cases := []struct {
+		name, method, path, body, tok string
+		wantReached                   bool
+	}{
+		{"owner sets cloud_container_id", "PUT", "/v1/containers/bob/labels", `{"labels":{"cloud_container_id":"other-box"}}`, owner, false},
+		{"owner sets it among others", "POST", "/v1/containers/bob/labels", `{"labels":{"a":"1","cloud_container_id":"other-box"}}`, owner, false},
+		{"owner removes cloud_container_id", "DELETE", "/v1/containers/bob/labels/cloud_container_id", "", owner, false},
+		{"admin sets cloud_container_id", "PUT", "/v1/containers/bob/labels", `{"labels":{"cloud_container_id":"x"}}`, admin, true},
+	}
+	for _, c := range cases {
+		code := do(c.method, c.path, c.body, c.tok)
+		if *reached != c.wantReached || (!c.wantReached && code != http.StatusForbidden) {
+			t.Errorf("%s: reached=%v code=%d want reached=%v", c.name, *reached, code, c.wantReached)
+		}
+	}
+}
+
 // The guard reads the body to see the keys; the handler must still get it.
 func TestGuardLabelRoute_BodyIsRestoredForTheHandler(t *testing.T) {
 	tm, _, _ := labelGuardFixture(t)

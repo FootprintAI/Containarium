@@ -1,4 +1,4 @@
-package server
+package hostaddr
 
 import (
 	"net/netip"
@@ -22,7 +22,7 @@ func TestParseDnsmasqLeases(t *testing.T) {
 		"1800003600 00:16:3e:77:88:99 fd00::1 v6-only *",                                // not IPv4
 		"short",
 	}, "\n")
-	got := parseDnsmasqLeases(strings.NewReader(in), now)
+	got := ParseDnsmasqLeases(strings.NewReader(in), now)
 	want := map[string]netip.Addr{
 		"00:16:3e:aa:bb:cc": netip.MustParseAddr("10.100.0.10"),
 		"00:16:3e:11:22:33": netip.MustParseAddr("10.100.0.12"),
@@ -37,6 +37,40 @@ func TestParseDnsmasqLeases(t *testing.T) {
 	}
 }
 
+// #3690: the traffic cache attributes a box only when the address it reports is
+// the one the host assigned it.
+func TestGuestAddressAssigned(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "incusbr0"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "incusbr0", "dnsmasq.leases"), []byte("0 00:16:3e:aa:bb:cc 10.100.0.10 box *\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	leases := NewLeaseReader(dir, time.Now())
+	static := NIC{Network: "incusbr0", HWAddr: "00:16:3e:00:00:01", StaticIP: netip.MustParseAddr("10.100.0.5")}
+	leased := NIC{Network: "incusbr0", HWAddr: "00:16:3e:aa:bb:cc"}
+	for _, tc := range []struct {
+		name  string
+		nic   NIC
+		guest string
+		want  bool
+	}{
+		{"static, guest agrees", static, "10.100.0.5", true},
+		{"static, guest claims another address", static, "10.100.0.10", false},
+		{"lease, guest agrees", leased, "10.100.0.10", true},
+		{"lease, guest claims another address", leased, "10.100.0.5", false},
+		{"no host-side source", NIC{}, "10.100.0.10", false},
+		{"not an address", leased, "box", false},
+		{"IPv6", leased, "fd00::1", false},
+		{"empty", leased, "", false},
+	} {
+		if got := GuestAddressAssigned(tc.nic, leases, tc.guest); got != tc.want {
+			t.Errorf("%s: GuestAddressAssigned = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestPrimaryNICDevice(t *testing.T) {
 	devs := map[string]map[string]string{
 		"root":  {"type": "disk", "path": "/"},
@@ -44,40 +78,40 @@ func TestPrimaryNICDevice(t *testing.T) {
 		"eth0":  {"type": "nic", "network": "incusbr0"},
 		"proxy": {"type": "proxy"},
 	}
-	if name, d := primaryNICDevice(devs); name != "eth0" || d["network"] != "incusbr0" {
+	if name, d := PrimaryNICDevice(devs); name != "eth0" || d["network"] != "incusbr0" {
 		t.Errorf("primary = %q %v, want eth0 on incusbr0", name, d)
 	}
 	delete(devs, "eth0")
-	if name, _ := primaryNICDevice(devs); name != "eth1" {
+	if name, _ := PrimaryNICDevice(devs); name != "eth1" {
 		t.Errorf("primary without eth0 = %q, want the first nic by name (eth1)", name)
 	}
 	delete(devs, "eth1")
-	if name, d := primaryNICDevice(devs); name != "" || d != nil {
+	if name, d := PrimaryNICDevice(devs); name != "" || d != nil {
 		t.Errorf("primary with no nic = %q %v, want none", name, d)
 	}
 	// A non-nic device named eth0 is not the NIC.
-	if name, _ := primaryNICDevice(map[string]map[string]string{"eth0": {"type": "disk"}, "net0": {"type": "nic"}}); name != "net0" {
+	if name, _ := PrimaryNICDevice(map[string]map[string]string{"eth0": {"type": "disk"}, "net0": {"type": "nic"}}); name != "net0" {
 		t.Errorf("primary = %q, want net0 (eth0 is not a nic here)", name)
 	}
 }
 
 func TestHostNICFor(t *testing.T) {
 	cfg := map[string]string{"volatile.eth0.hwaddr": "00:16:3E:AA:BB:CC", "volatile.eth0.host_name": "vethabc"}
-	nic := hostNICFor(cfg, map[string]map[string]string{"eth0": {"type": "nic", "network": "incusbr0", "ipv4.address": "10.100.0.5"}})
+	nic := NICFor(cfg, map[string]map[string]string{"eth0": {"type": "nic", "network": "incusbr0", "ipv4.address": "10.100.0.5"}})
 	if nic.Network != "incusbr0" || nic.HWAddr != "00:16:3e:aa:bb:cc" || nic.StaticIP != netip.MustParseAddr("10.100.0.5") {
-		t.Errorf("hostNICFor = %+v", nic)
+		t.Errorf("NICFor = %+v", nic)
 	}
 	// parent (bridged nictype) stands in for network; a device-level hwaddr wins.
-	nic = hostNICFor(cfg, map[string]map[string]string{"eth0": {"type": "nic", "nictype": "bridged", "parent": "br0", "hwaddr": "00:16:3e:00:00:01"}})
+	nic = NICFor(cfg, map[string]map[string]string{"eth0": {"type": "nic", "nictype": "bridged", "parent": "br0", "hwaddr": "00:16:3e:00:00:01"}})
 	if nic.Network != "br0" || nic.HWAddr != "00:16:3e:00:00:01" || nic.StaticIP.IsValid() {
-		t.Errorf("hostNICFor(parent) = %+v", nic)
+		t.Errorf("NICFor(parent) = %+v", nic)
 	}
 	// A non-IPv4 or junk ipv4.address is ignored, not treated as the address.
-	nic = hostNICFor(cfg, map[string]map[string]string{"eth0": {"type": "nic", "network": "incusbr0", "ipv4.address": "none"}})
+	nic = NICFor(cfg, map[string]map[string]string{"eth0": {"type": "nic", "network": "incusbr0", "ipv4.address": "none"}})
 	if nic.StaticIP.IsValid() {
 		t.Errorf("junk ipv4.address parsed as %v", nic.StaticIP)
 	}
-	if nic = hostNICFor(cfg, nil); nic != (hostNIC{}) {
+	if nic = NICFor(cfg, nil); nic != (NIC{}) {
 		t.Errorf("no devices = %+v, want zero", nic)
 	}
 }
@@ -91,18 +125,18 @@ func TestHostIPv4For_StaticThenLeaseThenNone(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "incusbr0", "dnsmasq.leases"), []byte(lease), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	leases := newLeaseReader(dir, time.Now())
+	leases := NewLeaseReader(dir, time.Now())
 
 	guest := [4]byte{10, 100, 0, 10}
 	// Static assignment wins, whatever the lease or the guest says.
-	ip, ok := hostIPv4For(hostNIC{Network: "incusbr0", HWAddr: "00:16:3e:aa:bb:cc", StaticIP: netip.MustParseAddr("10.100.0.5")}, leases, [4]byte{10, 100, 0, 99}, true)
+	ip, ok := IPv4For(NIC{Network: "incusbr0", HWAddr: "00:16:3e:aa:bb:cc", StaticIP: netip.MustParseAddr("10.100.0.5")}, leases, [4]byte{10, 100, 0, 99}, true)
 	if !ok || ip != [4]byte{10, 100, 0, 5} {
 		t.Errorf("static: %v %v", ip, ok)
 	}
 	// Else the bridge's lease for the MAC (case-insensitive) — but only when it
 	// agrees with the guest-reported address (S4: a neighbour can move a lease
 	// with a forged DHCP release/request; the guest alone is not trusted either).
-	ip, ok = hostIPv4For(hostNIC{Network: "incusbr0", HWAddr: "00:16:3E:AA:BB:CC"}, leases, guest, true)
+	ip, ok = IPv4For(NIC{Network: "incusbr0", HWAddr: "00:16:3E:AA:BB:CC"}, leases, guest, true)
 	if !ok || ip != guest {
 		t.Errorf("lease agreeing with guest: %v %v", ip, ok)
 	}
@@ -113,20 +147,20 @@ func TestHostIPv4For_StaticThenLeaseThenNone(t *testing.T) {
 		"lease disagrees with guest (poisoned lease, or guest renumbered)": {[4]byte{10, 100, 0, 77}, true},
 		"no guest address to cross-check":                                  {[4]byte{}, false},
 	} {
-		if ip, ok := hostIPv4For(hostNIC{Network: "incusbr0", HWAddr: "00:16:3e:aa:bb:cc"}, leases, tc.guest, tc.hasGuest); ok {
+		if ip, ok := IPv4For(NIC{Network: "incusbr0", HWAddr: "00:16:3e:aa:bb:cc"}, leases, tc.guest, tc.hasGuest); ok {
 			t.Errorf("%s: = %v, want unknown", name, ip)
 		}
 	}
 	// No lease for the MAC, unknown network, or missing lease file: unknown —
 	// never a guess, even when the guest reports something.
-	for _, nic := range []hostNIC{
+	for _, nic := range []NIC{
 		{Network: "incusbr0", HWAddr: "00:16:3e:00:00:00"},
 		{Network: "nosuchbr", HWAddr: "00:16:3e:aa:bb:cc"},
 		{HWAddr: "00:16:3e:aa:bb:cc"},
 		{},
 	} {
-		if ip, ok := hostIPv4For(nic, leases, guest, true); ok {
-			t.Errorf("hostIPv4For(%+v) = %v, want unknown", nic, ip)
+		if ip, ok := IPv4For(nic, leases, guest, true); ok {
+			t.Errorf("IPv4For(%+v) = %v, want unknown", nic, ip)
 		}
 	}
 	// The file is read once per reader however many lookups hit the network.
