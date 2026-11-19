@@ -203,22 +203,35 @@ the agent-runtime box (a box deployed with `toolchains=python`; see
 | `agent-python setup [DIR]` | yes | creates a venv outside the checkout, installs the `requirements*.txt` files and the package `DIR` itself declares |
 | `agent-python test [DIR]` | yes | runs `python -m pytest` in that venv |
 | `agent-python venv [DIR]` | yes | prints the venv path |
-| `agent-python test [DIR] -- CMD...` | **refused** at every level | would run any `CMD` in the venv |
+| `agent-python test [DIR] -- CMD...` | **denied by rule** at every level, however `--` is quoted | would run any `CMD` in the venv |
 | anything else after `agent-python` | refused | |
 | `ENV=... agent-python ...` | refused | a leading assignment is not part of any rule, so `PIP_INDEX_URL` and the like cannot be set |
 | `pip ...`, `pip3 ...`, `python3 -m pip ...`, `python3 -m venv ...` | refused | |
 
 `NONE` allows none of them. The `-- CMD` form stays denied: the helper takes
-no index, URL or VCS option of its own, and the deny rule keeps the one form
-that is a general command runner out of the grammar. `agent-python test` with
+no index, URL or VCS option of its own, and the deny rule keeps a line that
+runs an arbitrary command out of the grammar and the audit trail. The deny is
+matched against the line as written and against the words the shell sees, so
+`'--'`, `"--"`, `\--`, `-''-` and a tab around `--` are refused too. (At
+`FULL_SUDO`, which is advisory, `sudo agent-python ... -- CMD` is denied by
+rule as well.) This is not an execution boundary: pytest, which `agent-python
+test` runs, already loads a `conftest.py` the run can write. `agent-python test` with
 no `CMD` runs pytest in the venv the dependencies were installed into, which a
 bare `pytest` (system Python) cannot see.
 
+The venv and pip's cache live under the run user's home
+(`~/.cache/agent-python/<name>-<checksum of the absolute DIR>`, `~/.cache/pip`)
+and are reused by later runs on the same box. A package installed by one run
+can therefore execute in a later run's `agent-python test` when its checkout
+has the same path. That is not a new boundary: the run user's home is already
+shared and writable across runs.
+
 This is audit readability, not a new security boundary. `BUILD_TOOLS` already
 lets a run execute repository code (`make`, `npm run`, `go test -exec`), and
-`pip install` runs build backends, which is repository code too. A
-requirements file can also name its own index, a URL or a VCS source, and
-`DIR` may be any directory the run user can read; the helper does not police
-those. The run user still has no sudo (below `FULL_SUDO`), and the permission
+`pip install` runs build backends, which is repository code too. No index, URL or VCS option is accepted on the command line, and that is all the
+rule polices: pip's own config files (`~/.config/pip/pip.conf`, the venv's
+`pip.conf`) and a requirements file's own index, URL or VCS lines are not
+policed, so this is not an egress control. `DIR` may also be any directory the run
+user can read; the helper does not police that either. The run user still has no sudo (below `FULL_SUDO`), and the permission
 hook's hard denies and audit events still apply. The helper must already be on
 the box: a box without it gets "command not found", not a policy change.

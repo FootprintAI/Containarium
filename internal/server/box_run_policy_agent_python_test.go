@@ -35,6 +35,19 @@ func TestBoxRunPolicy_AgentPythonGrammar(t *testing.T) {
 		"agent-python test . --",
 		"agent-python setup . -- pip install x",
 		"agent-python venv -- ls",
+		// The same form spelled so the raw text has no literal " -- " but the
+		// shell sees a "--" word: quoted, escaped, split by a quote pair, or
+		// separated by tabs.
+		"agent-python test . '--' pip install x",
+		`agent-python test . "--" pip install x`,
+		`agent-python test . \-- pip install x`,
+		"agent-python test . -''- pip install x",
+		"agent-python test '--' pip",
+		"agent-python test .\t--\tpip install x",
+		"agent-python test . --\tpip install x",
+		"agent-python test .\t--",
+		"sudo agent-python test -- x",
+		"sudo agent-python test . '--' pip install x",
 		// Other subcommands, flags and bare helper.
 		"agent-python", "agent-python help", "agent-python -h", "agent-python --help",
 		"agent-python pip install requests", "agent-python setupx", "agent-python testx",
@@ -95,6 +108,9 @@ func TestBoxRunPolicyFor_AgentPythonRules(t *testing.T) {
 	for _, p := range []boxRunPolicy{none, build, full} {
 		if !hasRule(p.Denied, "Bash(agent-python * -- *)") {
 			t.Errorf("the `-- CMD` form must be denied at every level")
+		}
+		if !hasRule(p.Denied, "Bash(sudo agent-python * -- *)") {
+			t.Errorf("the sudo-prefixed `-- CMD` form must be denied at every level")
 		}
 	}
 }

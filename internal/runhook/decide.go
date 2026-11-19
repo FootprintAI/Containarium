@@ -157,7 +157,20 @@ func Decide(cfg Config, command string) Decision {
 // can only be stricter.
 func levelCovers(cfg Config, command string, c Command) bool {
 	if c.Simple {
-		return levelAllows(cfg.LevelAllowed, cfg.LevelDenied, command)
+		if !levelAllows(cfg.LevelAllowed, cfg.LevelDenied, command) {
+			return false
+		}
+		// The raw text is what the engine's rule matches, but a deny written
+		// against spaces must also hold for what the shell sees once quotes,
+		// escapes and tabs are resolved: re-check the deny rules on the parsed
+		// words ('--', "--", \--, -''-, tab-separated).
+		if len(c.Segments) == 1 && len(c.SegmentAssigns) == 1 {
+			words := append(append([]string(nil), c.SegmentAssigns[0]...), c.Segments[0]...)
+			if !levelAllows([]string{"Bash(*)"}, cfg.LevelDenied, strings.Join(words, " ")) {
+				return false
+			}
+		}
+		return true
 	}
 	if len(c.Segments) == 0 {
 		return false

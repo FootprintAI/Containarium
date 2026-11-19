@@ -161,9 +161,14 @@ var boxRunBuildToolRules = bashRules(
 var boxRunAgentPythonRules = bashRules("agent-python setup", "agent-python test", "agent-python venv")
 
 // boxRunAgentPythonDenied refuses the helper's `-- CMD` passthrough (`agent-python
-// test [DIR] -- CMD...` runs any command in the venv) at every level. Deny wins
-// over allow, and `*` also matches spaces, so this covers any position of `--`.
-var boxRunAgentPythonDenied = bashRules("agent-python * --", "agent-python -- *")
+// test [DIR] -- CMD...` runs any command in the venv) as a deny rule at every
+// level, so the rule is present in the flags and the hook. Deny wins over allow,
+// and `*` also matches spaces, so this covers any position of `--` written with
+// plain spaces. The hook also matches deny rules against the parsed words of a
+// simple line (runhook.levelCovers), which catches '--', "--", \--, -''- and
+// tab-separated spellings; the `sudo` forms are listed because a rule is
+// anchored at the start of the line. The FULL_SUDO level itself stays advisory.
+var boxRunAgentPythonDenied = bashRules("agent-python * --", "agent-python -- *", "sudo agent-python * --", "sudo agent-python -- *")
 
 // FULL_SUDO adds sudo. The flags are then advisory: the run user also gets a
 // passwordless sudoers rule, so it can step around any rule written here.
