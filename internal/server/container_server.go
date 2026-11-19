@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net/netip"
 	"os"
 	"sort"
 	"strconv"
@@ -259,6 +260,7 @@ type ContainerServer struct {
 	hostRelayURL       string                          // e.g. "http://10.100.0.1:8080/internal/alert-relay"
 	alertRelayConfigFn func(webhookURL, secret string) // callback to update gateway relay config
 	coreServices       *CoreServices
+	hostAddr           HostAddressResolver // host-known box addresses for the source-IP map (#3774)
 	daemonConfigStore  daemonConfigKV
 	peerPool           *PeerPool
 	// backupMgr is the backup core's read side, wired in for the metrics
@@ -5080,6 +5082,13 @@ func (s *ContainerServer) SetCoreServices(cs *CoreServices) {
 	s.coreServices = cs
 }
 
+// SetHostAddressResolver wires the host-known box address source the source-IP
+// attribution map is keyed on (#3774). Without one, no entries are pushed: the
+// map never falls back to guest-reported addresses.
+func (s *ContainerServer) SetHostAddressResolver(r HostAddressResolver) {
+	s.hostAddr = r
+}
+
 // refreshContainerIPMap rebuilds the source-IP → container-name map
 // and pushes it into the collector LXC. Best-effort: errors are
 // logged but never bubbled up — a stale IP map degrades source-IP
@@ -5097,7 +5106,7 @@ func (s *ContainerServer) refreshContainerIPMap() {
 		log.Printf("Warning: failed to list containers for IP map refresh: %v", err)
 		return
 	}
-	if err := s.coreServices.WriteContainerIPMap(buildContainerIPMap(infos)); err != nil {
+	if err := s.coreServices.WriteContainerIPMap(buildContainerIPMap(infos, s.hostAddr)); err != nil {
 		log.Printf("Warning: failed to push container IP map to collector: %v", err)
 	}
 }
@@ -5108,17 +5117,33 @@ func (s *ContainerServer) refreshContainerIPMap() {
 // to carry the cloud's join identity into container_ips.json.
 const cloudContainerIDLabel = "cloud_container_id"
 
+// HostAddressResolver returns a box's address as the HOST knows it (the NIC's
+// static ipv4.address or the bridge's DHCP lease), given the guest-reported one
+// for the DHCP cross-check. ok is false when the host knows no address (#3774).
+type HostAddressResolver func(name string, guest netip.Addr) (netip.Addr, bool)
+
 // buildContainerIPMap projects the live container list into the source-IP →
-// identity map the OTel collector attributes telemetry by. Pure (no IO) so the
-// projection is unit-tested directly. Core containers and IP-less boxes (not
-// placed yet) are skipped — neither emits app telemetry to attribute.
-func buildContainerIPMap(infos []incus.ContainerInfo) map[string]ContainerIPEntry {
+// identity map the OTel collector attributes telemetry by. The key is the
+// HOST-known address: what a guest reports about itself is never trusted to
+// name a box (#3774). A box with no host-known address gets no entry, so its
+// telemetry is unattributed rather than attributed to whoever it claims to be.
+// Pure given the resolver, so the projection is unit-tested directly. Core
+// containers and IP-less boxes (not placed yet) are skipped.
+func buildContainerIPMap(infos []incus.ContainerInfo, hostAddr HostAddressResolver) map[string]ContainerIPEntry {
 	ipMap := make(map[string]ContainerIPEntry, len(infos))
+	if hostAddr == nil {
+		return ipMap
+	}
 	for _, c := range infos {
 		if c.Role.IsCoreRole() || c.IPAddress == "" {
 			continue
 		}
-		ipMap[c.IPAddress] = ContainerIPEntry{
+		guest, _ := netip.ParseAddr(c.IPAddress)
+		host, ok := hostAddr(c.Name, guest)
+		if !ok {
+			continue
+		}
+		ipMap[host.String()] = ContainerIPEntry{
 			Name:             c.Name,
 			CloudContainerID: c.Labels[cloudContainerIDLabel],
 		}
