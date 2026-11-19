@@ -190,3 +190,35 @@ incus exec <box> -- su -s /bin/sh ctn-run -c \
 
 Expect the manifest's managed versions and `local` for `GOTOOLCHAIN`.
 The wrapper report measures availability, not whether the agent used a tool.
+
+## Python dependencies for a run (#3788)
+
+A `BUILD_TOOLS` run does not get `pip install *` or `python3 -m pip *`. It
+installs a repository's Python dependencies with the `agent-python` helper of
+the agent-runtime box (a box deployed with `toolchains=python`; see
+`agent-runtime/README.md`), in exactly these forms:
+
+| Form | Allowed at `BUILD_TOOLS` / `FULL_SUDO` | Does |
+| --- | --- | --- |
+| `agent-python setup [DIR]` | yes | creates a venv outside the checkout, installs the `requirements*.txt` files and the package `DIR` itself declares |
+| `agent-python test [DIR]` | yes | runs `python -m pytest` in that venv |
+| `agent-python venv [DIR]` | yes | prints the venv path |
+| `agent-python test [DIR] -- CMD...` | **refused** at every level | would run any `CMD` in the venv |
+| anything else after `agent-python` | refused | |
+| `ENV=... agent-python ...` | refused | a leading assignment is not part of any rule, so `PIP_INDEX_URL` and the like cannot be set |
+| `pip ...`, `pip3 ...`, `python3 -m pip ...`, `python3 -m venv ...` | refused | |
+
+`NONE` allows none of them. The `-- CMD` form stays denied: the helper takes
+no index, URL or VCS option of its own, and the deny rule keeps the one form
+that is a general command runner out of the grammar. `agent-python test` with
+no `CMD` runs pytest in the venv the dependencies were installed into, which a
+bare `pytest` (system Python) cannot see.
+
+This is audit readability, not a new security boundary. `BUILD_TOOLS` already
+lets a run execute repository code (`make`, `npm run`, `go test -exec`), and
+`pip install` runs build backends, which is repository code too. A
+requirements file can also name its own index, a URL or a VCS source, and
+`DIR` may be any directory the run user can read; the helper does not police
+those. The run user still has no sudo (below `FULL_SUDO`), and the permission
+hook's hard denies and audit events still apply. The helper must already be on
+the box: a box without it gets "command not found", not a policy change.
