@@ -158,11 +158,13 @@ func TestDecide_HardDenyThroughEnvAssignments(t *testing.T) {
 	}
 }
 
-// The level's rule shapes for an interpreter-hosted tool (`python3 -m pytest`):
-// the tool is covered bare and with arguments, and the interpreter on its own,
-// with -c, with a script or with another module is not. Compound lines are
-// decided segment by segment, so one covered segment never carries another.
-func TestDecide_LevelRuleForModuleRunnerIsDecidedPerSegment(t *testing.T) {
+// Characterization test, not a regression for new behavior: it pins how the
+// existing matcher treats module-runner rules (`python3 -m pytest`) with
+// literal rules, and passes without the #3788 policy change. The tool is
+// covered bare and with arguments; the interpreter on its own, with -c, with a
+// script or with another module is not. Compound lines are decided segment by
+// segment, so one covered segment never carries another.
+func TestDecide_Characterize_ModuleRunnerRulesPerSegment(t *testing.T) {
 	cfg := Config{LevelAllowed: []string{
 		"Bash(pytest)", "Bash(pytest *)", "Bash(python3 -m pytest)", "Bash(python3 -m pytest *)",
 	}}

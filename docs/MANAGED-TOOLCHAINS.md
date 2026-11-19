@@ -34,7 +34,9 @@ are allowed: `python3 -c`, `python3 script.py`, `python3 -m pip` and bare
 be on the box; the platform does not install them. The rule names the command
 so the audit trail reads clearly. It is not a new security boundary:
 `BUILD_TOOLS` already lets a run execute repository code through `make`,
-`npm run` or `go test -exec`.
+`npm run` or `go test -exec`. Note that `pytest --pastebin=all` uploads
+results to a public paste service, and egress is open at `BUILD_TOOLS` by design.
+
 Each architecture's tree is catalogued into an SPDX SBOM and scanned by
 Trivy during both PR checks and the host release build. The scan uses
 `rootfs`, which checks deployed binaries and installed npm packages. Trivy's
