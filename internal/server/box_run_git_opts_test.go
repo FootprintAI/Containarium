@@ -60,6 +60,15 @@ func TestBoxRunPolicy_GitOptionLedForms(t *testing.T) {
 			{"git --git-dir=/r/.git rev-parse HEAD", true},
 			{"git --work-tree=/r status", true},
 			{"git --git-dir=/r/.git --work-tree=/r status", true},
+			// read-only: where a branch forked from its base, for a run that compares a head with it
+			{"git merge-base origin/main HEAD", true},
+			{"git -C /home/u/work/repo merge-base origin/main HEAD", true},
+			{"git --git-dir=/r/.git merge-base a b", true},
+			// merge-base does not make the neighbours allowed
+			{"git worktree add /tmp/x HEAD", false},
+			{"git archive HEAD", false},
+			{"git -C /r merge push", false},
+			{"git -C /r -c core.x=y merge-base a b", false},
 			{"git -C /r --git-dir=/r/.git ls-files", true},
 			// still refused
 			{"git -C /r push", false},
