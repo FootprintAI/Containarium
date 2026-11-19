@@ -427,6 +427,7 @@ func TestBoxRuns_ValidationBeforeExec(t *testing.T) {
 		{"empty username", &pb.TailBoxRunLogRequest{RunName: "task"}},
 		{"username with a slash", &pb.TailBoxRunLogRequest{Username: "a/b", RunName: "task"}},
 		{"negative offset", &pb.TailBoxRunLogRequest{Username: "alice", RunName: "task", StartOffset: -1}},
+		{"unknown stream", &pb.TailBoxRunLogRequest{Username: "alice", RunName: "task", Stream: pb.BoxRunLogStream(99)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -489,5 +490,173 @@ func TestBoxRuns_Authz(t *testing.T) {
 				t.Errorf("ran %d box execs for a refused caller; want none", b.calls())
 			}
 		})
+	}
+}
+
+// stream STDERR serves the separate stderr log a structured_output run keeps
+// (#3757), with the log's offset, window, follow and ended rules; the default
+// stream still reads the run's log and says so.
+func TestTailBoxRunLog_Stderr(t *testing.T) {
+	boot := hostBootID(t)
+	t0 := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
+	const errText = "Error: not signed in\nrun `claude` to sign in\n"
+	str := func(s string) *string { return &s }
+	stderrReq := func(mod func(*pb.TailBoxRunLogRequest)) *pb.TailBoxRunLogRequest {
+		r := &pb.TailBoxRunLogRequest{Username: "alice", RunName: "task", Stream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR}
+		if mod != nil {
+			mod(r)
+		}
+		return r
+	}
+	cases := []struct {
+		name       string
+		record     recordSpec
+		log        string
+		stderr     *string
+		onExec     func(n int, dir string)
+		req        *pb.TailBoxRunLogRequest
+		wantCode   codes.Code
+		wantChunk  string
+		wantEnd    int64
+		wantTrunc  bool
+		wantEnded  bool
+		wantStream pb.BoxRunLogStream
+	}{
+		{
+			name:   "an exited structured run with an empty log: its error text",
+			record: recordSpec{name: "task", exitCode: exitWith(1)}, stderr: str(errText),
+			req:       stderrReq(nil),
+			wantChunk: errText, wantEnd: int64(len(errText)), wantEnded: true,
+			wantStream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR,
+		},
+		{
+			name:   "the default stream still reads the run's log, not its stderr",
+			record: recordSpec{name: "task", exitCode: exitWith(0)}, log: `{"type":"result"}`, stderr: str(errText),
+			req:       &pb.TailBoxRunLogRequest{Username: "alice", RunName: "task"},
+			wantChunk: `{"type":"result"}`, wantEnd: 17, wantEnded: true,
+			wantStream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_LOG,
+		},
+		{
+			name:   "LOG named explicitly is the default",
+			record: recordSpec{name: "task", exitCode: exitWith(0)}, log: `{"type":"result"}`, stderr: str(errText),
+			req:       &pb.TailBoxRunLogRequest{Username: "alice", RunName: "task", Stream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_LOG},
+			wantChunk: `{"type":"result"}`, wantEnd: 17, wantEnded: true,
+			wantStream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_LOG,
+		},
+		{
+			name:   "ended is measured against the stderr log, not the run's log",
+			record: recordSpec{name: "task", exitCode: exitWith(1)}, log: "a much longer result object than the stderr text", stderr: str("x\n"),
+			req:       stderrReq(nil),
+			wantChunk: "x\n", wantEnd: 2, wantEnded: true,
+			wantStream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR,
+		},
+		{
+			name:   "resumes at the offset",
+			record: recordSpec{name: "task", exitCode: exitWith(1)}, stderr: str(errText),
+			req:       stderrReq(func(r *pb.TailBoxRunLogRequest) { r.StartOffset = 7 }),
+			wantChunk: errText[7:], wantEnd: int64(len(errText)), wantEnded: true,
+			wantStream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR,
+		},
+		{
+			name:   "max_bytes truncates and withholds ended",
+			record: recordSpec{name: "task", exitCode: exitWith(1)}, stderr: str(errText),
+			req:       stderrReq(func(r *pb.TailBoxRunLogRequest) { r.MaxBytes = 5 }),
+			wantChunk: errText[:5], wantEnd: 5, wantTrunc: true,
+			wantStream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR,
+		},
+		{
+			name:   "a live run's empty stderr log is an empty, not-ended window",
+			record: recordSpec{name: "task"}, stderr: str(""),
+			req:        stderrReq(nil),
+			wantStream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR,
+		},
+		{
+			name:   "follow returns once the stderr log grows",
+			record: recordSpec{name: "task"}, stderr: str("a\n"),
+			onExec: func(n int, dir string) {
+				if n == 2 {
+					appendFile(t, filepath.Join(dir, "task.stderr.log"), "b\n")
+				}
+			},
+			req:       stderrReq(func(r *pb.TailBoxRunLogRequest) { r.StartOffset = 2; r.FollowSeconds = 10 }),
+			wantChunk: "b\n", wantEnd: 4,
+			wantStream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR,
+		},
+		{
+			// Only the run's own log is framed; a stderr log is served as-is.
+			name:   "a framed record's stderr log is not demuxed",
+			record: recordSpec{name: "task", exitCode: exitWith(1), framed: true}, stderr: str("1 not-a-frame\n"),
+			req:       stderrReq(nil),
+			wantChunk: "1 not-a-frame\n", wantEnd: 14, wantEnded: true,
+			wantStream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR,
+		},
+		{
+			name:   "a plain run keeps no stderr log",
+			record: recordSpec{name: "task", exitCode: exitWith(1)}, log: "plain output and errors\n",
+			req:      stderrReq(nil),
+			wantCode: codes.FailedPrecondition,
+		},
+		{
+			name:     "unknown run",
+			req:      &pb.TailBoxRunLogRequest{Username: "alice", RunName: "nope", Stream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR},
+			wantCode: codes.NotFound,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &shBox{}
+			s, dir := boxRunServer(t, b)
+			if tc.onExec != nil {
+				b.onExec = func(n int) { tc.onExec(n, dir) }
+			}
+			if tc.record.name != "" {
+				r := tc.record
+				r.pid, r.boot, r.started = os.Getpid(), boot, t0
+				writeRecord(t, dir, r)
+			}
+			if tc.log != "" {
+				writeFile(t, filepath.Join(dir, "task.log"), tc.log)
+			}
+			if tc.stderr != nil {
+				writeFile(t, filepath.Join(dir, "task.stderr.log"), *tc.stderr)
+			}
+			resp, err := s.TailBoxRunLog(tenantCtx("alice"), tc.req)
+			if tc.wantCode != codes.OK {
+				if status.Code(err) != tc.wantCode {
+					t.Fatalf("err = %v, want %v", err, tc.wantCode)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("TailBoxRunLog: %v", err)
+			}
+			if string(resp.Chunk) != tc.wantChunk || resp.EndOffset != tc.wantEnd || resp.Truncated != tc.wantTrunc ||
+				resp.Ended != tc.wantEnded || resp.StderrDropped || resp.Stream != tc.wantStream {
+				t.Errorf("got chunk=%q end=%d trunc=%v ended=%v stderr_dropped=%v stream=%v; want chunk=%q end=%d trunc=%v ended=%v stderr_dropped=false stream=%v",
+					resp.Chunk, resp.EndOffset, resp.Truncated, resp.Ended, resp.StderrDropped, resp.Stream,
+					tc.wantChunk, tc.wantEnd, tc.wantTrunc, tc.wantEnded, tc.wantStream)
+			}
+		})
+	}
+}
+
+// The stderr log is read as root inside a box its user controls, like the
+// run's log: a symlink there is refused, never followed.
+func TestTailBoxRunLog_StderrRefusesSymlink(t *testing.T) {
+	boot := hostBootID(t)
+	secret := filepath.Join(t.TempDir(), "secret")
+	writeFile(t, secret, "root-only\n")
+	b := &shBox{}
+	s, dir := boxRunServer(t, b)
+	writeRecord(t, dir, recordSpec{name: "task", pid: os.Getpid(), boot: boot, started: time.Now(), exitCode: exitWith(1)})
+	if err := os.Symlink(secret, filepath.Join(dir, "task.stderr.log")); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := s.TailBoxRunLog(tenantCtx("alice"), &pb.TailBoxRunLogRequest{Username: "alice", RunName: "task", Stream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("err = %v (resp %v), want FailedPrecondition", err, resp)
+	}
+	if strings.Contains(err.Error(), "root-only") {
+		t.Errorf("error %q carries the symlink target's content", err)
 	}
 }

@@ -151,8 +151,9 @@ message StartBoxRunRequest {
   // touched). The run's log (<run_name>.log) is then exactly the engine's one
   // JSON result object (type, subtype, is_error, result, session_id, usage,
   // ...); stderr is kept apart in <log-dir>/<run_name>.stderr.log, which
-  // TailBoxRunLog does not serve. Once the run has exited, ListBoxRuns reads
-  // the object and reports its TOP-LEVEL session_id as BoxRun.session_id
+  // TailBoxRunLog serves with stream STDERR (capability "box_run_stderr",
+  // #3757). Once the run has exited, ListBoxRuns reads the object and
+  // reports its TOP-LEVEL session_id as BoxRun.session_id
   // (nested keys are ignored; truncated or invalid JSON, or an object over
   // 1 MiB, yields no id). The object appears when the run ends: the log is
   // empty while it runs. Default false leaves the plain-text behaviour
@@ -303,6 +304,18 @@ message ListBoxRunsResponse {
   repeated BoxRun runs = 1;
 }
 
+// BoxRunLogStream names which of a box run's logs TailBoxRunLog reads (#3757).
+enum BoxRunLogStream {
+  // The run's log (<run_name>.log), exactly as before the field existed.
+  BOX_RUN_LOG_STREAM_UNSPECIFIED = 0;
+  // The run's log (<run_name>.log), named explicitly. Same as UNSPECIFIED.
+  BOX_RUN_LOG_STREAM_LOG = 1;
+  // The separate stderr log a structured_output run keeps
+  // (<run_name>.stderr.log): the engine's error text when it fails before it
+  // writes its result object. Only a structured_output run has one.
+  BOX_RUN_LOG_STREAM_STDERR = 2;
+}
+
 // TailBoxRunLogRequest reads one byte window of a box run's log. Fields and
 // bounds mirror TailRunLogRequest (#2096).
 message TailBoxRunLogRequest {
@@ -322,6 +335,15 @@ message TailBoxRunLogRequest {
   // 0..10: when no bytes are available at start_offset, wait up to this
   // many seconds for the log to grow before answering with an empty chunk.
   int32 follow_seconds = 5;
+  // Which log to read (#3757). UNSPECIFIED or LOG reads the run's log, as
+  // before. STDERR reads the separate stderr log a structured_output run
+  // keeps, with the same offset, window, follow and ended rules; its bytes
+  // are served as-is. STDERR on a run that keeps no stderr log (any run
+  // started without structured_output) is FAILED_PRECONDITION. Any other
+  // value is INVALID_ARGUMENT. Capability "box_run_stderr" in
+  // SystemInfo.capabilities: an older daemon ignores the field and reads the
+  // run's log, which a caller can also tell from the response's stream.
+  BoxRunLogStream stream = 6;
 }
 
 // TailBoxRunLogResponse is one window of a box run's log: the
@@ -342,6 +364,10 @@ message TailBoxRunLogResponse {
   reserved 5;
   // This window held stderr frames of a FRAMED log, which are not in chunk.
   bool stderr_dropped = 6;
+  // The log this window was read from: LOG or STDERR (#3757). UNSPECIFIED
+  // only from a daemon without the "box_run_stderr" capability, which always
+  // reads the run's log whatever the request's stream.
+  BoxRunLogStream stream = 7;
 }
 
 // BoxRunStopSignal is the signal StopBoxRun actually sent.

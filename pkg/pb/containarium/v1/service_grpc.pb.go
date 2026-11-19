@@ -296,7 +296,8 @@ type ContainerServiceClient interface {
 	// TailBoxRunLog reads one byte window of a box run's log (#2123), the
 	// TailRunLog contract (#2096) for `code run` logs: resumable (pass
 	// end_offset back as start_offset) and bounded (max_bytes,
-	// follow_seconds). A framed log is demuxed to its stdout.
+	// follow_seconds). A framed log is demuxed to its stdout. stream STDERR
+	// reads a structured_output run's separate stderr log instead (#3757).
 	TailBoxRunLog(ctx context.Context, in *TailBoxRunLogRequest, opts ...grpc.CallOption) (*TailBoxRunLogResponse, error)
 	// TailBoxLogs reads one window of a box's logs (#3643): its systemd
 	// journal and the logs of the containers running inside it, merged in
@@ -1538,7 +1539,8 @@ type ContainerServiceServer interface {
 	// TailBoxRunLog reads one byte window of a box run's log (#2123), the
 	// TailRunLog contract (#2096) for `code run` logs: resumable (pass
 	// end_offset back as start_offset) and bounded (max_bytes,
-	// follow_seconds). A framed log is demuxed to its stdout.
+	// follow_seconds). A framed log is demuxed to its stdout. stream STDERR
+	// reads a structured_output run's separate stderr log instead (#3757).
 	TailBoxRunLog(context.Context, *TailBoxRunLogRequest) (*TailBoxRunLogResponse, error)
 	// TailBoxLogs reads one window of a box's logs (#3643): its systemd
 	// journal and the logs of the containers running inside it, merged in

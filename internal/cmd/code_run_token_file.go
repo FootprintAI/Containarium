@@ -143,7 +143,7 @@ func runCodeRunWithToken(cmd *cobra.Command, box string) error {
 	diag := cmd.ErrOrStderr()
 	fmt.Fprintf(diag, "✓ started %q on %s through the daemon API\n", name, box)
 
-	if err := codeLogs(cmd, c, box, name, true, cmd.OutOrStdout(), diag); err != nil {
+	if err := codeLogs(cmd, c, codeLogsRequest(box, name, false), true, cmd.OutOrStdout(), diag); err != nil {
 		return err
 	}
 	runs, err := c.ListBoxRuns(box)

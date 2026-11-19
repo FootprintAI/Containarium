@@ -153,3 +153,57 @@ func TestBoxRunScripts_HandleTheSnapshotFile(t *testing.T) {
 		t.Errorf("rotation does not move the snapshot:\n%s", rot)
 	}
 }
+
+// TestStartBoxRun_StructuredStderrIsServed is #3757's acceptance case end to
+// end: a structured run whose engine exits non-zero before it writes a result
+// object leaves an empty log, and its error text is read through
+// TailBoxRunLog with stream STDERR. A plain-text run is unchanged: its error
+// is inline in its log, and it has no stderr log to ask for.
+func TestStartBoxRun_StructuredStderrIsServed(t *testing.T) {
+	u := newFakeBoxUser(t, 0, 0)
+	u.writeFakeClaude(t, `echo "Error: the sign-in has expired" >&2
+exit 1
+`)
+	s, _, _ := boxRunStartServer(t, u)
+	ctx := tenantCtx("alice")
+	for _, req := range []*pb.StartBoxRunRequest{
+		{Username: "alice", Prompt: "hi", RunName: "structured", StructuredOutput: true},
+		{Username: "alice", Prompt: "hi", RunName: "plain"},
+	} {
+		if _, err := s.StartBoxRun(ctx, req); err != nil {
+			t.Fatalf("StartBoxRun %s: %v", req.GetRunName(), err)
+		}
+	}
+	for _, name := range []string{"structured", "plain"} {
+		if run := waitForOutcome(t, s, "alice", name, pb.BoxRunOutcome_BOX_RUN_OUTCOME_EXITED, 5*time.Second); run.GetExitCode() != 1 {
+			t.Fatalf("%s: exit code = %d, want 1", name, run.GetExitCode())
+		}
+	}
+
+	log, err := s.TailBoxRunLog(ctx, &pb.TailBoxRunLogRequest{Username: "alice", RunName: "structured"})
+	if err != nil {
+		t.Fatalf("tail structured log: %v", err)
+	}
+	if len(log.GetChunk()) != 0 || !log.GetEnded() {
+		t.Errorf("structured log = %q ended=%v, want empty and ended", log.GetChunk(), log.GetEnded())
+	}
+	stderr, err := s.TailBoxRunLog(ctx, &pb.TailBoxRunLogRequest{Username: "alice", RunName: "structured", Stream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR})
+	if err != nil {
+		t.Fatalf("tail structured stderr: %v", err)
+	}
+	if got := string(stderr.GetChunk()); got != "Error: the sign-in has expired\n" || !stderr.GetEnded() ||
+		stderr.GetStream() != pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR {
+		t.Errorf("structured stderr = %q ended=%v stream=%v, want the engine's error, ended, STDERR", got, stderr.GetEnded(), stderr.GetStream())
+	}
+
+	plain, err := s.TailBoxRunLog(ctx, &pb.TailBoxRunLogRequest{Username: "alice", RunName: "plain"})
+	if err != nil {
+		t.Fatalf("tail plain log: %v", err)
+	}
+	if got := string(plain.GetChunk()); got != "Error: the sign-in has expired\n" {
+		t.Errorf("plain log = %q, want the engine's error inline", got)
+	}
+	if _, err := s.TailBoxRunLog(ctx, &pb.TailBoxRunLogRequest{Username: "alice", RunName: "plain", Stream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR}); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("plain stderr err = %v, want FailedPrecondition", err)
+	}
+}

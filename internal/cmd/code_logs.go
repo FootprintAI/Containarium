@@ -15,7 +15,10 @@ import (
 // daemon API (ListBoxRuns / TailBoxRunLog) instead of SSH: the same reads a
 // browser or phone makes. `code attach` keeps its SSH path.
 
-var codeLogsFollow bool
+var (
+	codeLogsFollow bool
+	codeLogsStderr bool
+)
 
 var codeRunsCmd = &cobra.Command{
 	Use:   "runs <box>",
@@ -46,9 +49,15 @@ For a run started with stream-json output (a framed log) only stdout is
 printed; a note on stderr says when the run's stderr was left out — read it
 with ` + "`containarium code attach`" + `.
 
+--stderr prints the separate stderr log a run started with structured_output
+keeps instead: the engine's error text when it failed before it wrote its
+result object. A run without one is refused, and so is a daemon that does not
+serve it (capability box_run_stderr).
+
 Examples:
   containarium code logs alice code --server <host>
-  containarium code logs alice code --follow --server <host>`,
+  containarium code logs alice code --follow --server <host>
+  containarium code logs alice my-run --stderr --server <host>`,
 	Args: cobra.ExactArgs(2),
 	RunE: runCodeLogs,
 }
@@ -57,6 +66,7 @@ func init() {
 	codeCmd.AddCommand(codeRunsCmd)
 	codeCmd.AddCommand(codeLogsCmd)
 	codeLogsCmd.Flags().BoolVarP(&codeLogsFollow, "follow", "f", false, "Keep reading until the run exits")
+	codeLogsCmd.Flags().BoolVar(&codeLogsStderr, "stderr", false, "Print the separate stderr log of a structured_output run instead of its log")
 }
 
 // boxRunsAPI is what code runs/logs need from a daemon client.
@@ -97,7 +107,17 @@ func runCodeLogs(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer func() { _ = c.Close() }()
-	return codeLogs(cmd, c, args[0], args[1], codeLogsFollow, os.Stdout, os.Stderr)
+	return codeLogs(cmd, c, codeLogsRequest(args[0], args[1], codeLogsStderr), codeLogsFollow, os.Stdout, os.Stderr)
+}
+
+// codeLogsRequest is the first read of `code logs`: the run's log, or with
+// stderr its separate stderr log.
+func codeLogsRequest(box, run string, stderr bool) *pb.TailBoxRunLogRequest {
+	req := &pb.TailBoxRunLogRequest{Username: box, RunName: run}
+	if stderr {
+		req.Stream = pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR
+	}
+	return req
 }
 
 // codeRuns prints the box's runs through the formatter the MCP code_runs
@@ -110,10 +130,11 @@ func codeRuns(l runlog.BoxLister, box string, w io.Writer) error {
 	return runlog.WriteBoxRuns(w, box, runs)
 }
 
-// codeLogs copies the run's output to w through runlog.CopyBox, the reader
+// codeLogs copies the log req names to w through runlog.CopyBox, the reader
 // the MCP code_logs tool's window comes from; diagnostics go to diag.
-func codeLogs(cmd *cobra.Command, t runlog.BoxTailer, box, run string, follow bool, w, diag io.Writer) error {
-	end, stderrDropped, err := runlog.CopyBox(cmd.Context(), t, &pb.TailBoxRunLogRequest{Username: box, RunName: run}, w, follow)
+func codeLogs(cmd *cobra.Command, t runlog.BoxTailer, req *pb.TailBoxRunLogRequest, follow bool, w, diag io.Writer) error {
+	box, run := req.GetUsername(), req.GetRunName()
+	end, stderrDropped, err := runlog.CopyBox(cmd.Context(), t, req, w, follow)
 	if stderrDropped {
 		_, _ = fmt.Fprintf(diag, "note: run %q writes a framed log; its stderr was not printed (see `containarium code attach %s --name %s`)\n", run, box, run)
 	}

@@ -989,6 +989,10 @@ const (
 	DaemonCapBoxRunCommandPolicy = "box_run_command_policy"
 	// DaemonCapBoxRunWorkdir: StartBoxRunRequest.workdir and BoxRun.workdir (#3551).
 	DaemonCapBoxRunWorkdir = "box_run_workdir"
+	// DaemonCapBoxRunStderr: TailBoxRunLogRequest.stream STDERR serves a
+	// structured_output run's stderr log, and TailBoxRunLogResponse.stream
+	// names the log a window was read from (#3757).
+	DaemonCapBoxRunStderr = "box_run_stderr"
 	// DaemonCapBoxFiles (the WriteBoxFile RPC, #3548) is declared in box_file_write.go,
 	// DaemonCapBoxFilesStream (WriteBoxFileStream) in box_file_stream.go,
 	// DaemonCapBoxFilesRunUser (#3678) in box_file_write.go.
@@ -996,7 +1000,7 @@ const (
 
 // daemonCapabilities is the list GetSystemInfo reports.
 func daemonCapabilities() []string {
-	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunToken, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxRunCommandPolicy, DaemonCapBoxRunWorkdir, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream, DaemonCapBoxFilesRunUser, DaemonCapBoxBootstrap}
+	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunToken, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxRunCommandPolicy, DaemonCapBoxRunWorkdir, DaemonCapBoxRunStderr, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream, DaemonCapBoxFilesRunUser, DaemonCapBoxBootstrap}
 }
 
 // boxRunNameCollidesWithDerivedFile reports whether name would alias a file or

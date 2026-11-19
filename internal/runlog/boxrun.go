@@ -2,6 +2,7 @@ package runlog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -28,26 +29,44 @@ type BoxLister interface {
 	ListBoxRuns(username string) ([]*pb.BoxRun, error)
 }
 
-// BoxWindow reads one bounded window of a box run's log.
+// BoxRunStderrCapability is the SystemInfo.capabilities entry of a daemon that
+// serves a structured_output run's stderr log (TailBoxRunLogRequest.stream
+// STDERR, #3757).
+const BoxRunStderrCapability = "box_run_stderr"
+
+// ErrBoxRunStderrUnsupported is returned when a caller asks for a run's
+// stderr log and the daemon answered with a window of something else. A
+// daemon without BoxRunStderrCapability ignores the stream field and serves
+// the run's log, so its answer is dropped instead of shown as stderr.
+var ErrBoxRunStderrUnsupported = errors.New("this daemon does not serve a run's stderr log (TailBoxRunLogRequest.stream, capability " +
+	BoxRunStderrCapability + "); upgrade it, or read <run_name>.stderr.log in the run directory on the box")
+
+// BoxWindow reads one bounded window of a box run's log. A window asked of
+// the stderr log that the daemon did not read from it is refused with
+// ErrBoxRunStderrUnsupported, and its bytes are never returned.
 func BoxWindow(t BoxTailer, req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error) {
 	resp, err := t.TailBoxRunLog(req)
 	if err != nil {
 		return nil, fmt.Errorf("tail run %s on %s from offset %d: %w", req.GetRunName(), req.GetUsername(), req.GetStartOffset(), err)
+	}
+	if req.GetStream() == pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR && resp.GetStream() != pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR {
+		return nil, fmt.Errorf("tail the stderr log of run %s on %s: %w", req.GetRunName(), req.GetUsername(), ErrBoxRunStderrUnsupported)
 	}
 	return resp, nil
 }
 
 // CopyBox writes a box run's output from req.StartOffset to w, window by
 // window, with Copy's contract: every byte exactly once, and with follow it
-// keeps reading until the run has ended or ctx is done. stderrDropped
-// reports whether any window skipped a framed log's stderr.
+// keeps reading until the run has ended or ctx is done. req.Stream picks the
+// log, as in BoxWindow. stderrDropped reports whether any window skipped a
+// framed log's stderr.
 func CopyBox(ctx context.Context, t BoxTailer, req *pb.TailBoxRunLogRequest, w io.Writer, follow bool) (end int64, stderrDropped bool, err error) {
 	offset := req.GetStartOffset()
 	for {
 		if err := ctx.Err(); err != nil {
 			return offset, stderrDropped, err
 		}
-		next := &pb.TailBoxRunLogRequest{Username: req.GetUsername(), RunName: req.GetRunName(), StartOffset: offset, MaxBytes: req.GetMaxBytes()}
+		next := &pb.TailBoxRunLogRequest{Username: req.GetUsername(), RunName: req.GetRunName(), StartOffset: offset, MaxBytes: req.GetMaxBytes(), Stream: req.GetStream()}
 		if follow {
 			next.FollowSeconds = FollowSeconds
 		}
@@ -82,6 +101,11 @@ func BoxQuery(req *pb.TailBoxRunLogRequest) string {
 	}
 	if req.GetFollowSeconds() != 0 {
 		q.Set("follow_seconds", strconv.Itoa(int(req.GetFollowSeconds())))
+	}
+	// Only a non-default stream is sent, so a plain read is the request it
+	// always was.
+	if req.GetStream() != pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_UNSPECIFIED {
+		q.Set("stream", req.GetStream().String())
 	}
 	return BoxRunsPath(req.GetUsername()) + "/" + url.PathEscape(req.GetRunName()) + "/log?" + q.Encode()
 }

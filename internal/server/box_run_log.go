@@ -130,22 +130,30 @@ func structuredSessionID(log []byte) string {
 	return res.SessionID
 }
 
+// boxRunLogExt and boxRunStderrExt are the extensions of the two logs a run
+// can have in its directory: <name>.log, and the separate <name>.stderr.log a
+// structured_output run keeps (#3757).
+const (
+	boxRunLogExt    = "log"
+	boxRunStderrExt = "stderr.log"
+)
+
 // boxRunTailScript prints the run's record ("R <base64>" or "missing"), its
-// exit sidecar ("X <base64 | ->"), then the log's state — "L none",
-// "L unsafe", or "L <size>" followed by up to limit bytes from offset. The
-// outcome is read before the size, so a run seen as exited has a complete
-// log.
-func boxRunTailScript(dir, name string, offset int64, limit int) string {
+// exit sidecar ("X <base64 | ->"), then the state of the log <name>.<ext> —
+// "L none", "L unsafe", or "L <size>" followed by up to limit bytes from
+// offset. The outcome is read before the size, so a run seen as exited has a
+// complete log.
+func boxRunTailScript(dir, name, ext string, offset int64, limit int) string {
 	return fmt.Sprintf(`d=%s
 n=%s
 %sif open3 "$d/$n.json"; then echo "R $(b64_3)"; else echo missing; exit 0; fi
 if open3 "$d/$n.exit"; then echo "X $(b64_3)"; else echo "X -"; fi
-l="$d/$n.log"
+l="$d/$n."%s
 if [ ! -e "$l" ] && [ ! -L "$l" ]; then echo "L none"; exit 0; fi
 open3 "$l" || { echo "L unsafe"; exit 0; }
 echo "L $(stat -L -c %%s /proc/$$/fd/3)"
 tail -c +%d <&3 | head -c %d
-`, shellSingleQuote(dir), shellSingleQuote(name), boxRunOpenFn, offset+1, limit)
+`, shellSingleQuote(dir), shellSingleQuote(name), boxRunOpenFn, shellSingleQuote(ext), offset+1, limit)
 }
 
 // boxRunView is one record as the reader sees it.
@@ -314,23 +322,27 @@ func boxRunProto(name, dir string, r agentbox.RunRecord, outcome agentbox.RunOut
 
 // boxRunLogPath is the log the reader reads: always derived from the run
 // name, never the record's own log_path, which the box's user can write.
-func boxRunLogPath(dir, name string) string { return dir + "/" + name + ".log" }
+func boxRunLogPath(dir, name string) string { return boxRunFilePath(dir, name, boxRunLogExt) }
 
-// boxRunWindow is one read of a run's record and log.
+// boxRunFilePath is the run's file <name>.<ext> in dir.
+func boxRunFilePath(dir, name, ext string) string { return dir + "/" + name + "." + ext }
+
+// boxRunWindow is one read of a run's record and one of its logs.
 type boxRunWindow struct {
 	found   bool
 	record  agentbox.RunRecord
 	logSeen bool   // the log file exists
 	unsafe  bool   // the log is not a plain file at its own path
+	framed  bool   // the log is the run's FRAMED log, read whole frames at a time
 	size    int64  // the log's size, read after the record
 	raw     []byte // up to limit bytes from the offset
 }
 
 // readBoxRunWindowIn reads run name from the first of dirs that holds it, and
 // returns that directory. Not found in any is a window with found false.
-func readBoxRunWindowIn(exec boxScriptFunc, box string, dirs []string, name string, offset int64, limit int) (boxRunWindow, string, error) {
+func readBoxRunWindowIn(exec boxScriptFunc, box string, dirs []string, name, ext string, offset int64, limit int) (boxRunWindow, string, error) {
 	for _, dir := range dirs {
-		w, err := readBoxRunWindow(exec, box, dir, name, offset, limit)
+		w, err := readBoxRunWindow(exec, box, dir, name, ext, offset, limit)
 		if err != nil || w.found {
 			return w, dir, err
 		}
@@ -338,8 +350,11 @@ func readBoxRunWindowIn(exec boxScriptFunc, box string, dirs []string, name stri
 	return boxRunWindow{}, "", nil
 }
 
-func readBoxRunWindow(exec boxScriptFunc, box, dir, name string, offset int64, limit int) (boxRunWindow, error) {
-	out, err := exec(box, boxRunTailScript(dir, name, offset, limit))
+// readBoxRunWindow reads run name's record and its log <name>.<ext>. Only the
+// run's own log is ever framed: a structured run's stderr log is plain bytes,
+// whatever the record's capture mode says.
+func readBoxRunWindow(exec boxScriptFunc, box, dir, name, ext string, offset int64, limit int) (boxRunWindow, error) {
+	out, err := exec(box, boxRunTailScript(dir, name, ext, offset, limit))
 	if err != nil {
 		return boxRunWindow{}, err
 	}
@@ -364,7 +379,11 @@ func readBoxRunWindow(exec boxScriptFunc, box, dir, name string, offset int64, l
 		return boxRunWindow{}, status.Errorf(codes.FailedPrecondition, "run %q: %v", name, err)
 	}
 	sidecar, _ := decodeB64Field(exitB64)
-	w := boxRunWindow{found: true, record: agentbox.FoldExitSidecar(record, sidecar)}
+	w := boxRunWindow{
+		found:  true,
+		record: agentbox.FoldExitSidecar(record, sidecar),
+		framed: ext == boxRunLogExt && record.CaptureMode == agentbox.CaptureFramed,
+	}
 	switch logState {
 	case "none":
 		return w, nil
@@ -388,7 +407,7 @@ func readBoxRunWindow(exec boxScriptFunc, box, dir, name string, offset int64, l
 func boxRunResponse(w boxRunWindow, offset int64, maxBytes, readLimit int) (*pb.TailBoxRunLogResponse, error) {
 	resp := &pb.TailBoxRunLogResponse{EndOffset: offset}
 	exited := w.record.ExitCode != nil
-	if w.record.CaptureMode != agentbox.CaptureFramed {
+	if !w.framed {
 		chunk := w.raw
 		if len(chunk) > maxBytes {
 			chunk, resp.Truncated = chunk[:maxBytes], true
@@ -547,6 +566,14 @@ func (s *ContainerServer) TailBoxRunLog(ctx context.Context, req *pb.TailBoxRunL
 	if req.GetStartOffset() < 0 {
 		return nil, status.Error(codes.InvalidArgument, "start_offset must be >= 0")
 	}
+	stream, ext := pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_LOG, boxRunLogExt
+	switch req.GetStream() {
+	case pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_UNSPECIFIED, pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_LOG:
+	case pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR:
+		stream, ext = pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR, boxRunStderrExt
+	default:
+		return nil, status.Errorf(codes.InvalidArgument, "stream must be BOX_RUN_LOG_STREAM_LOG or BOX_RUN_LOG_STREAM_STDERR, not %d", int32(req.GetStream()))
+	}
 	if err := s.authorizeBoxRuns(ctx, req.GetUsername()); err != nil {
 		return nil, err
 	}
@@ -573,7 +600,7 @@ func (s *ContainerServer) TailBoxRunLog(ctx context.Context, req *pb.TailBoxRunL
 	readLimit := maxBytes + 1
 	deadline := time.Now().Add(follow)
 	for {
-		w, dir, err := readBoxRunWindowIn(exec, box, dirs, name, offset, max(readLimit, boxRunMaxFrameLine+1))
+		w, dir, err := readBoxRunWindowIn(exec, box, dirs, name, ext, offset, max(readLimit, boxRunMaxFrameLine+1))
 		if w.found {
 			// Followed in the directory it was found in.
 			dirs = []string{dir}
@@ -588,19 +615,25 @@ func (s *ContainerServer) TailBoxRunLog(ctx context.Context, req *pb.TailBoxRunL
 			return nil, status.Errorf(codes.NotFound, "run %q not found on %s's box", name, req.GetUsername())
 		}
 		if w.unsafe {
-			return nil, status.Errorf(codes.FailedPrecondition, "run %q: log is not a regular file at %s", name, boxRunLogPath(dir, name))
+			return nil, status.Errorf(codes.FailedPrecondition, "run %q: log is not a regular file at %s", name, boxRunFilePath(dir, name, ext))
 		}
-		if w.record.CaptureMode != agentbox.CaptureFramed && len(w.raw) > readLimit {
+		// A structured run creates its stderr log before its record is
+		// written, so a run without one is a run that keeps none.
+		if !w.logSeen && stream == pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR {
+			return nil, status.Errorf(codes.FailedPrecondition, "run %q keeps no separate stderr log: only a run started with structured_output does; read its log instead", name)
+		}
+		if !w.framed && len(w.raw) > readLimit {
 			w.raw = w.raw[:readLimit]
 		}
 		limit := readLimit
-		if w.record.CaptureMode == agentbox.CaptureFramed {
+		if w.framed {
 			limit = max(readLimit, boxRunMaxFrameLine+1)
 		}
 		resp, err := boxRunResponse(w, offset, maxBytes, limit)
 		if err != nil {
 			return nil, err
 		}
+		resp.Stream = stream
 		if resp.EndOffset != offset || resp.Ended || !time.Now().Add(poll).Before(deadline) {
 			return resp, nil
 		}
