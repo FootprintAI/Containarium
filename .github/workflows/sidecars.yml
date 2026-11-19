@@ -39,6 +39,14 @@ jobs:
       packages: write   # for GHCR push and the signature push
       security-events: write   # for the Trivy SARIF upload
       id-token: write   # cosign keyless (GitHub OIDC -> Fulcio)
+    services:
+      # Scan registry (#3578): the image is built and pushed here, scanned, and
+      # only then copied to GHCR. Nothing reaches GHCR or a signature before the
+      # scan has passed.
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -48,6 +56,9 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          # Lets buildkit reach the job's localhost scan registry (see the services block).
+          driver-opts: network=host
 
       - name: Log in to GHCR
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
@@ -89,27 +100,68 @@ jobs:
             echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push otel-sidecar
+      - name: Build otel-sidecar for scanning
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: ./sidecars/otel-sidecar
           file: ./sidecars/otel-sidecar/Dockerfile
-          # linux/amd64 only for v1 — bare-metal peers may want arm64
-          # later but our prod fleet is amd64 today.
           platforms: linux/amd64
-          # Push on tag only; a rehearsal builds the image and discards it.
-          push: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-          tags: ${{ steps.tags.outputs.tags }}
-          # Build provenance + SBOM are GHA-default for buildx push;
-          # explicit so it's reviewable. NOTE: this is why the Trivy step
-          # below can't use `load: true` on this same step — buildx's
-          # docker-load exporter can't emit a manifest list, and enabling
-          # provenance/sbom forces one even for a single-platform build
-          # ("docker exporter does not currently support exporting
-          # manifest lists"). Pulling the pushed tag back down avoids it.
+          # Always pushed to the job's own scan registry, never to GHCR: the
+          # scan below reads this copy, and only a passing scan lets it on.
+          # Rehearsals run the same build and scan.
+          push: true
+          tags: localhost:5000/containarium-otel-sidecar:scan
+          # Same attestations as before; the GHCR copy keeps them byte-for-byte.
           provenance: true
           sbom: true
+
+      - name: Pull the built image for scanning
+        run: docker pull localhost:5000/containarium-otel-sidecar:scan
+
+      # Blocking gate BEFORE any publish or signature (#3578): a fixed
+      # CRITICAL/HIGH finding fails the job while the image is still only on the
+      # runner. Same flags as before, now on the pre-publish copy.
+      - name: Run Trivy vulnerability scanner (image, before publish)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
+          image-ref: localhost:5000/containarium-otel-sidecar:scan
+          format: 'sarif'
+          output: 'trivy-otel-sidecar-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF results
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
+        with:
+          sarif_file: trivy-otel-sidecar-results.sarif
+
+      # Tag pushes only. Copies the exact manifest (index and attestations) that
+      # was scanned to each GHCR tag, by digest, so the published digest is the
+      # scanned one. A digest mismatch fails the job before signing.
+      - name: Publish the scanned image to GHCR
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+          SOURCE: localhost:5000/containarium-otel-sidecar@${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra tag_list <<< "$TAGS"
+          args=()
+          for t in "${tag_list[@]}"; do args+=(-t "$t"); done
+          docker buildx imagetools create "${args[@]}" "$SOURCE"
+          for t in "${tag_list[@]}"; do
+            got=$(docker buildx imagetools inspect "$t" --format '{{json .Manifest}}' | jq -r '.digest')
+            if [ "$got" != "$DIGEST" ]; then
+              echo "::error::$t is $got, expected the scanned digest $DIGEST" >&2
+              exit 1
+            fi
+          done
 
       # Keyless signature of the pushed digest (never a tag), verified in
       # the same step against this workflow at this tag; the job fails if
@@ -124,33 +176,6 @@ jobs:
           digest: ${{ steps.build.outputs.digest }}
           workflow-file: sidecars.yml
 
-      # Scans the actual image just published — pulled back from GHCR
-      # rather than `load: true`d out of the build step above (see its
-      # comment). Real tag pushes only: a rehearsal doesn't push anything,
-      # so there is nothing here to pull.
-      - name: Pull published image for scanning
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        run: docker pull ${{ steps.tags.outputs.scan_ref }}
-
-      - name: Run Trivy vulnerability scanner (image)
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
-          image-ref: ${{ steps.tags.outputs.scan_ref }}
-          format: 'sarif'
-          output: 'trivy-otel-sidecar-results.sarif'
-          severity: 'CRITICAL,HIGH'
-          limit-severities-for-sarif: 'true'
-          ignore-unfixed: 'true'
-          exit-code: '1'
-
-      - name: Upload Trivy SARIF results
-        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
-        with:
-          sarif_file: trivy-otel-sidecar-results.sarif
-
   sshpiper:
     runs-on: ubuntu-latest
     # Job-level: replaces the workflow-level grant for this job. id-token is
@@ -160,12 +185,23 @@ jobs:
       packages: write   # for GHCR push and the signature push
       security-events: write   # for the Trivy SARIF upload
       id-token: write   # cosign keyless (GitHub OIDC -> Fulcio)
+    services:
+      # Scan registry (#3578): the image is built and pushed here, scanned, and
+      # only then copied to GHCR. Nothing reaches GHCR or a signature before the
+      # scan has passed.
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          # Lets buildkit reach the job's localhost scan registry (see the services block).
+          driver-opts: network=host
 
       - name: Log in to GHCR
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
@@ -201,20 +237,68 @@ jobs:
             echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push containarium-sshpiper
+      - name: Build containarium-sshpiper for scanning
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: ./images/sshpiper
           file: ./images/sshpiper/Dockerfile
           platforms: linux/amd64
-          # Push on tag only; a rehearsal builds the image and discards it.
-          push: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-          tags: ${{ steps.tags.outputs.tags }}
-          # See the otel-sidecar job's comment above for why the Trivy step
-          # below pulls the pushed tag instead of using `load: true` here.
+          # Always pushed to the job's own scan registry, never to GHCR: the
+          # scan below reads this copy, and only a passing scan lets it on.
+          # Rehearsals run the same build and scan.
+          push: true
+          tags: localhost:5000/containarium-sshpiper:scan
+          # Same attestations as before; the GHCR copy keeps them byte-for-byte.
           provenance: true
           sbom: true
+
+      - name: Pull the built image for scanning
+        run: docker pull localhost:5000/containarium-sshpiper:scan
+
+      # Blocking gate BEFORE any publish or signature (#3578): a fixed
+      # CRITICAL/HIGH finding fails the job while the image is still only on the
+      # runner. Same flags as before, now on the pre-publish copy.
+      - name: Run Trivy vulnerability scanner (image, before publish)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
+          image-ref: localhost:5000/containarium-sshpiper:scan
+          format: 'sarif'
+          output: 'trivy-sshpiper-release-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF results
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
+        with:
+          sarif_file: trivy-sshpiper-release-results.sarif
+
+      # Tag pushes only. Copies the exact manifest (index and attestations) that
+      # was scanned to each GHCR tag, by digest, so the published digest is the
+      # scanned one. A digest mismatch fails the job before signing.
+      - name: Publish the scanned image to GHCR
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+          SOURCE: localhost:5000/containarium-sshpiper@${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra tag_list <<< "$TAGS"
+          args=()
+          for t in "${tag_list[@]}"; do args+=(-t "$t"); done
+          docker buildx imagetools create "${args[@]}" "$SOURCE"
+          for t in "${tag_list[@]}"; do
+            got=$(docker buildx imagetools inspect "$t" --format '{{json .Manifest}}' | jq -r '.digest')
+            if [ "$got" != "$DIGEST" ]; then
+              echo "::error::$t is $got, expected the scanned digest $DIGEST" >&2
+              exit 1
+            fi
+          done
 
       # Keyless signature of the pushed digest (never a tag), verified in
       # the same step against this workflow at this tag; the job fails if
@@ -229,33 +313,6 @@ jobs:
           digest: ${{ steps.build.outputs.digest }}
           workflow-file: sidecars.yml
 
-      # Note: sshpiper-image.yml already scans a build of this same
-      # Dockerfile on every PR/push to main — this scans the actual image
-      # about to be published on a release tag instead. Real tag pushes
-      # only, same reasoning as the otel-sidecar job above.
-      - name: Pull published image for scanning
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        run: docker pull ${{ steps.tags.outputs.scan_ref }}
-
-      - name: Run Trivy vulnerability scanner (image)
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
-          image-ref: ${{ steps.tags.outputs.scan_ref }}
-          format: 'sarif'
-          output: 'trivy-sshpiper-release-results.sarif'
-          severity: 'CRITICAL,HIGH'
-          limit-severities-for-sarif: 'true'
-          ignore-unfixed: 'true'
-          exit-code: '1'
-
-      - name: Upload Trivy SARIF results
-        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
-        with:
-          sarif_file: trivy-sshpiper-release-results.sarif
-
   agent-box:
     runs-on: ubuntu-latest
     # Job-level: replaces the workflow-level grant for this job. id-token is
@@ -265,12 +322,23 @@ jobs:
       packages: write   # for GHCR push and the signature push
       security-events: write   # for the Trivy SARIF upload
       id-token: write   # cosign keyless (GitHub OIDC -> Fulcio)
+    services:
+      # Scan registry (#3578): the image is built and pushed here, scanned, and
+      # only then copied to GHCR. Nothing reaches GHCR or a signature before the
+      # scan has passed.
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          # Lets buildkit reach the job's localhost scan registry (see the services block).
+          driver-opts: network=host
 
       - name: Log in to GHCR
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
@@ -306,21 +374,68 @@ jobs:
             echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push containarium-agent-box
+      - name: Build containarium-agent-box for scanning
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
-          # Repo root context: the Dockerfile builds ./cmd/agent-box.
           context: .
           file: ./images/agent-box/Dockerfile
           platforms: linux/amd64
-          # Push on tag only; a rehearsal builds the image and discards it.
-          push: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-          tags: ${{ steps.tags.outputs.tags }}
-          # See the otel-sidecar job's comment above for why the Trivy step
-          # below pulls the pushed tag instead of using `load: true` here.
+          # Always pushed to the job's own scan registry, never to GHCR: the
+          # scan below reads this copy, and only a passing scan lets it on.
+          # Rehearsals run the same build and scan.
+          push: true
+          tags: localhost:5000/containarium-agent-box:scan
+          # Same attestations as before; the GHCR copy keeps them byte-for-byte.
           provenance: true
           sbom: true
+
+      - name: Pull the built image for scanning
+        run: docker pull localhost:5000/containarium-agent-box:scan
+
+      # Blocking gate BEFORE any publish or signature (#3578): a fixed
+      # CRITICAL/HIGH finding fails the job while the image is still only on the
+      # runner. Same flags as before, now on the pre-publish copy.
+      - name: Run Trivy vulnerability scanner (image, before publish)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
+          image-ref: localhost:5000/containarium-agent-box:scan
+          format: 'sarif'
+          output: 'trivy-agent-box-release-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF results
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
+        with:
+          sarif_file: trivy-agent-box-release-results.sarif
+
+      # Tag pushes only. Copies the exact manifest (index and attestations) that
+      # was scanned to each GHCR tag, by digest, so the published digest is the
+      # scanned one. A digest mismatch fails the job before signing.
+      - name: Publish the scanned image to GHCR
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+          SOURCE: localhost:5000/containarium-agent-box@${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra tag_list <<< "$TAGS"
+          args=()
+          for t in "${tag_list[@]}"; do args+=(-t "$t"); done
+          docker buildx imagetools create "${args[@]}" "$SOURCE"
+          for t in "${tag_list[@]}"; do
+            got=$(docker buildx imagetools inspect "$t" --format '{{json .Manifest}}' | jq -r '.digest')
+            if [ "$got" != "$DIGEST" ]; then
+              echo "::error::$t is $got, expected the scanned digest $DIGEST" >&2
+              exit 1
+            fi
+          done
 
       # Keyless signature of the pushed digest (never a tag), verified in
       # the same step against this workflow at this tag; the job fails if
@@ -335,33 +450,6 @@ jobs:
           digest: ${{ steps.build.outputs.digest }}
           workflow-file: sidecars.yml
 
-      # Note: agent-box-image.yml already scans a build of this same
-      # Dockerfile on every PR/push to main — this scans the actual image
-      # about to be published on a release tag instead. Real tag pushes
-      # only, same reasoning as the otel-sidecar job above.
-      - name: Pull published image for scanning
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        run: docker pull ${{ steps.tags.outputs.scan_ref }}
-
-      - name: Run Trivy vulnerability scanner (image)
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
-          image-ref: ${{ steps.tags.outputs.scan_ref }}
-          format: 'sarif'
-          output: 'trivy-agent-box-release-results.sarif'
-          severity: 'CRITICAL,HIGH'
-          limit-severities-for-sarif: 'true'
-          ignore-unfixed: 'true'
-          exit-code: '1'
-
-      - name: Upload Trivy SARIF results
-        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
-        with:
-          sarif_file: trivy-agent-box-release-results.sarif
-
   # slides-agent (#3434): the prebaked image the `slides-agent` recipe runs in a
   # box (images/slides-agent/Dockerfile). Published like the sidecars so the
   # recipe's default image reference, ghcr.io/footprintai/containarium-slides-agent:<release>,
@@ -375,12 +463,23 @@ jobs:
       packages: write   # for GHCR push and the signature push
       security-events: write   # for the Trivy SARIF upload
       id-token: write   # cosign keyless (GitHub OIDC -> Fulcio)
+    services:
+      # Scan registry (#3578): the image is built and pushed here, scanned, and
+      # only then copied to GHCR. Nothing reaches GHCR or a signature before the
+      # scan has passed.
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          # Lets buildkit reach the job's localhost scan registry (see the services block).
+          driver-opts: network=host
 
       - name: Log in to GHCR
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
@@ -416,21 +515,68 @@ jobs:
             echo "scan_ref=${base}:v${version}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push containarium-slides-agent
+      - name: Build containarium-slides-agent for scanning
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
-          # Repo root context: the Dockerfile copies images/slides-agent/*.
           context: .
           file: ./images/slides-agent/Dockerfile
           platforms: linux/amd64
-          # Push on tag only; a rehearsal builds the image and discards it.
-          push: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-          tags: ${{ steps.tags.outputs.tags }}
-          # See the otel-sidecar job's comment above for why the Trivy step
-          # below pulls the pushed tag instead of using `load: true` here.
+          # Always pushed to the job's own scan registry, never to GHCR: the
+          # scan below reads this copy, and only a passing scan lets it on.
+          # Rehearsals run the same build and scan.
+          push: true
+          tags: localhost:5000/containarium-slides-agent:scan
+          # Same attestations as before; the GHCR copy keeps them byte-for-byte.
           provenance: true
           sbom: true
+
+      - name: Pull the built image for scanning
+        run: docker pull localhost:5000/containarium-slides-agent:scan
+
+      # Blocking gate BEFORE any publish or signature (#3578): a fixed
+      # CRITICAL/HIGH finding fails the job while the image is still only on the
+      # runner. Same flags as before, now on the pre-publish copy.
+      - name: Run Trivy vulnerability scanner (image, before publish)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
+          image-ref: localhost:5000/containarium-slides-agent:scan
+          format: 'sarif'
+          output: 'trivy-slides-agent-release-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          limit-severities-for-sarif: 'true'
+          ignore-unfixed: 'true'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF results
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
+        with:
+          sarif_file: trivy-slides-agent-release-results.sarif
+
+      # Tag pushes only. Copies the exact manifest (index and attestations) that
+      # was scanned to each GHCR tag, by digest, so the published digest is the
+      # scanned one. A digest mismatch fails the job before signing.
+      - name: Publish the scanned image to GHCR
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+          SOURCE: localhost:5000/containarium-slides-agent@${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra tag_list <<< "$TAGS"
+          args=()
+          for t in "${tag_list[@]}"; do args+=(-t "$t"); done
+          docker buildx imagetools create "${args[@]}" "$SOURCE"
+          for t in "${tag_list[@]}"; do
+            got=$(docker buildx imagetools inspect "$t" --format '{{json .Manifest}}' | jq -r '.digest')
+            if [ "$got" != "$DIGEST" ]; then
+              echo "::error::$t is $got, expected the scanned digest $DIGEST" >&2
+              exit 1
+            fi
+          done
 
       # Keyless signature of the pushed digest (never a tag), verified in
       # the same step against this workflow at this tag; the job fails if
@@ -444,30 +590,3 @@ jobs:
           image: ${{ steps.tags.outputs.image }}
           digest: ${{ steps.build.outputs.digest }}
           workflow-file: sidecars.yml
-
-      # Note: slides-agent-image.yml already scans a build of this same
-      # Dockerfile on every PR/push to main — this scans the actual image
-      # about to be published on a release tag instead. Real tag pushes
-      # only, same reasoning as the otel-sidecar job above.
-      - name: Pull published image for scanning
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        run: docker pull ${{ steps.tags.outputs.scan_ref }}
-
-      - name: Run Trivy vulnerability scanner (image)
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: 'v0.76.1' # Trivy binary: bump deliberately, not with the action
-          image-ref: ${{ steps.tags.outputs.scan_ref }}
-          format: 'sarif'
-          output: 'trivy-slides-agent-release-results.sarif'
-          severity: 'CRITICAL,HIGH'
-          limit-severities-for-sarif: 'true'
-          ignore-unfixed: 'true'
-          exit-code: '1'
-
-      - name: Upload Trivy SARIF results
-        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
-        with:
-          sarif_file: trivy-slides-agent-release-results.sarif
