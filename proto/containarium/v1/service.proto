@@ -569,14 +569,15 @@ service ContainerService {
   // TailBoxRunLog reads one byte window of a box run's log (#2123), the
   // TailRunLog contract (#2096) for `code run` logs: resumable (pass
   // end_offset back as start_offset) and bounded (max_bytes,
-  // follow_seconds). A framed log is demuxed to its stdout.
+  // follow_seconds). A framed log is demuxed to its stdout. stream STDERR
+  // reads a structured_output run's separate stderr log instead (#3757).
   rpc TailBoxRunLog(TailBoxRunLogRequest) returns (TailBoxRunLogResponse) {
     option (google.api.http) = {
       get: "/v1/containers/{username}/code-runs/{run_name}/log"
     };
     option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
       summary: "Tail a box code run's log";
-      description: "Returns one byte window of a code run's log plus the offset to resume from; ended once the run has an exit code and the log is read to its end. Framed logs are demuxed to stdout, with stderr_dropped set when stderr frames were skipped. Box owner or collaborator, ssh:write scope.";
+      description: "Returns one byte window of a code run's log plus the offset to resume from; ended once the run has an exit code and the log is read to its end. Framed logs are demuxed to stdout, with stderr_dropped set when stderr frames were skipped. stream=BOX_RUN_LOG_STREAM_STDERR reads a structured_output run's separate stderr log instead (capability box_run_stderr); a run without one is FAILED_PRECONDITION. Box owner or collaborator, ssh:write scope.";
       tags: "Code Runs";
     };
   }

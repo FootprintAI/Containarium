@@ -1271,7 +1271,10 @@ func (s *Server) registerTools() {
 				"needed. Returns the bytes plus end_offset; pass end_offset back as start_offset " +
 				"to continue, like tail_log. ended=true once the run has exited and its log is " +
 				"read to the end. A framed (stream-json) run's stderr is left out and flagged by " +
-				"stderr_dropped. Same reader as `containarium code logs`.",
+				"stderr_dropped. stream='stderr' reads the separate stderr log a structured_output " +
+				"run keeps instead (the engine's error text when it failed before writing its result " +
+				"object); a run without one, or a daemon that does not list box_run_stderr, is an " +
+				"error. Same reader as `containarium code logs`.",
 			InputSchema: map[string]interface{}{
 				"type":     "object",
 				"required": []string{"box", "run"},
@@ -1280,6 +1283,11 @@ func (s *Server) registerTools() {
 					"run":            map[string]interface{}{"type": "string", "description": "Run name, from code_runs."},
 					"start_offset":   map[string]interface{}{"type": "number", "description": "Byte offset to read from (default 0)."},
 					"follow_seconds": map[string]interface{}{"type": "number", "description": "Wait up to this many seconds (0-10) for new bytes when none are available."},
+					"stream": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"log", "stderr"},
+						"description": "Which log to read: 'log' (default) or 'stderr', a structured_output run's separate stderr log.",
+					},
 				},
 			},
 			Handler: handleCodeLogs,
@@ -3703,6 +3711,13 @@ func handleCodeLogs(client API, args map[string]interface{}) (string, error) {
 	}
 	if v, ok := getIntArg(args, "follow_seconds"); ok {
 		req.FollowSeconds = int32(min(max(v, 0), runlog.FollowSeconds)) // #nosec G115 -- clamped to 0..10
+	}
+	switch stream := strings.TrimSpace(getStringArg(args, "stream", "")); stream {
+	case "", "log":
+	case "stderr":
+		req.Stream = pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR
+	default:
+		return "", fmt.Errorf("`stream` must be log or stderr, not %q", stream)
 	}
 	resp, err := runlog.BoxWindow(client, req)
 	if err != nil {

@@ -77,7 +77,7 @@ finished run of the same name is not rotated) the engine runs with
 | File | Content |
 | --- | --- |
 | `<run_name>.log` | Exactly the engine's one JSON result object: `type` (`result`), `subtype` (for example `success` or an error subtype), `is_error`, `result` (the final text), `session_id`, `usage`, and the engine's other result fields. |
-| `/tmp/agent-box/<user>/<run_name>.stderr.log` | The engine's stderr, kept apart so the main log stays valid JSON. It is not served by `TailBoxRunLog` (no RPC reads it yet); read it on the box. |
+| `/tmp/agent-box/<user>/<run_name>.stderr.log` | The engine's stderr, kept apart so the main log stays valid JSON. Read it through `TailBoxRunLog` with `stream: BOX_RUN_LOG_STREAM_STDERR` (see below). |
 
 The object is written when the run ends; while it runs the main log is empty.
 `TailBoxRunLog` and `containarium code logs` return the log as opaque bytes, so
@@ -85,6 +85,31 @@ they return the object verbatim. The run record's capture mode is still
 `combined` ("plain text, not framed"): the name predates this option and does
 not mean stdout and stderr are merged here. For a structured run the log holds
 stdout only; stderr is in the separate file above.
+
+### Reading a structured run's stderr: `stream`
+
+When the engine fails before it writes its result object (an expired sign-in, a
+network error, a crash), the log stays empty and the reason is only on stderr.
+`TailBoxRunLog` reads that file when the request sets
+`stream: BOX_RUN_LOG_STREAM_STDERR` (REST: `?stream=BOX_RUN_LOG_STREAM_STDERR`):
+
+- The same offset, `max_bytes`, `follow_seconds` and `ended` rules as the log
+  apply, measured against the stderr file. Its bytes are returned as-is.
+- The response's `stream` names the log the window was read from (`LOG` or
+  `STDERR`).
+- A run that keeps no stderr log, which is any run started without
+  `structured_output`, is `FAILED_PRECONDITION`: a plain-text run's stderr is
+  already in its log.
+- The default (`UNSPECIFIED`, or `LOG`) reads the run's log, exactly as before.
+
+A daemon advertises this as `box_run_stderr` in `SystemInfo.capabilities`. An
+older daemon ignores the field and serves the run's log, with no `stream` in
+the response; `containarium code logs --stderr` and the MCP `code_logs` tool
+(`stream: "stderr"`) refuse such a window instead of showing it as stderr.
+
+```bash
+containarium code logs alice my-run --stderr --server <host>
+```
 
 `BoxRun.session_id` is decoded by the daemon, not by a shell script: once the
 run has exited, `ListBoxRuns` parses the log with a JSON decoder and uses ONLY
