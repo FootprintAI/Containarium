@@ -53,6 +53,8 @@ func bashRules(prefixes ...string) []string {
 var boxRunGitSubcommands = []string{
 	"clone", "fetch", "checkout", "switch", "branch", "add", "commit",
 	"status", "diff", "log", "show", "rev-parse", "ls-files",
+	// merge-base only reads history: a run that compares a branch head with its base needs the fork point.
+	"merge-base",
 }
 
 // boxRunGitLeadOptions are the global options an allowed git command may start
