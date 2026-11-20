@@ -416,3 +416,18 @@ func TestToolVersionLines_NeverCarryAFilesystemPath(t *testing.T) {
 		t.Errorf("pip3 line = %v, want the version without the path", f)
 	}
 }
+
+// pytest is on the tool report's allowlist (#3788), so a run on a Python
+// repository records whether the test runner was available.
+func TestBoxRunToolEndProbe_ReportsPytest(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFakeTool(t, bin, "pytest", "pytest 8.3.1", "")
+	out := runShell(t, probeEnv(t, root, []string{bin}), boxRunToolEndProbeFn()+"; __probe_end "+shellSingleQuote(filepath.Join(t.TempDir(), "p")))
+	if f := fields(out)["pytest"]; len(f) != 5 || f[2] != "pytest 8.3.1" {
+		t.Errorf("pytest line = %v, want its version", f)
+	}
+}
