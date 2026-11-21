@@ -3905,7 +3905,7 @@
     "/v1/containers/{username}/code-runs/{runName}/log": {
       "get": {
         "summary": "Tail a box code run's log",
-        "description": "Returns one byte window of a code run's log plus the offset to resume from; ended once the run has an exit code and the log is read to its end. Framed logs are demuxed to stdout, with stderr_dropped set when stderr frames were skipped. Box owner or collaborator, ssh:write scope.",
+        "description": "Returns one byte window of a code run's log plus the offset to resume from; ended once the run has an exit code and the log is read to its end. Framed logs are demuxed to stdout, with stderr_dropped set when stderr frames were skipped. stream=BOX_RUN_LOG_STREAM_STDERR reads a structured_output run's separate stderr log instead (capability box_run_stderr); a run without one is FAILED_PRECONDITION. Box owner or collaborator, ssh:write scope.",
         "operationId": "ContainerService_TailBoxRunLog",
         "responses": {
           "200": {
@@ -3959,6 +3959,19 @@
             "required": false,
             "type": "integer",
             "format": "int32"
+          },
+          {
+            "name": "stream",
+            "description": "Which log to read (#3757). UNSPECIFIED or LOG reads the run's log, as\nbefore. STDERR reads the separate stderr log a structured_output run\nkeeps, with the same offset, window, follow and ended rules; its bytes\nare served as-is. STDERR on a run that keeps no stderr log (any run\nstarted without structured_output) is FAILED_PRECONDITION. Any other\nvalue is INVALID_ARGUMENT. Capability \"box_run_stderr\" in\nSystemInfo.capabilities: an older daemon ignores the field and reads the\nrun's log, which a caller can also tell from the response's stream.\n\n - BOX_RUN_LOG_STREAM_UNSPECIFIED: The run's log (\u003crun_name\u003e.log), exactly as before the field existed.\n - BOX_RUN_LOG_STREAM_LOG: The run's log (\u003crun_name\u003e.log), named explicitly. Same as UNSPECIFIED.\n - BOX_RUN_LOG_STREAM_STDERR: The separate stderr log a structured_output run keeps\n(\u003crun_name\u003e.stderr.log): the engine's error text when it fails before it\nwrites its result object. Only a structured_output run has one.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "BOX_RUN_LOG_STREAM_UNSPECIFIED",
+              "BOX_RUN_LOG_STREAM_LOG",
+              "BOX_RUN_LOG_STREAM_STDERR"
+            ],
+            "default": "BOX_RUN_LOG_STREAM_UNSPECIFIED"
           }
         ],
         "tags": [
@@ -12823,6 +12836,16 @@
       ],
       "default": "BOX_RUN_CHECKOUT_DISPOSITION_UNSPECIFIED",
       "description": "BoxRunCheckoutDisposition is what a sweep did, or would do, with one\nmatching entry.\n\n - BOX_RUN_CHECKOUT_DISPOSITION_REMOVED: Removed by this sweep.\n - BOX_RUN_CHECKOUT_DISPOSITION_WOULD_REMOVE: A dry run: a real sweep at this moment would remove it.\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_RECENT: Its newest modification is within the daemon's maximum age (or could not\nbe read).\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_LIVE_RUN: It may be a live run's working directory: modified at or after the start\nof a run on the box that is still going, or named as a live run's cwd.\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_IN_USE: A process on the box has its working directory in it.\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_SYMLINK: A symbolic link; links are never followed or removed.\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_NOT_DIRECTORY: Not a directory.\n - BOX_RUN_CHECKOUT_DISPOSITION_KEPT_CHANGED: Chosen for removal, but at removal time it no longer qualified (it was\nreplaced, modified, or a process entered it); left alone.\n - BOX_RUN_CHECKOUT_DISPOSITION_REMOVE_FAILED: Chosen for removal, but removing it failed (for example a mount inside\nit); whatever is left stays."
+    },
+    "BoxRunLogStream": {
+      "type": "string",
+      "enum": [
+        "BOX_RUN_LOG_STREAM_UNSPECIFIED",
+        "BOX_RUN_LOG_STREAM_LOG",
+        "BOX_RUN_LOG_STREAM_STDERR"
+      ],
+      "default": "BOX_RUN_LOG_STREAM_UNSPECIFIED",
+      "description": "BoxRunLogStream names which of a box run's logs TailBoxRunLog reads (#3757).\n\n - BOX_RUN_LOG_STREAM_UNSPECIFIED: The run's log (\u003crun_name\u003e.log), exactly as before the field existed.\n - BOX_RUN_LOG_STREAM_LOG: The run's log (\u003crun_name\u003e.log), named explicitly. Same as UNSPECIFIED.\n - BOX_RUN_LOG_STREAM_STDERR: The separate stderr log a structured_output run keeps\n(\u003crun_name\u003e.stderr.log): the engine's error text when it fails before it\nwrites its result object. Only a structured_output run has one."
     },
     "BoxRunOutcome": {
       "type": "string",
@@ -23270,7 +23293,7 @@
         },
         "structuredOutput": {
           "type": "boolean",
-          "description": "When true the engine runs with `--output-format json` (Claude Code only;\nany other engine is FAILED_PRECONDITION, before anything on the box is\ntouched). The run's log (\u003crun_name\u003e.log) is then exactly the engine's one\nJSON result object (type, subtype, is_error, result, session_id, usage,\n...); stderr is kept apart in \u003clog-dir\u003e/\u003crun_name\u003e.stderr.log, which\nTailBoxRunLog does not serve. Once the run has exited, ListBoxRuns reads\nthe object and reports its TOP-LEVEL session_id as BoxRun.session_id\n(nested keys are ignored; truncated or invalid JSON, or an object over\n1 MiB, yields no id). The object appears when the run ends: the log is\nempty while it runs. Default false leaves the plain-text behaviour\nunchanged.\n\nNORMATIVE: a caller that needs the session id reliably MUST set\nstructured_output. Without it BoxRun.session_id of a fresh run is\nbest-effort directory discovery (exactly one new transcript must appear\nwhile the run lives; a member's interactive session or another run\nstarting meanwhile makes it ambiguous) and may be missing. A\ncontinue_session run gets no discovered id at all. Capability\n\"box_run_structured_output\" in SystemInfo.capabilities."
+          "description": "When true the engine runs with `--output-format json` (Claude Code only;\nany other engine is FAILED_PRECONDITION, before anything on the box is\ntouched). The run's log (\u003crun_name\u003e.log) is then exactly the engine's one\nJSON result object (type, subtype, is_error, result, session_id, usage,\n...); stderr is kept apart in \u003clog-dir\u003e/\u003crun_name\u003e.stderr.log, which\nTailBoxRunLog serves with stream STDERR (capability \"box_run_stderr\",\n#3757). Once the run has exited, ListBoxRuns reads the object and\nreports its TOP-LEVEL session_id as BoxRun.session_id\n(nested keys are ignored; truncated or invalid JSON, or an object over\n1 MiB, yields no id). The object appears when the run ends: the log is\nempty while it runs. Default false leaves the plain-text behaviour\nunchanged.\n\nNORMATIVE: a caller that needs the session id reliably MUST set\nstructured_output. Without it BoxRun.session_id of a fresh run is\nbest-effort directory discovery (exactly one new transcript must appear\nwhile the run lives; a member's interactive session or another run\nstarting meanwhile makes it ambiguous) and may be missing. A\ncontinue_session run gets no discovered id at all. Capability\n\"box_run_structured_output\" in SystemInfo.capabilities."
         },
         "model": {
           "type": "string",
@@ -23916,6 +23939,10 @@
         "stderrDropped": {
           "type": "boolean",
           "description": "This window held stderr frames of a FRAMED log, which are not in chunk."
+        },
+        "stream": {
+          "$ref": "#/definitions/BoxRunLogStream",
+          "description": "The log this window was read from: LOG or STDERR (#3757). UNSPECIFIED\nonly from a daemon without the \"box_run_stderr\" capability, which always\nreads the run's log whatever the request's stream."
         }
       },
       "description": "TailBoxRunLogResponse is one window of a box run's log: the\nTailRunLogResponse shape, plus stderr_dropped."

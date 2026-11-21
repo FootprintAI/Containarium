@@ -21,6 +21,9 @@ type fakeBoxRunServer struct {
 	reqs          []*pb.TailBoxRunLogRequest
 	runs          []*pb.BoxRun
 	listed        []string
+
+	// stream is echoed as the log each window was read from.
+	stream pb.BoxRunLogStream
 }
 
 func (f *fakeBoxRunServer) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.TailBoxRunLogResponse, error) {
@@ -38,6 +41,7 @@ func (f *fakeBoxRunServer) TailBoxRunLog(req *pb.TailBoxRunLogRequest) (*pb.Tail
 		EndOffset:     end,
 		Ended:         end == int64(len(f.log)),
 		StderrDropped: f.stderrDropped,
+		Stream:        f.stream,
 	}, nil
 }
 
@@ -56,7 +60,7 @@ func TestCodeLogsFollow_ByteExact(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	var out, diag bytes.Buffer
-	if err := codeLogs(cmd, f, "alice", "task", true, &out, &diag); err != nil {
+	if err := codeLogs(cmd, f, codeLogsRequest("alice", "task", false), true, &out, &diag); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(out.Bytes(), log) {
@@ -84,7 +88,7 @@ func TestCodeLogs_NoFollowNotesDroppedStderr(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	var out, diag bytes.Buffer
-	if err := codeLogs(cmd, f, "alice", "task", false, &out, &diag); err != nil {
+	if err := codeLogs(cmd, f, codeLogsRequest("alice", "task", false), false, &out, &diag); err != nil {
 		t.Fatal(err)
 	}
 	if out.String() != string(log) || len(f.reqs) != 1 || f.reqs[0].GetFollowSeconds() != 0 {
@@ -92,6 +96,55 @@ func TestCodeLogs_NoFollowNotesDroppedStderr(t *testing.T) {
 	}
 	if strings.Count(diag.String(), "stderr") != 1 {
 		t.Errorf("diagnostics = %q, want one stderr note", diag.String())
+	}
+}
+
+// `code logs --stderr` reads a structured run's stderr log (#3757): every
+// window asks for it, and the output is that log byte for byte.
+func TestCodeLogs_Stderr(t *testing.T) {
+	log := []byte("Error: the sign-in has expired\n")
+	f := &fakeBoxRunServer{log: log, cuts: []int64{6, int64(len(log))}, stream: pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR}
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var out, diag bytes.Buffer
+	if err := codeLogs(cmd, f, codeLogsRequest("alice", "task", true), true, &out, &diag); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(out.Bytes(), log) || diag.Len() != 0 {
+		t.Errorf("out=%q diag=%q; want the stderr log and no diagnostics", out.Bytes(), diag.String())
+	}
+	if len(f.reqs) != 2 {
+		t.Fatalf("%d requests, want 2", len(f.reqs))
+	}
+	for i, r := range f.reqs {
+		if r.GetStream() != pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR {
+			t.Errorf("request %d stream = %v, want STDERR", i, r.GetStream())
+		}
+	}
+}
+
+// A daemon that ignores the stream answers with the run's log; --stderr
+// refuses it and prints none of it.
+func TestCodeLogs_StderrOnAnOlderDaemon(t *testing.T) {
+	f := &fakeBoxRunServer{log: []byte(`{"type":"result"}`), cuts: []int64{17}}
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var out, diag bytes.Buffer
+	err := codeLogs(cmd, f, codeLogsRequest("alice", "task", true), false, &out, &diag)
+	if err == nil || !strings.Contains(err.Error(), "box_run_stderr") {
+		t.Fatalf("err = %v, want one naming the box_run_stderr capability", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("printed %q from a window that is not the stderr log", out.String())
+	}
+}
+
+func TestCodeLogsRequest(t *testing.T) {
+	if r := codeLogsRequest("alice", "task", false); r.GetStream() != pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_UNSPECIFIED || r.GetUsername() != "alice" || r.GetRunName() != "task" {
+		t.Errorf("plain request = %v", r)
+	}
+	if r := codeLogsRequest("alice", "task", true); r.GetStream() != pb.BoxRunLogStream_BOX_RUN_LOG_STREAM_STDERR {
+		t.Errorf("--stderr request = %v, want stream STDERR", r)
 	}
 }
 
