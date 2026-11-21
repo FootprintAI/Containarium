@@ -24,6 +24,10 @@ type containerView struct {
 	// nothing the box's own packets are validated against.
 	IP    [4]byte
 	HasIP bool
+	// CoreRole marks a core service (postgres, caddy, …) the host provisions. The
+	// guest cannot change its role, so it alone may keep a guest-reported address
+	// as a fallback (see planReconcile, #3774).
+	CoreRole bool
 	// HostIP is the box's address as the HOST knows it — the NIC device's
 	// static ipv4.address or the bridge's DHCP lease — the only source the
 	// program's source validation and inbound-flow seeding trust (#2618). Root
@@ -112,20 +116,22 @@ func planReconcile(views []containerView, policies map[string]netpolicy.Compiled
 	// once, keyed by the tenant IDs we actually saw.
 	egressDone := make(map[uint32]bool)
 
-	// ip_tenant (#3690). A box's HOST-known address is attributed first. The
-	// guest reports its own address, and root in the box can change it, so a
-	// guest-reported address is only a fallback for a box the host has no
-	// address for, and never overrides a host-known row. That stops a box
-	// claiming another tenant's address while core services and stopped boxes
-	// keep the tagging they had.
+	// ip_tenant (#3690, #3774). A tenant box's HOST-known address attributes it.
+	// The guest reports its own address, and root in the box can change it, so a
+	// tenant box's guest-reported address never names a tenant or a box, not even
+	// as a fallback: it fails per box, unattributed until the host knows it.
 	for _, v := range views {
 		if !v.ValidateOnly && v.HasHostIP {
 			plan.ipTenant[v.HostIP] = v.TenantID
 			plan.ipBox[v.HostIP] = v.Name
 		}
 	}
+	// Core services keep their isolation tag when the host has no address for
+	// them (#2618: a core service is tagged, so tenants stay isolated from it).
+	// Only host-provisioned core roles get this fallback; a tenant can't claim
+	// one, and it never overrides a host-known row.
 	for _, v := range views {
-		if v.ValidateOnly || v.HasHostIP || !v.HasIP {
+		if v.ValidateOnly || v.HasHostIP || !v.HasIP || !v.CoreRole {
 			continue
 		}
 		if _, taken := plan.ipTenant[v.IP]; !taken {

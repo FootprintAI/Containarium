@@ -145,7 +145,8 @@ check with a checksum for each download.
 | `scripts/k8s-sentinel-e2e.sh` | docker pull | The agent-box image, default tag `latest-stable` | Floating tag, no digest |
 | `images/sshpiper/Dockerfile` | git clone | sshpiper source at `SSHPIPER_VERSION` | Release tag, no commit hash |
 | `.github/workflows/ssh-approval-spike.yml` | git clone | sshpiper source at a release tag | Release tag, no commit hash |
-| `.github/workflows/containarium-daemon.yml`, `.github/workflows/release.yml`, `.github/workflows/sidecars.yml` | docker pull | Pulls the image this workflow just published, by tag, so Trivy scans the registry copy | Tag produced by the same run; not an external dependency |
+| `.github/workflows/release.yml` | docker pull | Pulls the image this workflow just published, by tag, so Trivy scans the registry copy | Tag produced by the same run; not an external dependency |
+| `.github/workflows/containarium-daemon.yml`, `.github/workflows/sidecars.yml` | docker pull | Pulls the image the same job just built into its own `localhost:5000` scan registry, so Trivy scans it before anything reaches GHCR (#3578) | Digest produced by the same run; not an external dependency |
 | `scripts/ci/npm-licenses.sh` | npx | `license-checker-rseidelsohn@5.0.1` | Exact version, npm registry integrity only, no lockfile |
 
 ### Probes of local or test-target services (not build fetches)

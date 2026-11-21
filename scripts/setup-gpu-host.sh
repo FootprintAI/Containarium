@@ -496,14 +496,19 @@ cat > "$BACKUP_SCRIPT" <<'BACKUPEOF'
 #   containarium-zfs-backup --list       # list snapshots
 #   containarium-zfs-backup --prune 7    # keep only last N snapshots per dataset
 #
-# Note: pipefail is intentionally NOT set. We want replication failures to be
-# non-fatal so that snapshot creation and pruning still happen.
+# Note: pipefail IS set (so a failing `zfs send | zfs receive` is seen as a
+# failure). Replication failures do not abort the run: snapshot pruning still
+# happens via the EXIT trap, and the script then exits non-zero (#3595).
 set -uo pipefail
 
 MAIN_POOL="incus-local"
 BACKUP_POOL="incus-backup/snapshots"
 SNAP_PREFIX="backup"
 KEEP_COUNT="${CONTAINARIUM_BACKUP_KEEP:-7}"
+# Machine-readable result of the last run, for monitoring to read.
+STATUS_FILE="${CONTAINARIUM_BACKUP_STATUS_FILE:-/var/lib/containarium/zfs-backup.status}"
+# Warn at the end of a run when the live pool is at or above this percent full.
+WARN_PCT="${CONTAINARIUM_BACKUP_WARN_PCT:-80}"
 
 # prune_snapshots keeps the N most recent backup snapshots PER dataset.
 # Listing all snapshots in the pool sorted globally would prune wrong:
@@ -541,6 +546,68 @@ prune_snapshots() {
     done <<< "$datasets"
 }
 
+# replicate_dataset sends one dataset's SNAP_NAME snapshot to the backup pool.
+# Incremental from the newest backup snapshot present on BOTH sides; if there is
+# none, a full send. A destination that exists but shares no snapshot with the
+# source has diverged, so it is destroyed first (it is only a replica) -
+# `zfs receive -F` refuses a full stream into a dataset that has snapshots.
+replicate_dataset() {
+    local ds="$1"
+    local dest="${BACKUP_POOL}/${ds}"
+    local common="" snap tag
+
+    if zfs list "$dest" &>/dev/null; then
+        while IFS= read -r snap; do
+            [ -z "$snap" ] && continue
+            tag="${snap#*@}"
+            [ "$tag" = "$SNAP_NAME" ] && continue
+            if zfs list "${dest}@${tag}" &>/dev/null; then
+                common="$tag"
+                break
+            fi
+        done < <(zfs list -t snapshot -o name -H -S creation "$ds" 2>/dev/null \
+            | grep "@${SNAP_PREFIX}-" || true)
+    fi
+
+    if [ -n "$common" ]; then
+        echo "  $ds: incremental send from @${common}"
+        zfs send -p -i "@${common}" "${ds}@${SNAP_NAME}" | zfs receive -F "$dest"
+        return
+    fi
+    if zfs list "$dest" &>/dev/null; then
+        echo "  $ds: no common snapshot on backup - destroying diverged replica before full send"
+        zfs destroy -r "$dest" || return 1
+    fi
+    echo "  $ds: full send"
+    zfs send -p "${ds}@${SNAP_NAME}" | zfs receive -F "$dest"
+}
+
+# write_status records the outcome for monitoring: status=ok|failed.
+write_status() {
+    local status="$1" failed="$2" now tmp
+    now=$(date +%s)
+    mkdir -p "$(dirname "$STATUS_FILE")" 2>/dev/null || return 0
+    tmp="${STATUS_FILE}.tmp.$$"
+    {
+        echo "status=${status}"
+        echo "last_attempt=${now}"
+        if [ "$status" = ok ]; then
+            echo "last_success=${now}"
+        else
+            echo "last_success=$(sed -n 's/^last_success=//p' "$STATUS_FILE" 2>/dev/null | head -1)"
+        fi
+        echo "failed_datasets=${failed}"
+    } > "$tmp" 2>/dev/null && mv "$tmp" "$STATUS_FILE" 2>/dev/null || true
+}
+
+warn_if_pool_full() {
+    local pct
+    pct=$(zpool list -H -o capacity "$MAIN_POOL" 2>/dev/null | tr -d '% ')
+    if [ -n "$pct" ] && [ "$pct" -ge "$WARN_PCT" ] 2>/dev/null; then
+        echo "WARNING: pool $MAIN_POOL is ${pct}% full (threshold ${WARN_PCT}%)"
+    fi
+}
+
 case "${1:-}" in
     --list)
         echo "=== Main pool snapshots ==="
@@ -572,7 +639,8 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 SNAP_NAME="${SNAP_PREFIX}-${TIMESTAMP}"
 
 # Always prune at end, even if replication fails
-trap 'echo "==> Pruning old snapshots (keeping last $KEEP_COUNT per dataset)..."; prune_snapshots "$MAIN_POOL" "$KEEP_COUNT"; if zpool list incus-backup &>/dev/null; then prune_snapshots "$BACKUP_POOL" "$KEEP_COUNT"; fi; echo "==> Backup complete."' EXIT
+EXIT_CODE=0
+trap 'rc=$?; echo "==> Pruning old snapshots (keeping last $KEEP_COUNT per dataset)..."; prune_snapshots "$MAIN_POOL" "$KEEP_COUNT"; if zpool list incus-backup &>/dev/null; then prune_snapshots "$BACKUP_POOL" "$KEEP_COUNT"; fi; echo "==> Backup complete."; exit "$rc"' EXIT
 
 echo "==> Creating snapshot ${MAIN_POOL}@${SNAP_NAME}..."
 if ! zfs snapshot -r "${MAIN_POOL}@${SNAP_NAME}"; then
@@ -583,64 +651,36 @@ fi
 if zpool list incus-backup &>/dev/null; then
     echo "==> Replicating to backup pool..."
 
-    # Find the previous snapshot for incremental send
-    PREV_SNAP=$(zfs list -t snapshot -r "$MAIN_POOL" -o name -H -S creation 2>/dev/null \
-        | grep "@${SNAP_PREFIX}-" \
-        | grep -v "@${SNAP_NAME}" \
-        | head -1 || true)
-
-    REPLICATION_OK=false
-
-    if [ -n "$PREV_SNAP" ]; then
-        PREV_TAG="${PREV_SNAP#*@}"
-        if zfs list "${BACKUP_POOL}/${MAIN_POOL}@${PREV_TAG}" &>/dev/null 2>&1; then
-            # Incremental send — try first
-            echo "  Incremental send from @${PREV_TAG} to @${SNAP_NAME}"
-            if zfs send -R -i "${MAIN_POOL}@${PREV_TAG}" "${MAIN_POOL}@${SNAP_NAME}" \
-                | zfs receive -F "${BACKUP_POOL}/${MAIN_POOL}" 2>&1; then
-                REPLICATION_OK=true
-            else
-                # Common failure: backup pool's per-dataset snapshot lineage
-                # diverged from main pool (e.g. a previous receive failed
-                # partway, leaving some datasets out of sync). Recover by
-                # rolling back the backup pool to the last shared snapshot.
-                echo "  Incremental failed — attempting to repair divergent backup lineage"
-                # Find datasets where backup lacks the previous snapshot and
-                # roll back to the latest shared one. Easier: destroy backup
-                # and do full re-send. This is heavy but reliable.
-                echo "  Falling back to full re-send (this will overwrite backup)"
-                if zfs send -R "${MAIN_POOL}@${SNAP_NAME}" \
-                    | zfs receive -F "${BACKUP_POOL}/${MAIN_POOL}" 2>&1; then
-                    REPLICATION_OK=true
-                fi
-            fi
+    FAILED_DATASETS=""
+    REPLICATED=0
+    # Replicate one dataset at a time (parents first) so a dataset that is
+    # missing or diverged on the backup pool cannot block the others.
+    while IFS= read -r ds; do
+        [ -z "$ds" ] && continue
+        if replicate_dataset "$ds"; then
+            REPLICATED=$((REPLICATED + 1))
         else
-            # Previous snapshot not on backup — full send
-            echo "  Full send (previous snapshot not found on backup)"
-            if zfs send -R "${MAIN_POOL}@${SNAP_NAME}" \
-                | zfs receive -F "${BACKUP_POOL}/${MAIN_POOL}" 2>&1; then
-                REPLICATION_OK=true
-            fi
+            echo "  ERROR: replication failed for $ds"
+            FAILED_DATASETS="${FAILED_DATASETS:+$FAILED_DATASETS,}$ds"
         fi
-    else
-        # First backup — full send
-        echo "  Full send (first backup)"
-        if zfs send -R "${MAIN_POOL}@${SNAP_NAME}" \
-            | zfs receive -F "${BACKUP_POOL}/${MAIN_POOL}" 2>&1; then
-            REPLICATION_OK=true
-        fi
-    fi
+    done < <(zfs list -t filesystem,volume -r "$MAIN_POOL" -o name -H 2>/dev/null)
 
-    if $REPLICATION_OK; then
-        echo "  Backup replicated to ${BACKUP_POOL}/${MAIN_POOL}@${SNAP_NAME}"
+    if [ -z "$FAILED_DATASETS" ]; then
+        echo "  Backup replicated to ${BACKUP_POOL}/${MAIN_POOL}@${SNAP_NAME} ($REPLICATED datasets)"
+        write_status ok ""
     else
-        echo "  WARNING: Replication failed — local snapshot kept, but backup pool is out of date"
+        echo "  ERROR: Replication failed for: ${FAILED_DATASETS} - local snapshot kept, backup pool is out of date"
+        write_status failed "$FAILED_DATASETS"
+        EXIT_CODE=1
     fi
 else
     echo "  Backup pool not available — snapshot only (no replication)"
 fi
 
+warn_if_pool_full
+
 # Note: prune runs via the EXIT trap above, so it executes even if we exit early
+exit "$EXIT_CODE"
 BACKUPEOF
 chmod +x "$BACKUP_SCRIPT"
 echo "  Installed $BACKUP_SCRIPT"

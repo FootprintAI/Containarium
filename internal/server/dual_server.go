@@ -1922,7 +1922,8 @@ skipAppHosting:
 		// would-deny logs, finishes the allow-list, then arms enforce.
 		enforceArmed := netCfg.PolicyEnforce
 		networkPolicyEnforcer = NewNetworkPolicyEnforcer(bpfObj, npServer.Store(), tenantRegistry, fullListInspector{networkIncusClient}, auditStore, events.GetBus(), enforceArmed)
-		networkPolicyEnforcer.SetIncusDataDir(networkIncusClient.DataDir()) // DHCP leases live under it (#2618)
+		networkPolicyEnforcer.SetIncusDataDir(networkIncusClient.DataDir())            // DHCP leases live under it (#2618)
+		containerServer.SetHostAddressResolver(networkPolicyEnforcer.HostKnownAddress) // source-IP map keys on host-known addresses (#3774)
 		// Outbound connection-rate cap (#3709): off unless a rate is set, and it
 		// only counts unless the operator chose enforce AND the daemon is armed.
 		cc := appconfig.LoadEgressConnCap()
