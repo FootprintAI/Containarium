@@ -90,3 +90,21 @@ func TestCodeLogs_RejectsAnUnknownStream(t *testing.T) {
 	require.Error(t, err)
 	assert.Empty(t, srv.reqs, "an unknown stream must not reach the daemon")
 }
+
+// A non-string stream is an error, not a silent read of the plain log.
+func TestCodeLogs_RejectsANonStringStream(t *testing.T) {
+	for name, stream := range map[string]interface{}{
+		"number": float64(2),
+		"bool":   true,
+		"array":  []interface{}{"stderr"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := &runLogRPC{echo: true}
+			hs := gatewayFor(t, srv)
+			_, err := handleCodeLogs(NewClient(hs.URL, "tok"), map[string]interface{}{"box": "alice", "run": "task", "stream": stream})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "`stream` must be a string")
+			assert.Empty(t, srv.reqs, "a non-string stream must not reach the daemon")
+		})
+	}
+}

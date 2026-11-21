@@ -1273,8 +1273,8 @@ func (s *Server) registerTools() {
 				"read to the end. A framed (stream-json) run's stderr is left out and flagged by " +
 				"stderr_dropped. stream='stderr' reads the separate stderr log a structured_output " +
 				"run keeps instead (the engine's error text when it failed before writing its result " +
-				"object); a run without one, or a daemon that does not list box_run_stderr, is an " +
-				"error. Same reader as `containarium code logs`.",
+				"object); a run without one is an error, and so is a daemon too old to serve it " +
+				"(the response's stream is checked). Same reader as `containarium code logs`.",
 			InputSchema: map[string]interface{}{
 				"type":     "object",
 				"required": []string{"box", "run"},
@@ -3711,6 +3711,11 @@ func handleCodeLogs(client API, args map[string]interface{}) (string, error) {
 	}
 	if v, ok := getIntArg(args, "follow_seconds"); ok {
 		req.FollowSeconds = int32(min(max(v, 0), runlog.FollowSeconds)) // #nosec G115 -- clamped to 0..10
+	}
+	if raw, ok := args["stream"]; ok && raw != nil {
+		if _, isString := raw.(string); !isString {
+			return "", fmt.Errorf("`stream` must be a string (log or stderr), not %T", raw)
+		}
 	}
 	switch stream := strings.TrimSpace(getStringArg(args, "stream", "")); stream {
 	case "", "log":
