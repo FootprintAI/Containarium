@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -53,12 +52,17 @@ func TestIntegrationIncusBoxBackup(t *testing.T) {
 	dst := fmt.Sprintf("boxrestore%d", pid)
 	dataset := fmt.Sprintf("incus-local/boxbackup%d", pid)
 	run(t, "zfs", "create", dataset)
-	t.Cleanup(func() { _ = exec.Command("zfs", "destroy", "-r", dataset).Run() }) // #nosec G204 -- test-controlled name
 	pool := fmt.Sprintf("containarium-boxbackup%d", pid)
+	// One cleanup, in the order that matters (#3738): both instances, then
+	// the pool, then the dataset, which is asserted gone. Separate cleanups
+	// ignored every result and could destroy the dataset under an instance
+	// that was still registered.
+	t.Cleanup(func() {
+		incusenv.RunTeardown(t, incusenv.Teardown{Instances: []string{dst, src}, Pool: pool, Dataset: dataset})
+	})
 	if err := client.CreateZFSPool(pool, dataset); err != nil {
 		t.Fatalf("CreateZFSPool(%s, %s): %v", pool, dataset, err)
 	}
-	t.Cleanup(func() { _ = client.DeleteStoragePool(pool) })
 
 	if err := client.CreateContainer(incus.ContainerConfig{
 		Name:  src,
@@ -67,7 +71,6 @@ func TestIntegrationIncusBoxBackup(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create %s: %v", src, err)
 	}
-	t.Cleanup(func() { incusenv.DeleteInstance(t, src) })
 	if err := client.StartContainer(src); err != nil {
 		t.Fatalf("start %s: %v", src, err)
 	}
@@ -184,7 +187,6 @@ func TestIntegrationIncusBoxBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	t.Cleanup(func() { incusenv.DeleteInstance(t, dst) })
 	if err := client.ImportInstance(dst, pool, f, incus.ImportOptions{}); err != nil {
 		t.Fatalf("ImportInstance(%s) of the filtered archive: %v", dst, err)
 	}
