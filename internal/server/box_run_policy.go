@@ -152,6 +152,26 @@ var boxRunBuildToolRules = bashRules(
 	"protoc", "staticcheck",
 )
 
+// boxRunAgentPythonRules is the Python dependency helper (#3788 slice 2), the
+// only way a run installs a repository's Python dependencies: `agent-python
+// setup|test|venv [DIR]`. The helper's own grammar is fixed: setup installs
+// only the requirements*.txt files and the package DIR itself declares, into a
+// venv outside the checkout; it takes no index, URL or VCS flag. Plain `pip`
+// and `python3 -m pip` stay closed. Like the rest of BUILD_TOOLS this names the
+// command for the audit trail; installing runs build backends, i.e. repository
+// code, which the level already allows.
+var boxRunAgentPythonRules = bashRules("agent-python setup", "agent-python test", "agent-python venv")
+
+// boxRunAgentPythonDenied refuses the helper's `-- CMD` passthrough (`agent-python
+// test [DIR] -- CMD...` runs any command in the venv) as a deny rule at every
+// level, so the rule is present in the flags and the hook. Deny wins over allow,
+// and `*` also matches spaces, so this covers any position of `--` written with
+// plain spaces. The hook also matches deny rules against the parsed words of a
+// simple line (runhook.levelCovers), which catches quoted, escaped, split-by-empty-quotes
+// and tab-separated spellings of `--`; the `sudo` forms are listed because a rule is
+// anchored at the start of the line. The FULL_SUDO level itself stays advisory.
+var boxRunAgentPythonDenied = bashRules("agent-python * --", "agent-python -- *", "sudo agent-python * --", "sudo agent-python -- *")
+
 // FULL_SUDO adds sudo. The flags are then advisory: the run user also gets a
 // passwordless sudoers rule, so it can step around any rule written here.
 var boxRunSudoRules = bashRules("sudo")
@@ -166,13 +186,13 @@ func boxRunPolicyFor(level string) (boxRunPolicy, error) {
 	switch toolaccess.FromConfig(level) {
 	case pb.BoxToolAccess_BOX_TOOL_ACCESS_NONE:
 	case pb.BoxToolAccess_BOX_TOOL_ACCESS_BUILD_TOOLS:
-		allowed = append(allowed, boxRunBuildToolRules...)
+		allowed = append(append(allowed, boxRunBuildToolRules...), boxRunAgentPythonRules...)
 	case pb.BoxToolAccess_BOX_TOOL_ACCESS_FULL_SUDO:
-		allowed = append(append(allowed, boxRunBuildToolRules...), boxRunSudoRules...)
+		allowed = append(append(append(allowed, boxRunBuildToolRules...), boxRunAgentPythonRules...), boxRunSudoRules...)
 	default:
 		return boxRunPolicy{}, fmt.Errorf("no policy for tool-access level %q", level)
 	}
-	return boxRunPolicy{Tools: append([]string(nil), boxRunTools...), Allowed: allowed, Denied: append(boxRunGitDenyRules(), boxRunGitTransportDenyRules()...)}, nil
+	return boxRunPolicy{Tools: append([]string(nil), boxRunTools...), Allowed: allowed, Denied: append(append(boxRunGitDenyRules(), boxRunGitTransportDenyRules()...), boxRunAgentPythonDenied...)}, nil
 }
 
 // commandFlags renders the policy as flags to append to the run command. Every
