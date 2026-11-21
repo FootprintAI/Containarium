@@ -12,6 +12,9 @@ type fakeHost struct {
 	calls   []string
 	failing map[string]string // command prefix -> output; the call fails
 	gone    bool              // `zfs list` reports the dataset absent
+	// poolDeleteDestroysDataset models Incus: deleting a pool created on a
+	// dataset removes that dataset as well.
+	poolDeleteDestroysDataset bool
 }
 
 func (f *fakeHost) run(name string, args ...string) ([]byte, error) {
@@ -21,6 +24,9 @@ func (f *fakeHost) run(name string, args ...string) ([]byte, error) {
 		if strings.HasPrefix(cmd, prefix) {
 			return []byte(out), errors.New("exit status 1")
 		}
+	}
+	if strings.HasPrefix(cmd, "incus storage delete") && f.poolDeleteDestroysDataset {
+		f.gone = true
 	}
 	if strings.HasPrefix(cmd, "zfs list") && f.gone {
 		return []byte("dataset does not exist"), errors.New("exit status 1")
@@ -81,5 +87,15 @@ func TestTeardownReportsAFailedDestroy(t *testing.T) {
 	f := &fakeHost{gone: true, failing: map[string]string{"zfs destroy": "dataset is busy"}}
 	if errs := (Teardown{Dataset: "ds"}).Run(f.run); len(errs) == 0 {
 		t.Fatal("a failed zfs destroy must be reported")
+	}
+}
+
+// The pool delete removes the dataset, so the destroy that follows finds it
+// absent. That is the state the teardown is meant to reach, not an error (the
+// box-backup cleanup failed on exactly this in the real-Incus lane).
+func TestTeardownAcceptsADatasetThePoolDeleteAlreadyRemoved(t *testing.T) {
+	f := &fakeHost{poolDeleteDestroysDataset: true, failing: map[string]string{"zfs destroy": "cannot open 'ds': dataset does not exist"}}
+	if errs := (Teardown{Pool: "p", Dataset: "ds"}).Run(f.run); len(errs) != 0 {
+		t.Fatalf("dataset already removed by the pool delete must not be an error: %v", errs)
 	}
 }

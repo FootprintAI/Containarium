@@ -48,7 +48,10 @@ func (td Teardown) Run(run Runner) []error {
 			errs = append(errs, fmt.Errorf("storage pool %s not deleted: %w\n%s", td.Pool, err, out))
 		}
 	}
-	if out, err := run("zfs", "destroy", "-r", td.Dataset); err != nil {
+	// Deleting a pool built on the dataset can remove the dataset itself, so a
+	// "does not exist" here is the state we want. The check below still has to
+	// find it gone, so this does not hide a dataset that survived.
+	if out, err := run("zfs", "destroy", "-r", td.Dataset); err != nil && !strings.Contains(string(out), "does not exist") {
 		errs = append(errs, fmt.Errorf("zfs destroy -r %s: %w\n%s", td.Dataset, err, out))
 	}
 	if _, err := run("zfs", "list", "-H", "-o", "name", td.Dataset); err == nil {
