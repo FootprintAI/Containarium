@@ -102,6 +102,14 @@ containarium backends upgrade <backend-id> --server http://<host>:8080
 - **The upgrade is asynchronous.** The command returns a job id and the
   daemon restarts. A peer restarts `containarium-tunnel` first, then
   `containarium` (`checkAndUpdate` in [autoupdate.go](../internal/server/autoupdate.go)).
+- **Auto-update writes beside the running binary.** The updater stages
+  `<binary>.new` and renames it into place, so the generated unit
+  (`containarium service install`, `scripts/containarium.service`) lists the
+  binary's directory, `/usr/local/bin`, in `ReadWritePaths` while keeping
+  `ProtectSystem=strict`. This makes every file in that directory writable by
+  the daemon. A unit installed before this change lacks the grant and fails
+  the download with a read-only file system error until `service install` is
+  re-run.
 - **A binary on the sentinel goes to every backend.** Each daemon with a
   sentinel URL installs whatever the sentinel serves within about 5 minutes.
   Uploading a binary to the sentinel is therefore a fleet-wide rollout, not
