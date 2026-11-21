@@ -112,6 +112,16 @@ jobs:
       - name: Run test-wait-daemon-ready.sh
         run: ./scripts/test-wait-daemon-ready.sh
 
+  zfs-backup-replication:
+    name: ZFS backup replication script (#3595)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Run test-zfs-backup-replication.sh
+        run: ./scripts/test-zfs-backup-replication.sh
+
   daemon-artifact-name-gate:
     name: Daemon-artifact-name gate (#1784)
     runs-on: ubuntu-latest
