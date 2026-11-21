@@ -152,7 +152,12 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=false
-ReadWritePaths=-/var/lib/containarium /var/lib/incus /etc/containarium /etc /home /var/lock /run/lock -/opt/containarium /var/log -/mnt/incus-data
+# /usr/local/bin is the directory of the ExecStart binary. Auto-update (sentinel
+# and GitHub tag) stages <binary>.new beside the running binary and renames it
+# into place, which ProtectSystem=strict denies with EROFS unless that directory
+# is writable (#3596). This makes every file in that directory writable by the
+# daemon; ProtectSystem=strict stays on for everything else.
+ReadWritePaths=-/var/lib/containarium /var/lib/incus /etc/containarium /etc /home /var/lock /run/lock -/opt/containarium /var/log -/mnt/incus-data /usr/local/bin
 
 # StateDirectory= makes systemd create /var/lib/containarium (0750, root) before
 # the daemon starts and grants it write access. The backup service writes there

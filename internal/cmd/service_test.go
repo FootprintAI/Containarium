@@ -230,3 +230,35 @@ func TestSystemdServiceReadWritePathsCoverDoctorContract(t *testing.T) {
 		}
 	}
 }
+
+// TestUnitReadWritePathsIncludeBinaryDir guards sentinel/GitHub auto-update
+// (#3596). The updater stages "<binary>.new" next to the running binary and
+// renames it into place; under ProtectSystem=strict that write fails EROFS
+// unless the binary's directory is in ReadWritePaths. The grant makes the
+// whole directory writable by the daemon (the decided trade-off).
+func TestUnitReadWritePathsIncludeBinaryDir(t *testing.T) {
+	var execStart, rw string
+	for _, line := range strings.Split(systemdServiceTemplate, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ExecStart=") {
+			execStart = strings.Fields(strings.TrimPrefix(line, "ExecStart="))[0]
+		}
+		if strings.HasPrefix(line, "ReadWritePaths=") {
+			rw = line
+		}
+	}
+	if execStart == "" || rw == "" {
+		t.Fatalf("template missing ExecStart (%q) or ReadWritePaths (%q)", execStart, rw)
+	}
+	dir := filepath.Dir(execStart)
+	var granted []string
+	for _, p := range strings.Fields(strings.TrimPrefix(rw, "ReadWritePaths=")) {
+		granted = append(granted, strings.TrimPrefix(p, "-"))
+	}
+	if !slices.Contains(granted, dir) {
+		t.Errorf("ReadWritePaths %v must include the binary directory %q so auto-update can write %s.new", granted, dir, execStart)
+	}
+	if !strings.Contains(systemdServiceTemplate, "\nProtectSystem=strict\n") {
+		t.Error("ProtectSystem=strict must be kept")
+	}
+}
