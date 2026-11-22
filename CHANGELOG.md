@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.140.1] - 2026-11-22
+
+
+### Fixed
+
+- **The Caddy release asset builds with fixed `go-jose`, `klauspost/compress` and `grpc`** (#3807). The v0.140.0 release build stopped at its scan of the Caddy asset (#3579), which found five HIGH findings in modules Caddy's own `go.mod` resolves too old, so v0.140.0 has no GitHub Release; its daemon image, sidecar images and PyPI package did publish. `make build-caddy` now replaces `go-jose/v4` with v4.1.6, `klauspost/compress` with v1.18.7 and `grpc` with v1.83.2. Use v0.140.1 rather than v0.140.0: it carries the same changes plus a Release.
+
 ## [0.140.0] - 2026-11-22
 
 
