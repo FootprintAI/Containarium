@@ -484,6 +484,73 @@ func (s *ContainerServer) boxRunLockFor(key string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
+// DaemonCapBoxRunExclusive: StartBoxRunRequest.exclusive (#3805).
+const DaemonCapBoxRunExclusive = "box_run_exclusive"
+
+// boxRunBoxLockFor returns box's lock for run starts (#3805). A start holds it
+// from its first look at the box's runs until its record is written. A plain
+// start holds it for reading, so starts on one box still run side by side; an
+// exclusive start holds it for writing, so its check and record cannot interleave
+// with any other start's check and record.
+func (s *ContainerServer) boxRunBoxLockFor(box string) *sync.RWMutex {
+	v, _ := s.boxRunBoxLocks.LoadOrStore(box, &sync.RWMutex{})
+	return v.(*sync.RWMutex)
+}
+
+// liveBoxRun is a run on the box that has not exited: running, or unknown,
+// which is treated as live so an unresolved run still holds the box.
+type liveBoxRun struct {
+	name      string
+	exclusive bool
+}
+
+// listLiveBoxRuns returns every run on box that has not exited, from the same
+// listing ListBoxRuns uses.
+func listLiveBoxRuns(exec boxScriptFunc, box string, dirs []string) ([]liveBoxRun, error) {
+	out, err := exec(box, boxRunListScript(dirs...))
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "list existing runs on %q: %v", box, err)
+	}
+	views, boot, alive := parseBoxRunViews(out)
+	var live []liveBoxRun
+	for _, v := range views {
+		if agentbox.ResolveOutcome(v.record, boot, func(pid int) bool { return pid > 0 && alive[pid] }) == agentbox.RunOutcomeExited {
+			continue
+		}
+		live = append(live, liveBoxRun{name: v.fileName, exclusive: v.record.Exclusive})
+	}
+	return live, nil
+}
+
+// exclusiveBusyRefusal refuses a start that conflicts with the box's live runs
+// (#3805): an exclusive run is never started beside another, and no run is
+// started beside a live exclusive run. The refusal carries a typed reason.
+func exclusiveBusyRefusal(box, name string, exclusive bool, live []liveBoxRun) error {
+	var reason pb.BoxRunBusyReason
+	var msg string
+	for _, r := range live {
+		if r.exclusive {
+			reason = pb.BoxRunBusyReason_BOX_RUN_BUSY_REASON_EXCLUSIVE_RUN_LIVE
+			msg = fmt.Sprintf("run %q on %q is exclusive and still live; no other run starts on that box until it ends", r.name, box)
+			break
+		}
+	}
+	if reason == pb.BoxRunBusyReason_BOX_RUN_BUSY_REASON_UNSPECIFIED && exclusive && len(live) > 0 {
+		reason = pb.BoxRunBusyReason_BOX_RUN_BUSY_REASON_OTHER_RUN_LIVE
+		msg = fmt.Sprintf("run %q needs %q to itself, but run %q is still live there; wait for it to finish", name, box, live[0].name)
+	}
+	if reason == pb.BoxRunBusyReason_BOX_RUN_BUSY_REASON_UNSPECIFIED {
+		return nil
+	}
+	st := status.New(codes.FailedPrecondition, msg)
+	if detailed, err := st.WithDetails(&errdetails.PreconditionFailure{
+		Violations: []*errdetails.PreconditionFailure_Violation{{Type: reason.String(), Subject: box, Description: msg}},
+	}); err == nil {
+		st = detailed
+	}
+	return st.Err()
+}
+
 // StartBoxRun starts (or resumes) a coding-agent run on a box with no SSH
 // client needed (#2193).
 func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRequest) (*pb.StartBoxRunResponse, error) {
@@ -566,6 +633,15 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	// truncate/record write further down. Acquired before the FIRST
 	// filesystem read of this span (the collision check) so the second
 	// caller sees a fully-finished first call, not a half-done one.
+	boxLock := s.boxRunBoxLockFor(box)
+	if req.GetExclusive() {
+		boxLock.Lock()
+		defer boxLock.Unlock()
+	} else {
+		boxLock.RLock()
+		defer boxLock.RUnlock()
+	}
+
 	lock := s.boxRunLockFor(boxRunLockKey(box, name))
 	lock.Lock()
 	defer lock.Unlock()
@@ -595,6 +671,17 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"run %q on %q is already %s — no queueing; pick a different session, or wait for it to finish",
 			name, req.GetUsername(), strings.ToLower(strings.TrimPrefix(collision.GetOutcome().String(), "BOX_RUN_OUTCOME_")))
+	}
+
+	// #3805: an exclusive start, and every start beside a live exclusive run, is
+	// refused before anything is written. The box lock above keeps this check and
+	// the record write together against other starts.
+	live, err := listLiveBoxRuns(listExec, box, s.boxRunDirs(req.GetUsername()))
+	if err != nil {
+		return nil, err
+	}
+	if err := exclusiveBusyRefusal(box, name, req.GetExclusive(), live); err != nil {
+		return nil, err
 	}
 
 	// #2260 review (blocking): every precondition/validation check — gateway
@@ -830,6 +917,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		Model:       req.GetModel(),
 		Workdir:     req.GetWorkdir(),
 		Resumed:     boxRunResumed(req),
+		Exclusive:   req.GetExclusive(),
 	}
 	recordJSON, err := json.Marshal(record)
 	if err != nil {
@@ -955,6 +1043,7 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 		LogPath:     dir + "/" + name + ".log",
 		StartedAt:   time.Now().UTC(),
 		Workdir:     req.GetWorkdir(),
+		Exclusive:   req.GetExclusive(),
 	}
 	recordJSON, err := json.Marshal(record)
 	if err != nil {
@@ -1000,7 +1089,7 @@ const (
 
 // daemonCapabilities is the list GetSystemInfo reports.
 func daemonCapabilities() []string {
-	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunToken, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxRunCommandPolicy, DaemonCapBoxRunWorkdir, DaemonCapBoxRunStderr, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream, DaemonCapBoxFilesRunUser, DaemonCapBoxBootstrap}
+	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunToken, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxRunCommandPolicy, DaemonCapBoxRunWorkdir, DaemonCapBoxRunStderr, DaemonCapBoxRunExclusive, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream, DaemonCapBoxFilesRunUser, DaemonCapBoxBootstrap}
 }
 
 // boxRunNameCollidesWithDerivedFile reports whether name would alias a file or

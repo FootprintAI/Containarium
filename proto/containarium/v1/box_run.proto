@@ -259,6 +259,14 @@ message StartBoxRunRequest {
   // created, and there is no fallback to the home. BoxRun.workdir reports it.
   // Capability "box_run_workdir" in SystemInfo.capabilities.
   string workdir = 13;
+  // The run excludes every other run on the box (#3805). Refused with
+  // FAILED_PRECONDITION (PreconditionFailure type OTHER_RUN_LIVE) while any
+  // other run is live; while this run is live, every other start on the box is
+  // refused the same way with EXCLUSIVE_RUN_LIVE. Checked and recorded under
+  // one per-box lock, so of two concurrent exclusive starts exactly one wins.
+  // Capability "box_run_exclusive" in SystemInfo.capabilities: a caller must
+  // not send exclusive to a daemon without it, since that daemon would ignore it.
+  bool exclusive = 14;
 }
 
 message StartBoxRunResponse {
@@ -947,4 +955,14 @@ message GetRunApprovalKeyResponse {
   // Hex Ed25519 public key that AnswerRunInput signs this box's answers with.
   // `code run --approvals ask` passes it to the box's approval server.
   string public_key = 1;
+}
+
+// BoxRunBusyReason is the typed reason a start is refused because of other
+// live runs on the box (#3805). It is the PreconditionFailure type.
+enum BoxRunBusyReason {
+  BOX_RUN_BUSY_REASON_UNSPECIFIED = 0;
+  // An exclusive start was refused: another run is live on the box.
+  BOX_RUN_BUSY_REASON_OTHER_RUN_LIVE = 1;
+  // A start was refused: a live exclusive run holds the box.
+  BOX_RUN_BUSY_REASON_EXCLUSIVE_RUN_LIVE = 2;
 }

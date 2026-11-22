@@ -362,6 +362,25 @@ the daemon as `workdir`, and the CLI sends it only to a daemon that lists
 `box_run_workdir` (an older daemon would drop the field over gRPC and start the
 run in the home).
 
+## Exclusive runs: `exclusive`
+
+`StartBoxRunRequest.exclusive` (capability `box_run_exclusive`) starts a run
+that is the only run on its box while it is live. The daemon checks and records
+the start under one per-box lock, so of two concurrent exclusive starts exactly
+one succeeds. Both refusals are `FAILED_PRECONDITION` with a
+`PreconditionFailure` whose type is a `BoxRunBusyReason`:
+
+- `OTHER_RUN_LIVE`: an exclusive start while any other run is live.
+- `EXCLUSIVE_RUN_LIVE`: any start while a live exclusive run holds the box.
+
+A run that has not exited counts as live, including one whose state is
+unknown. Once the exclusive run exits, the box takes starts again. The flag is
+recorded on the run, so a daemon restart still sees it.
+
+Send `exclusive` only to a daemon that lists `box_run_exclusive`: an older
+daemon would drop the field and start the run without the guarantee. This is
+daemon-side only; the CLI and MCP do not expose it yet.
+
 ## Per-run token: `run_token`
 
 `run_token` is the platform credential for one run. The caller mints it; the
@@ -590,6 +609,7 @@ send `run_name`, `structured_output`, `model`, `command` or `workdir` to a
 daemon that predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the
 optional features a daemon supports: `box_run_name`, `box_run_structured_output`,
 `box_run_model`, `box_run_command`, `box_run_command_policy`, `box_run_workdir`,
+`box_run_exclusive`,
 
 send `run_name`, `structured_output`, `model` or `command` to a daemon that
 predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the optional

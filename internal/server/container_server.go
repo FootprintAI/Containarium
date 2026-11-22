@@ -245,6 +245,7 @@ type ContainerServer struct {
 	// value is ready to use — no constructor needed, so test literals that
 	// build a bare &ContainerServer{} still get correct serialization.
 	boxRunLocks      sync.Map // key: box+":"+name -> *sync.Mutex
+	boxRunBoxLocks   sync.Map // key: box -> *sync.RWMutex; exclusive starts take it for writing (#3805)
 	emitter          *events.Emitter
 	pendingCreations map[string]*PendingCreation
 	pendingMu        sync.RWMutex
