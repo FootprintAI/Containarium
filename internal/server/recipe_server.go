@@ -596,7 +596,7 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 			return out, nil
 		}
 		if _, err := provisionBoxRunUser(rootExec, containerName); err != nil {
-			log.Printf("[recipe] %s: could not provision the run user (the first run retries): %v", containerName, err)
+			log.Printf("[recipe] %q: could not provision the run user (the first run retries): %v", containerName, err)
 		}
 	}
 	workspace, err := resolveRecipeWorkspace(s.boxOps(), recipe, containerName, params, recordToolAccess)
