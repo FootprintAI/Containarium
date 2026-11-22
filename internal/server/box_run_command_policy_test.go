@@ -206,7 +206,7 @@ func TestStartBoxRun_CommandPolicy_InstallsHooksAndRootSinkBeforeTheRun(t *testi
 	settings := settingsFromSpawn(t, spawn)
 	for _, ev := range []string{"PreToolUse", "PostToolUse", "PostToolUseFailure"} {
 		ms := settings.Hooks[ev]
-		if len(ms) != 1 || ms[0].Matcher != "Bash" || len(ms[0].Hooks) != 1 {
+		if len(ms) != 1 || ms[0].Matcher != "Bash|Read|Grep|Glob" || len(ms[0].Hooks) != 1 {
 			t.Fatalf("hooks[%s] = %+v", ev, ms)
 		}
 		cmd := ms[0].Hooks[0].Command

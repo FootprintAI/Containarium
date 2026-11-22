@@ -286,7 +286,7 @@ type boxRunHookSettings struct {
 func boxRunHookSettingsJSON(name string) string {
 	conf := shellSingleQuote(runhook.ConfigPath(name))
 	hook := func(kind string) []boxRunHookMatcher {
-		return []boxRunHookMatcher{{Matcher: "Bash", Hooks: []boxRunHookCommand{{
+		return []boxRunHookMatcher{{Matcher: runhook.HookMatcher, Hooks: []boxRunHookCommand{{
 			Type: "command", Command: runhook.AgentBoxPath + " permission-hook " + kind + " --config " + conf,
 		}}}}
 	}

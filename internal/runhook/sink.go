@@ -121,6 +121,8 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, now func() time.Tim
 			e.Approval = &pb.AgentRunApproval{ApprovalId: cfg.Approval.ID, ApproverId: cfg.Approval.Approver}
 		}
 		e.Argv = red.Argv(e.Argv)
+		e.Target = red.Text(e.GetTarget())
+		e.Pattern = red.Text(e.GetPattern())
 		mu.Lock()
 		defer mu.Unlock()
 		// The sequence is the sink's alone: a client value is overwritten, and

@@ -122,7 +122,7 @@ func TestRunPre_NoSinkFailsClosed(t *testing.T) {
 func TestRunPre_NonBashToolIsIgnored(t *testing.T) {
 	var rec recorder
 	var out strings.Builder
-	in := `{"hook_event_name":"PreToolUse","tool_name":"Read","tool_use_id":"t","tool_input":{"file_path":"/x"}}`
+	in := `{"hook_event_name":"PreToolUse","tool_name":"Edit","tool_use_id":"t","tool_input":{"file_path":"/x"}}`
 	if err := RunPre(testConfig(), strings.NewReader(in), &out, rec.send); err != nil {
 		t.Fatal(err)
 	}
