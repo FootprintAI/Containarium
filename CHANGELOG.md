@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The run user is prepared when a tool-access level is recorded** (#3798). Recording a level on a running box (`SetContainerToolAccess`) now creates `ctn-run`, applies its sudo grant and run directory, and stages the agent CLI into its home right away, as the first platform run would. The box is then "up, not signed in" and the run-user sign-in terminal has a CLI to run, instead of the first run creating the user and being refused. Idempotent and best effort: a failure or a slow box is logged and the first run retries it, and the RPC waits at most 30 seconds. Clearing a level never removes the user. A recipe deploy is unchanged.
+
 ## [0.139.0] - 2026-11-18
 
 
