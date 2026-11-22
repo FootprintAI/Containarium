@@ -122,6 +122,10 @@ type RunRecord struct {
 	// engine reports for it are cumulative across that session (#3467).
 	// Additive: older readers ignore it, and a record without it reads false.
 	Resumed bool `json:"resumed,omitempty"`
+	// Exclusive is set when the run was started as the only run on its box
+	// (StartBoxRunRequest.exclusive, #3805): no other run starts while it is
+	// live. Additive: older readers ignore it, and a record without it reads false.
+	Exclusive bool `json:"exclusive,omitempty"`
 
 	// Actor is the principal the caller says authorized this run, and
 	// DelegationChain the JSON-serialized auth.Actor chain behind it
