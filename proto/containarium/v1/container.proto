@@ -110,7 +110,8 @@ enum BoxToolAccess {
   // Nothing that needs approval.
   BOX_TOOL_ACCESS_NONE = 1;
 
-  // The platform-managed build and test toolchains.
+  // The platform-managed build and test toolchains, and the Python test runner
+  // (`pytest` or `python3 -m pytest`; python3 itself is not opened up).
   BOX_TOOL_ACCESS_BUILD_TOOLS = 2;
 
   // Passwordless sudo for the unprivileged run user. An explicit, per-box

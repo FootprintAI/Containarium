@@ -150,6 +150,11 @@ var boxRunBuildToolRules = bashRules(
 	"pnpm install", "pnpm run", "pnpm test",
 	"buf lint", "buf build", "buf generate", "buf format",
 	"protoc", "staticcheck",
+	// Python's test runner, in exactly these two spellings (#3788). python3 itself
+	// stays closed: `python3 -c`, `python3 script.py`, `python3 -m pip` and bare
+	// `python3` are not allowed. This names the command for the audit trail; the
+	// level already lets a run execute repository code (make, npm run, go test).
+	"pytest", "python3 -m pytest",
 )
 
 // boxRunAgentPythonRules is the Python dependency helper (#3788 slice 2), the

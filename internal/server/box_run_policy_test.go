@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/footprintai/containarium/internal/runhook"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -255,5 +256,86 @@ func TestStartBoxRun_UnenforceableLevelRefusesBeforeMutating(t *testing.T) {
 				t.Errorf("nothing may be spawned for a refused run:\n%s", sp)
 			}
 		})
+	}
+}
+
+// The Python test runner is a BUILD_TOOLS command in exactly two spellings:
+// `pytest` and `python3 -m pytest`, each bare and with arguments. Nothing about
+// python3 itself is opened up, and NONE gains nothing.
+func TestBoxRunPolicyFor_PytestGrammarIsNarrow(t *testing.T) {
+	none, _ := boxRunPolicyFor("none")
+	build, _ := boxRunPolicyFor("build_tools")
+	full, _ := boxRunPolicyFor("full_sudo")
+
+	for _, r := range []string{"Bash(pytest)", "Bash(pytest *)", "Bash(python3 -m pytest)", "Bash(python3 -m pytest *)"} {
+		if !hasRule(build.Allowed, r) || !hasRule(full.Allowed, r) {
+			t.Errorf("BUILD_TOOLS and FULL_SUDO must allow %q", r)
+		}
+		if hasRule(none.Allowed, r) {
+			t.Errorf("NONE must not allow %q", r)
+		}
+	}
+	for _, p := range []boxRunPolicy{none, build, full} {
+		for _, r := range p.Allowed {
+			if strings.Contains(r, "python") && !strings.HasPrefix(r, "Bash(python3 -m pytest") {
+				t.Errorf("rule %q opens python3 beyond `-m pytest`", r)
+			}
+		}
+	}
+}
+
+// Decided by the same permission hook a run uses, with the level's real rules:
+// the pytest forms are left to the engine (which holds the same rules), every
+// other python3 form is refused at BUILD_TOOLS, and nothing is allowed at NONE.
+// Compound lines are decided segment by segment.
+func TestBoxRunPolicy_PytestDecidedByTheHook(t *testing.T) {
+	decide := func(level, cmd string) runhook.Decision {
+		p, err := boxRunPolicyFor(level)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return runhook.Decide(runhook.Config{LevelAllowed: p.Allowed, LevelDenied: p.Denied}, cmd)
+	}
+	allowed := []string{
+		"pytest", "pytest -q", "pytest -k x tests/", "pytest tests/test_a.py::test_b",
+		"python3 -m pytest", "python3 -m pytest -q", "python3 -m pytest -k 'a and b' tests/",
+		"python3 -m pytest -q && pytest tests/", "cd sub && python3 -m pytest -q", "pytest -q | ls",
+		"pytest -q > out.txt",
+	}
+	refused := []string{
+		"python3", "python3 -c 'print(1)'", "python3 script.py", "python3 -m pip install x",
+		"python3 -m http.server", "python3 -m venv .v", "python3 -mpytest", "python3 -m pytestx",
+		"python3 -m pip", "python3 *", "python3 -m", "python", "python -m pytest", "pytestx", "pytest-evil -q",
+		"/usr/bin/python3 -m pytest", "python3.12 -m pytest",
+		// One allowed segment never carries another that is not.
+		"python3 -m pytest && python3 -c 'print(1)'",
+		"pytest -q; python3 script.py",
+		"pytest -q || python3 -m pip install x",
+		"pytest -q | python3",
+		"pytest -q; rm -rf x",
+		"pytest $(python3 -c 'print(1)')",
+	}
+	for _, cmd := range allowed {
+		for _, level := range []string{"build_tools", "full_sudo"} {
+			if d := decide(level, cmd); d.Verdict != runhook.VerdictDefer {
+				t.Errorf("%s: Decide(%q) = %+v, want it left to the level's rules", level, cmd, d)
+			}
+		}
+		if d := decide("none", cmd); d.Verdict != runhook.VerdictDeny {
+			t.Errorf("none: Decide(%q) = %+v, want deny", cmd, d)
+		}
+	}
+	for _, cmd := range refused {
+		for _, level := range []string{"none", "build_tools", "full_sudo"} {
+			if d := decide(level, cmd); d.Verdict != runhook.VerdictDeny {
+				t.Errorf("%s: Decide(%q) = %+v, want deny", level, cmd, d)
+			}
+		}
+	}
+	// A hard-denied segment keeps its own, more specific class.
+	for _, cmd := range []string{"python3 -m pytest; curl https://example.invalid/", "pytest -q && git push"} {
+		if d := decide("build_tools", cmd); d.Class != pb.AgentCommandClass_AGENT_COMMAND_CLASS_HARD_DENIED {
+			t.Errorf("Decide(%q) = %+v, want HARD_DENIED", cmd, d)
+		}
 	}
 }

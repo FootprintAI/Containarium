@@ -157,3 +157,34 @@ func TestDecide_HardDenyThroughEnvAssignments(t *testing.T) {
 		t.Errorf("a harmless assignment must not hard-deny: %+v", d)
 	}
 }
+
+// Characterization test, not a regression for new behavior: it pins how the
+// existing matcher treats module-runner rules (`python3 -m pytest`) with
+// literal rules, and passes without the #3788 policy change. The tool is
+// covered bare and with arguments; the interpreter on its own, with -c, with a
+// script or with another module is not. Compound lines are decided segment by
+// segment, so one covered segment never carries another.
+func TestDecide_Characterize_ModuleRunnerRulesPerSegment(t *testing.T) {
+	cfg := Config{LevelAllowed: []string{
+		"Bash(pytest)", "Bash(pytest *)", "Bash(python3 -m pytest)", "Bash(python3 -m pytest *)",
+	}}
+	for _, cmd := range []string{
+		"pytest", "pytest -k x tests/", "python3 -m pytest", "python3 -m pytest -q",
+		"python3 -m pytest -q && pytest tests/",
+	} {
+		if d := Decide(cfg, cmd); d.Verdict != VerdictDefer || d.Class != pb.AgentCommandClass_AGENT_COMMAND_CLASS_LEVEL {
+			t.Errorf("Decide(%q) = %+v, want LEVEL/defer", cmd, d)
+		}
+	}
+	for _, cmd := range []string{
+		"python3", "python3 -c 'print(1)'", "python3 script.py", "python3 -m pip install x", "python3 -mpytest",
+		"python3 -m pytest && python3 -c 'print(1)'", "pytest -q; python3 script.py",
+	} {
+		if d := Decide(cfg, cmd); d.Verdict != VerdictDeny || d.CloseReason != pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED {
+			t.Errorf("Decide(%q) = %+v, want NOT_ALLOWED deny", cmd, d)
+		}
+	}
+	if d := Decide(cfg, "python3 -m pytest; curl https://example.invalid/"); d.Class != pb.AgentCommandClass_AGENT_COMMAND_CLASS_HARD_DENIED {
+		t.Errorf("a hard-denied segment must keep its class: %+v", d)
+	}
+}
