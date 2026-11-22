@@ -359,12 +359,22 @@ CADDY_L4_VERSION=v0.1.2
 # older than the golang.org/x/net/html fix (#3579). The release build scans the
 # asset, so drop this only once the scan passes without it.
 CADDY_XNET_VERSION=v0.62.0
+# The release build's Trivy scan of the Caddy asset fails on HIGH findings in
+# modules Caddy's own go.mod resolves too old (v0.140.0 failed on these). Each
+# is replaced with its first fixed version; drop one only once the scan passes
+# without it.
+CADDY_JOSE_VERSION=v4.1.6
+CADDY_COMPRESS_VERSION=v1.18.7
+CADDY_GRPC_VERSION=v1.83.2
 build-caddy: ## Build the pre-configured Caddy release binary (caddy-l4 + every DNS-01 provider)
 	@echo "==> Installing xcaddy..."
 	@scripts/install-xcaddy.sh $$(go env GOPATH)/bin/xcaddy
 	@echo "==> Building Caddy $(CADDY_VERSION) with caddy-l4 + every DNS-01 provider (this takes a few minutes)..."
 	@$$(go env GOPATH)/bin/xcaddy build $(CADDY_VERSION) \
 	    --replace golang.org/x/net=golang.org/x/net@$(CADDY_XNET_VERSION) \
+	    --replace github.com/go-jose/go-jose/v4=github.com/go-jose/go-jose/v4@$(CADDY_JOSE_VERSION) \
+	    --replace github.com/klauspost/compress=github.com/klauspost/compress@$(CADDY_COMPRESS_VERSION) \
+	    --replace google.golang.org/grpc=google.golang.org/grpc@$(CADDY_GRPC_VERSION) \
 	    --with github.com/mholt/caddy-l4@$(CADDY_L4_VERSION) \
 	    --with github.com/caddy-dns/azure \
 	    --with github.com/caddy-dns/cloudflare \
