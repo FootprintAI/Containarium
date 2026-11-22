@@ -11655,6 +11655,18 @@
           "type": "string",
           "format": "uint64",
           "description": "The event's position in its run's feed: 1 for the first event the sink\nwrites, then +1 for each. Assigned by the sink under its write lock,\nnever by a client (a value a client sends is overwritten), and never\nreused: a sink restarted for the same run continues after the last event\nin the file. A reader that sees a jump knows it missed events."
+        },
+        "tool": {
+          "$ref": "#/definitions/AgentToolKind",
+          "description": "The engine tool that made the call. UNSPECIFIED means the shell tool: the\nonly tool recorded before this field existed."
+        },
+        "target": {
+          "type": "string",
+          "description": "READ and GREP/GLOB events only: the file a Read names, or the directory a\nGrep/Glob searches in. Redacted like argv."
+        },
+        "pattern": {
+          "type": "string",
+          "description": "GREP and GLOB events only: the pattern searched for. Redacted like argv."
         }
       },
       "description": "AgentCommandEvent is one line of a run's audit file (protojson). Command\noutput and environment variables are never part of it."
@@ -11857,6 +11869,18 @@
       ],
       "default": "AGENT_TASK_STATE_UNSPECIFIED",
       "description": "AgentTaskState tracks the lifecycle of a delegated A2A task."
+    },
+    "AgentToolKind": {
+      "type": "string",
+      "enum": [
+        "AGENT_TOOL_KIND_UNSPECIFIED",
+        "AGENT_TOOL_KIND_SHELL",
+        "AGENT_TOOL_KIND_READ",
+        "AGENT_TOOL_KIND_GREP",
+        "AGENT_TOOL_KIND_GLOB"
+      ],
+      "default": "AGENT_TOOL_KIND_UNSPECIFIED",
+      "description": "AgentToolKind names the engine tool behind a command event. Read-only tools\nare observed, never refused: they are recorded so the audit covers what the\nagent read and searched for, not only what it executed."
     },
     "AlertRule": {
       "type": "object",

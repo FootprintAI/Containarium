@@ -195,7 +195,11 @@ engine. It applies to both kinds of run:
 
 - **Engine run.** The daemon installs a PreToolUse and a PostToolUse hook pair
   (`agent-box permission-hook pre|post`) through `--settings`. Each shell
-  command the agent requests is decided by the pre hook.
+  command the agent requests is decided by the pre hook. The `Read`, `Grep`
+  and `Glob` tools are recorded too, as START and END events that name the
+  tool, the file or search directory, and the search pattern. They are never
+  refused by this policy: the engine's own rules still decide them, and what a
+  read returned is never recorded.
 - **Command run** (`command`). The run executes `agent-box permission-hook
   command` in place of `sh -c`. It applies the same decision to the command,
   which the daemon wrote into the run's root-owned configuration, and runs it

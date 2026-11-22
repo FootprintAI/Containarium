@@ -287,6 +287,64 @@ func (AgentCommandOutcome) EnumDescriptor() ([]byte, []int) {
 	return file_containarium_v1_agent_command_audit_proto_rawDescGZIP(), []int{3}
 }
 
+// AgentToolKind names the engine tool behind a command event. Read-only tools
+// are observed, never refused: they are recorded so the audit covers what the
+// agent read and searched for, not only what it executed.
+type AgentToolKind int32
+
+const (
+	AgentToolKind_AGENT_TOOL_KIND_UNSPECIFIED AgentToolKind = 0
+	AgentToolKind_AGENT_TOOL_KIND_SHELL       AgentToolKind = 1
+	AgentToolKind_AGENT_TOOL_KIND_READ        AgentToolKind = 2
+	AgentToolKind_AGENT_TOOL_KIND_GREP        AgentToolKind = 3
+	AgentToolKind_AGENT_TOOL_KIND_GLOB        AgentToolKind = 4
+)
+
+// Enum value maps for AgentToolKind.
+var (
+	AgentToolKind_name = map[int32]string{
+		0: "AGENT_TOOL_KIND_UNSPECIFIED",
+		1: "AGENT_TOOL_KIND_SHELL",
+		2: "AGENT_TOOL_KIND_READ",
+		3: "AGENT_TOOL_KIND_GREP",
+		4: "AGENT_TOOL_KIND_GLOB",
+	}
+	AgentToolKind_value = map[string]int32{
+		"AGENT_TOOL_KIND_UNSPECIFIED": 0,
+		"AGENT_TOOL_KIND_SHELL":       1,
+		"AGENT_TOOL_KIND_READ":        2,
+		"AGENT_TOOL_KIND_GREP":        3,
+		"AGENT_TOOL_KIND_GLOB":        4,
+	}
+)
+
+func (x AgentToolKind) Enum() *AgentToolKind {
+	p := new(AgentToolKind)
+	*p = x
+	return p
+}
+
+func (x AgentToolKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AgentToolKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_containarium_v1_agent_command_audit_proto_enumTypes[4].Descriptor()
+}
+
+func (AgentToolKind) Type() protoreflect.EnumType {
+	return &file_containarium_v1_agent_command_audit_proto_enumTypes[4]
+}
+
+func (x AgentToolKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AgentToolKind.Descriptor instead.
+func (AgentToolKind) EnumDescriptor() ([]byte, []int) {
+	return file_containarium_v1_agent_command_audit_proto_rawDescGZIP(), []int{4}
+}
+
 // AgentCommandPolicy is the caller-supplied (org) policy for one run.
 type AgentCommandPolicy struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -444,7 +502,15 @@ type AgentCommandEvent struct {
 	// never by a client (a value a client sends is overwritten), and never
 	// reused: a sink restarted for the same run continues after the last event
 	// in the file. A reader that sees a jump knows it missed events.
-	Seq           uint64 `protobuf:"varint,12,opt,name=seq,proto3" json:"seq,omitempty"`
+	Seq uint64 `protobuf:"varint,12,opt,name=seq,proto3" json:"seq,omitempty"`
+	// The engine tool that made the call. UNSPECIFIED means the shell tool: the
+	// only tool recorded before this field existed.
+	Tool AgentToolKind `protobuf:"varint,13,opt,name=tool,proto3,enum=containarium.v1.AgentToolKind" json:"tool,omitempty"`
+	// READ and GREP/GLOB events only: the file a Read names, or the directory a
+	// Grep/Glob searches in. Redacted like argv.
+	Target string `protobuf:"bytes,14,opt,name=target,proto3" json:"target,omitempty"`
+	// GREP and GLOB events only: the pattern searched for. Redacted like argv.
+	Pattern       string `protobuf:"bytes,15,opt,name=pattern,proto3" json:"pattern,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -563,6 +629,27 @@ func (x *AgentCommandEvent) GetSeq() uint64 {
 	return 0
 }
 
+func (x *AgentCommandEvent) GetTool() AgentToolKind {
+	if x != nil {
+		return x.Tool
+	}
+	return AgentToolKind_AGENT_TOOL_KIND_UNSPECIFIED
+}
+
+func (x *AgentCommandEvent) GetTarget() string {
+	if x != nil {
+		return x.Target
+	}
+	return ""
+}
+
+func (x *AgentCommandEvent) GetPattern() string {
+	if x != nil {
+		return x.Pattern
+	}
+	return ""
+}
+
 var File_containarium_v1_agent_command_audit_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_agent_command_audit_proto_rawDesc = "" +
@@ -575,7 +662,7 @@ const file_containarium_v1_agent_command_audit_proto_rawDesc = "" +
 	"\vapproval_id\x18\x01 \x01(\tR\n" +
 	"approvalId\x12\x1f\n" +
 	"\vapprover_id\x18\x02 \x01(\tR\n" +
-	"approverId\"\xad\x04\n" +
+	"approverId\"\x93\x05\n" +
 	"\x11AgentCommandEvent\x12:\n" +
 	"\x04kind\x18\x01 \x01(\x0e2&.containarium.v1.AgentCommandEventKindR\x04kind\x12.\n" +
 	"\x04time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x04time\x12\x19\n" +
@@ -589,7 +676,10 @@ const file_containarium_v1_agent_command_audit_proto_rawDesc = "" +
 	"\bapproval\x18\n" +
 	" \x01(\v2!.containarium.v1.AgentRunApprovalR\bapproval\x12>\n" +
 	"\aoutcome\x18\v \x01(\x0e2$.containarium.v1.AgentCommandOutcomeR\aoutcome\x12\x10\n" +
-	"\x03seq\x18\f \x01(\x04R\x03seqB\f\n" +
+	"\x03seq\x18\f \x01(\x04R\x03seq\x122\n" +
+	"\x04tool\x18\r \x01(\x0e2\x1e.containarium.v1.AgentToolKindR\x04tool\x12\x16\n" +
+	"\x06target\x18\x0e \x01(\tR\x06target\x12\x18\n" +
+	"\apattern\x18\x0f \x01(\tR\apatternB\f\n" +
 	"\n" +
 	"_exit_code*\xc6\x01\n" +
 	"\x11AgentCommandClass\x12#\n" +
@@ -615,7 +705,13 @@ const file_containarium_v1_agent_command_audit_proto_rawDesc = "" +
 	"!AGENT_COMMAND_OUTCOME_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19AGENT_COMMAND_OUTCOME_RAN\x10\x01\x12!\n" +
 	"\x1dAGENT_COMMAND_OUTCOME_NOT_RUN\x10\x02\x12!\n" +
-	"\x1dAGENT_COMMAND_OUTCOME_UNKNOWN\x10\x03BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
+	"\x1dAGENT_COMMAND_OUTCOME_UNKNOWN\x10\x03*\x99\x01\n" +
+	"\rAgentToolKind\x12\x1f\n" +
+	"\x1bAGENT_TOOL_KIND_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15AGENT_TOOL_KIND_SHELL\x10\x01\x12\x18\n" +
+	"\x14AGENT_TOOL_KIND_READ\x10\x02\x12\x18\n" +
+	"\x14AGENT_TOOL_KIND_GREP\x10\x03\x12\x18\n" +
+	"\x14AGENT_TOOL_KIND_GLOB\x10\x04BKZIgithub.com/footprintai/containarium/pkg/pb/containarium/v1;containariumv1b\x06proto3"
 
 var (
 	file_containarium_v1_agent_command_audit_proto_rawDescOnce sync.Once
@@ -629,30 +725,32 @@ func file_containarium_v1_agent_command_audit_proto_rawDescGZIP() []byte {
 	return file_containarium_v1_agent_command_audit_proto_rawDescData
 }
 
-var file_containarium_v1_agent_command_audit_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_containarium_v1_agent_command_audit_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
 var file_containarium_v1_agent_command_audit_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_containarium_v1_agent_command_audit_proto_goTypes = []any{
 	(AgentCommandClass)(0),        // 0: containarium.v1.AgentCommandClass
 	(AgentCommandEventKind)(0),    // 1: containarium.v1.AgentCommandEventKind
 	(AgentCommandCloseReason)(0),  // 2: containarium.v1.AgentCommandCloseReason
 	(AgentCommandOutcome)(0),      // 3: containarium.v1.AgentCommandOutcome
-	(*AgentCommandPolicy)(nil),    // 4: containarium.v1.AgentCommandPolicy
-	(*AgentRunApproval)(nil),      // 5: containarium.v1.AgentRunApproval
-	(*AgentCommandEvent)(nil),     // 6: containarium.v1.AgentCommandEvent
-	(*timestamppb.Timestamp)(nil), // 7: google.protobuf.Timestamp
+	(AgentToolKind)(0),            // 4: containarium.v1.AgentToolKind
+	(*AgentCommandPolicy)(nil),    // 5: containarium.v1.AgentCommandPolicy
+	(*AgentRunApproval)(nil),      // 6: containarium.v1.AgentRunApproval
+	(*AgentCommandEvent)(nil),     // 7: containarium.v1.AgentCommandEvent
+	(*timestamppb.Timestamp)(nil), // 8: google.protobuf.Timestamp
 }
 var file_containarium_v1_agent_command_audit_proto_depIdxs = []int32{
 	1, // 0: containarium.v1.AgentCommandEvent.kind:type_name -> containarium.v1.AgentCommandEventKind
-	7, // 1: containarium.v1.AgentCommandEvent.time:type_name -> google.protobuf.Timestamp
+	8, // 1: containarium.v1.AgentCommandEvent.time:type_name -> google.protobuf.Timestamp
 	0, // 2: containarium.v1.AgentCommandEvent.class:type_name -> containarium.v1.AgentCommandClass
 	2, // 3: containarium.v1.AgentCommandEvent.close_reason:type_name -> containarium.v1.AgentCommandCloseReason
-	5, // 4: containarium.v1.AgentCommandEvent.approval:type_name -> containarium.v1.AgentRunApproval
+	6, // 4: containarium.v1.AgentCommandEvent.approval:type_name -> containarium.v1.AgentRunApproval
 	3, // 5: containarium.v1.AgentCommandEvent.outcome:type_name -> containarium.v1.AgentCommandOutcome
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	4, // 6: containarium.v1.AgentCommandEvent.tool:type_name -> containarium.v1.AgentToolKind
+	7, // [7:7] is the sub-list for method output_type
+	7, // [7:7] is the sub-list for method input_type
+	7, // [7:7] is the sub-list for extension type_name
+	7, // [7:7] is the sub-list for extension extendee
+	0, // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_containarium_v1_agent_command_audit_proto_init() }
@@ -666,7 +764,7 @@ func file_containarium_v1_agent_command_audit_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_containarium_v1_agent_command_audit_proto_rawDesc), len(file_containarium_v1_agent_command_audit_proto_rawDesc)),
-			NumEnums:      4,
+			NumEnums:      5,
 			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,

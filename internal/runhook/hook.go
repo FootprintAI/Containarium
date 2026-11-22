@@ -13,22 +13,41 @@ import (
 // The engine's (Claude Code's) hook contract: a JSON object on stdin, and for
 // PreToolUse a JSON decision on stdout. Only the fields used here are named.
 
-// shellTool is the engine's tool name for shell commands, the hooks' matcher.
+// shellTool is the engine's tool name for shell commands. The hooks are
+// registered for it and for the observed read-only tools below.
 const shellTool = "Bash"
+
+// HookMatcher is the matcher the run's hooks are registered under: the shell
+// tool and every observed read-only tool.
+const HookMatcher = "Bash|Read|Grep|Glob"
+
+// observedTools are the read-only engine tools the hooks record without
+// deciding: the audit covers what the agent read and searched for. They are
+// never refused here; the engine's own rules still apply to them.
+var observedTools = map[string]pb.AgentToolKind{
+	"Read": pb.AgentToolKind_AGENT_TOOL_KIND_READ,
+	"Grep": pb.AgentToolKind_AGENT_TOOL_KIND_GREP,
+	"Glob": pb.AgentToolKind_AGENT_TOOL_KIND_GLOB,
+}
 
 type hookInput struct {
 	HookEventName string          `json:"hook_event_name"`
 	ToolName      string          `json:"tool_name"`
 	ToolUseID     string          `json:"tool_use_id"`
-	ToolInput     shellToolInput  `json:"tool_input"`
+	ToolInput     hookToolInput   `json:"tool_input"`
 	ToolResponse  json.RawMessage `json:"tool_response,omitempty"`
 	// PostToolUseFailure only.
 	Error       string `json:"error,omitempty"`
 	IsInterrupt bool   `json:"is_interrupt,omitempty"`
 }
 
-type shellToolInput struct {
-	Command string `json:"command"`
+// hookToolInput holds the fields of each tool this hook reads: a shell command, or
+// a Read's file_path, a Grep's or Glob's pattern and search path.
+type hookToolInput struct {
+	Command  string `json:"command"`
+	FilePath string `json:"file_path"`
+	Pattern  string `json:"pattern"`
+	Path     string `json:"path"`
 }
 
 // shellToolResponse is the part of a shell tool's response that may carry an
@@ -65,6 +84,11 @@ func RunPre(cfg Config, in io.Reader, out io.Writer, send Sender) error {
 	if err := json.NewDecoder(io.LimitReader(in, 1<<20)).Decode(&hi); err != nil {
 		return writeDeny(out, pb.AgentCommandCloseReason_AGENT_COMMAND_CLOSE_REASON_NOT_ALLOWED, "unreadable hook input")
 	}
+	if kind, ok := observedTools[hi.ToolName]; ok {
+		// Observation only: a failed record does not refuse a read.
+		_ = send(observedEvent(hi, kind, pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_START))
+		return nil
+	}
 	if hi.ToolName != shellTool {
 		return nil
 	}
@@ -88,6 +112,23 @@ func RunPre(cfg Config, in io.Reader, out io.Writer, send Sender) error {
 		}})
 	}
 	return nil // deferred to the level's own rules
+}
+
+// observedEvent is the START or END for a read-only tool. It names the tool,
+// its file or search target and pattern; never its output or its content.
+func observedEvent(hi hookInput, kind pb.AgentToolKind, eventKind pb.AgentCommandEventKind) *pb.AgentCommandEvent {
+	ev := &pb.AgentCommandEvent{Kind: eventKind, ToolUseId: hi.ToolUseID, Tool: kind}
+	switch kind {
+	case pb.AgentToolKind_AGENT_TOOL_KIND_READ:
+		ev.Target = hi.ToolInput.FilePath
+	case pb.AgentToolKind_AGENT_TOOL_KIND_GREP, pb.AgentToolKind_AGENT_TOOL_KIND_GLOB:
+		ev.Target = hi.ToolInput.Path
+		ev.Pattern = hi.ToolInput.Pattern
+	}
+	if eventKind == pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_END {
+		ev.Outcome = pb.AgentCommandOutcome_AGENT_COMMAND_OUTCOME_RAN
+	}
+	return ev
 }
 
 func writeDeny(out io.Writer, reason pb.AgentCommandCloseReason, why string) error {
@@ -118,6 +159,9 @@ func RunPost(cfg Config, in io.Reader, send Sender) error {
 	var hi hookInput
 	if err := json.NewDecoder(io.LimitReader(in, 64<<20)).Decode(&hi); err != nil {
 		return fmt.Errorf("unreadable hook input: %w", err)
+	}
+	if _, ok := observedTools[hi.ToolName]; ok {
+		return send(observedEvent(hi, observedTools[hi.ToolName], pb.AgentCommandEventKind_AGENT_COMMAND_EVENT_KIND_END))
 	}
 	if hi.ToolName != shellTool {
 		return nil

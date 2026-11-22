@@ -56,6 +56,12 @@ func NewRedactor(extra []string) (*Redactor, error) {
 	return r, nil
 }
 
+// Text returns s redacted by the same rules as Argv, for a single value such
+// as a file path or a search pattern.
+func (r *Redactor) Text(s string) string {
+	return r.Argv([]string{s})[0]
+}
+
 // Argv returns a redacted copy of argv.
 func (r *Redactor) Argv(argv []string) []string {
 	out := make([]string, len(argv))

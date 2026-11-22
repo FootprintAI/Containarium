@@ -159,4 +159,23 @@ message AgentCommandEvent {
   // reused: a sink restarted for the same run continues after the last event
   // in the file. A reader that sees a jump knows it missed events.
   uint64 seq = 12;
+  // The engine tool that made the call. UNSPECIFIED means the shell tool: the
+  // only tool recorded before this field existed.
+  AgentToolKind tool = 13;
+  // READ and GREP/GLOB events only: the file a Read names, or the directory a
+  // Grep/Glob searches in. Redacted like argv.
+  string target = 14;
+  // GREP and GLOB events only: the pattern searched for. Redacted like argv.
+  string pattern = 15;
+}
+
+// AgentToolKind names the engine tool behind a command event. Read-only tools
+// are observed, never refused: they are recorded so the audit covers what the
+// agent read and searched for, not only what it executed.
+enum AgentToolKind {
+  AGENT_TOOL_KIND_UNSPECIFIED = 0;
+  AGENT_TOOL_KIND_SHELL = 1;
+  AGENT_TOOL_KIND_READ = 2;
+  AGENT_TOOL_KIND_GREP = 3;
+  AGENT_TOOL_KIND_GLOB = 4;
 }
