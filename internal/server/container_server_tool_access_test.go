@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/footprintai/containarium/pkg/core/box"
 	boxlxc "github.com/footprintai/containarium/pkg/core/box/lxc"
@@ -153,10 +154,11 @@ func TestToProtoContainer_ToolAccessReadBack(t *testing.T) {
 	}
 }
 
-// Recording a level provisions the run user right away (#3798), so the box is
-// "up, not signed in" before any run. A stopped box gets nothing, and a
-// provisioning failure never fails the recording.
-func TestSetContainerToolAccess_ProvisionsRunUser(t *testing.T) {
+// Recording a level prepares the run user right away (#3798): the user, the sudo
+// grant, the run directory and the staged CLI, exactly as the first run would.
+// A stopped box gets nothing, a failure never fails the recording, and a hung
+// exec cannot hang the RPC.
+func TestSetContainerToolAccess_PreparesRunUser(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		state    string
@@ -165,19 +167,20 @@ func TestSetContainerToolAccess_ProvisionsRunUser(t *testing.T) {
 	}{
 		{"running box", "Running", nil, true},
 		{"stopped box", "Stopped", nil, false},
-		{"exec failure does not fail the recording", "Running", errors.New("exec boom"), true},
+		{"exec failure does not fail the recording", "Running", errors.New("exec boom\nforged line"), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, mock, calls := newToolAccessTestServer(t, map[string]*incus.ContainerInfo{
+			s, _, calls := newToolAccessTestServer(t, map[string]*incus.ContainerInfo{
 				"alice-container": {Name: "alice-container", State: tc.state},
 			})
-			var execs []string
-			mock.ExecWithExitCodeFunc = func(name string, cmd []string) (string, string, int, error) {
-				execs = append(execs, name)
+			var rootScripts []string
+			s.boxRunStartExec = func(box, user, script string) (string, error) { return "/home/alice\n", nil }
+			s.boxRunExec = func(box, script string) (string, error) {
+				rootScripts = append(rootScripts, script)
 				if tc.execErr != nil {
-					return "", "", 0, tc.execErr
+					return "", tc.execErr
 				}
-				return "/home/ctn-run\n", "", 0, nil
+				return "/home/ctn-run\n", nil
 			}
 			if _, err := s.SetContainerToolAccess(testCtx(), &pb.SetContainerToolAccessRequest{Name: "alice", ToolAccess: pb.BoxToolAccess_BOX_TOOL_ACCESS_BUILD_TOOLS}); err != nil {
 				t.Fatalf("recording must succeed: %v", err)
@@ -185,25 +188,56 @@ func TestSetContainerToolAccess_ProvisionsRunUser(t *testing.T) {
 			if len(*calls) != 1 {
 				t.Fatalf("level not recorded: %+v", *calls)
 			}
-			if got := len(execs) > 0; got != tc.wantExec {
-				t.Fatalf("run user provisioned = %v, want %v (execs %v)", got, tc.wantExec, execs)
+			if got := len(rootScripts) > 0; got != tc.wantExec {
+				t.Fatalf("run user prepared = %v, want %v", got, tc.wantExec)
 			}
-			if tc.wantExec && execs[0] != "alice-container" {
-				t.Errorf("exec on %q, want alice-container", execs[0])
+			// On success the CLI is staged too: provision, sudo grant, run dir, stage.
+			if tc.wantExec && tc.execErr == nil && len(rootScripts) != 4 {
+				t.Errorf("expected provision+sudoers+run dir+stage (4 root scripts), got %d", len(rootScripts))
 			}
 		})
 	}
 }
 
-// Clearing the level never touches the run user.
-func TestSetContainerToolAccess_ClearDoesNotProvision(t *testing.T) {
-	s, mock, _ := newToolAccessTestServer(t, map[string]*incus.ContainerInfo{
+// A hung exec must not hang the RPC: the level is already recorded.
+func TestSetContainerToolAccess_HungPrepareDoesNotHangTheRPC(t *testing.T) {
+	old := runUserPrepareTimeout
+	runUserPrepareTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { runUserPrepareTimeout = old })
+
+	s, _, calls := newToolAccessTestServer(t, map[string]*incus.ContainerInfo{
 		"alice-container": {Name: "alice-container", State: "Running"},
 	})
-	mock.ExecWithExitCodeFunc = func(string, []string) (string, string, int, error) {
-		t.Error("clearing a level must not exec in the box")
-		return "", "", 0, nil
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	s.boxRunStartExec = func(box, user, script string) (string, error) { return "/home/alice\n", nil }
+	s.boxRunExec = func(box, script string) (string, error) { <-release; return "", nil }
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.SetContainerToolAccess(testCtx(), &pb.SetContainerToolAccessRequest{Name: "alice", ToolAccess: pb.BoxToolAccess_BOX_TOOL_ACCESS_BUILD_TOOLS})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("recording must succeed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("SetContainerToolAccess hung on the in-box exec")
 	}
+	if len(*calls) != 1 {
+		t.Fatalf("level not recorded: %+v", *calls)
+	}
+}
+
+// Clearing the level never touches the run user.
+func TestSetContainerToolAccess_ClearDoesNotPrepare(t *testing.T) {
+	s, _, _ := newToolAccessTestServer(t, map[string]*incus.ContainerInfo{
+		"alice-container": {Name: "alice-container", State: "Running"},
+	})
+	s.boxRunStartExec = func(string, string, string) (string, error) { t.Error("must not exec"); return "", nil }
+	s.boxRunExec = func(string, string) (string, error) { t.Error("must not exec"); return "", nil }
 	if _, err := s.SetContainerToolAccess(testCtx(), &pb.SetContainerToolAccessRequest{Name: "alice", ToolAccess: pb.BoxToolAccess_BOX_TOOL_ACCESS_UNSPECIFIED}); err != nil {
 		t.Fatal(err)
 	}

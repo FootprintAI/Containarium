@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
+	"time"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/toolaccess"
@@ -56,7 +56,7 @@ func (s *ContainerServer) SetContainerToolAccess(ctx context.Context, req *pb.Se
 			return nil, status.Errorf(codes.Internal, "failed to set %s: %v", incus.ToolAccessKey, err)
 		}
 		log.Printf("[tool-access] container=%q level=%s", containerName, value)
-		s.ensureRunUser(containerName, info.State == pb.ContainerState_CONTAINER_STATE_RUNNING)
+		s.ensureRunUser(containerName, username, value, info.State == pb.ContainerState_CONTAINER_STATE_RUNNING)
 		return &pb.SetContainerToolAccessResponse{ToolAccess: req.ToolAccess}, nil
 	}
 
@@ -69,27 +69,42 @@ func (s *ContainerServer) SetContainerToolAccess(ctx context.Context, req *pb.Se
 	return &pb.SetContainerToolAccessResponse{ToolAccess: pb.BoxToolAccess_BOX_TOOL_ACCESS_UNSPECIFIED}, nil
 }
 
-// ensureRunUser provisions the run user (ctn-run) as soon as a level is
-// recorded, so the box is "up, not signed in" before any run instead of the
-// first run creating it and being refused (#3798). provisionBoxRunUser is
-// idempotent. Best effort: the level is already recorded, so a failure (box
-// stopped, exec error) is logged and the first platform run retries it as
-// before. Clearing a level never removes the user.
-func (s *ContainerServer) ensureRunUser(containerName string, running bool) {
+// runUserPrepareTimeout bounds how long SetContainerToolAccess waits for the
+// run user to be prepared. The in-box exec has no deadline of its own, and the
+// level is already recorded, so a box that hangs must not hang the RPC.
+var runUserPrepareTimeout = 30 * time.Second
+
+// ensureRunUser prepares the run user (ctn-run) as soon as a level is recorded,
+// exactly as the first platform run would: the user, the sudo grant, the run
+// directory and the CLI staged into its home. The box is then "up, not signed
+// in" before any run, and the sign-in terminal has a CLI to run (#3798).
+// prepareUnprivilegedRun is idempotent. Best effort: the level is already
+// recorded, so a failure or a timeout is logged and the first platform run
+// retries it as before. Clearing a level never removes the user.
+func (s *ContainerServer) ensureRunUser(containerName, username, level string, running bool) {
 	if !running {
 		return
 	}
-	rootExec := func(box, script string) (string, error) {
-		out, stderr, code, err := s.manager.ExecWithExitCode(box, []string{"bash", "-c", script})
-		if err != nil {
-			return "", err
-		}
-		if code != 0 {
-			return "", fmt.Errorf("exit %d: %s", code, strings.TrimSpace(stderr))
-		}
-		return out, nil
+	rootExec, userExec := s.boxRunExecFn(), s.boxRunStartExecFn()
+	if rootExec == nil || userExec == nil {
+		return
 	}
-	if _, err := provisionBoxRunUser(rootExec, containerName); err != nil {
-		log.Printf("[tool-access] container=%q could not provision the run user (the first run retries): %v", containerName, err)
+	done := make(chan error, 1)
+	go func() {
+		ownerHome, err := resolveBoxRunHome(userExec, containerName, username)
+		if err != nil {
+			done <- fmt.Errorf("read the owner's home: %w", err)
+			return
+		}
+		_, err = prepareUnprivilegedRun(rootExec, containerName, s.boxRunDir(boxRunUnprivilegedUser), ownerHome, level)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			log.Printf("[tool-access] container=%q could not prepare the run user (the first run retries): %q", containerName, err.Error())
+		}
+	case <-time.After(runUserPrepareTimeout):
+		log.Printf("[tool-access] container=%q preparing the run user is taking too long; carrying on (the first run retries)", containerName)
 	}
 }
