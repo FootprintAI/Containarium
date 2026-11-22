@@ -583,6 +583,22 @@ func (s *RecipeServer) deploy(ctx context.Context, req *pb.DeployRecipeRequest) 
 			return nil, status.Errorf(codes.Internal, "could not record tool_access on %s: %v", containerName, err)
 		}
 	}
+	if recordToolAccess && recipe.GetWorkspaceDir() == "" {
+		// A recipe with a workspace provisions the run user in
+		// resolveRecipeWorkspace; without one, do it here so the box has its
+		// run user before any run (#3798). Idempotent; a failure is retried
+		// by the first platform run.
+		rootExec := func(box, script string) (string, error) {
+			out, stderr, err := s.boxOps().ExecWithOutput(box, []string{"bash", "-c", script})
+			if err != nil {
+				return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr))
+			}
+			return out, nil
+		}
+		if _, err := provisionBoxRunUser(rootExec, containerName); err != nil {
+			log.Printf("[recipe] %s: could not provision the run user (the first run retries): %v", containerName, err)
+		}
+	}
 	workspace, err := resolveRecipeWorkspace(s.boxOps(), recipe, containerName, params, recordToolAccess)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "could not place the workspace on %s: %v", containerName, err)

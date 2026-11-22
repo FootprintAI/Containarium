@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"strings"
 
 	"github.com/footprintai/containarium/internal/auth"
 	"github.com/footprintai/containarium/internal/toolaccess"
@@ -54,6 +56,7 @@ func (s *ContainerServer) SetContainerToolAccess(ctx context.Context, req *pb.Se
 			return nil, status.Errorf(codes.Internal, "failed to set %s: %v", incus.ToolAccessKey, err)
 		}
 		log.Printf("[tool-access] container=%q level=%s", containerName, value)
+		s.ensureRunUser(containerName, info.State == pb.ContainerState_CONTAINER_STATE_RUNNING)
 		return &pb.SetContainerToolAccessResponse{ToolAccess: req.ToolAccess}, nil
 	}
 
@@ -64,4 +67,29 @@ func (s *ContainerServer) SetContainerToolAccess(ctx context.Context, req *pb.Se
 	}
 	log.Printf("[tool-access] container=%q level cleared", containerName)
 	return &pb.SetContainerToolAccessResponse{ToolAccess: pb.BoxToolAccess_BOX_TOOL_ACCESS_UNSPECIFIED}, nil
+}
+
+// ensureRunUser provisions the run user (ctn-run) as soon as a level is
+// recorded, so the box is "up, not signed in" before any run instead of the
+// first run creating it and being refused (#3798). provisionBoxRunUser is
+// idempotent. Best effort: the level is already recorded, so a failure (box
+// stopped, exec error) is logged and the first platform run retries it as
+// before. Clearing a level never removes the user.
+func (s *ContainerServer) ensureRunUser(containerName string, running bool) {
+	if !running {
+		return
+	}
+	rootExec := func(box, script string) (string, error) {
+		out, stderr, code, err := s.manager.ExecWithExitCode(box, []string{"bash", "-c", script})
+		if err != nil {
+			return "", err
+		}
+		if code != 0 {
+			return "", fmt.Errorf("exit %d: %s", code, strings.TrimSpace(stderr))
+		}
+		return out, nil
+	}
+	if _, err := provisionBoxRunUser(rootExec, containerName); err != nil {
+		log.Printf("[tool-access] container=%q could not provision the run user (the first run retries): %v", containerName, err)
+	}
 }

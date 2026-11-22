@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"sync"
 	"testing"
 
@@ -149,5 +150,61 @@ func TestToProtoContainer_ToolAccessReadBack(t *testing.T) {
 		if pc.ToolAccess != tc.want {
 			t.Errorf("stored %q -> container view %v, want %v", tc.stored, pc.ToolAccess, tc.want)
 		}
+	}
+}
+
+// Recording a level provisions the run user right away (#3798), so the box is
+// "up, not signed in" before any run. A stopped box gets nothing, and a
+// provisioning failure never fails the recording.
+func TestSetContainerToolAccess_ProvisionsRunUser(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		state    string
+		execErr  error
+		wantExec bool
+	}{
+		{"running box", "Running", nil, true},
+		{"stopped box", "Stopped", nil, false},
+		{"exec failure does not fail the recording", "Running", errors.New("exec boom"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, mock, calls := newToolAccessTestServer(t, map[string]*incus.ContainerInfo{
+				"alice-container": {Name: "alice-container", State: tc.state},
+			})
+			var execs []string
+			mock.ExecWithExitCodeFunc = func(name string, cmd []string) (string, string, int, error) {
+				execs = append(execs, name)
+				if tc.execErr != nil {
+					return "", "", 0, tc.execErr
+				}
+				return "/home/ctn-run\n", "", 0, nil
+			}
+			if _, err := s.SetContainerToolAccess(testCtx(), &pb.SetContainerToolAccessRequest{Name: "alice", ToolAccess: pb.BoxToolAccess_BOX_TOOL_ACCESS_BUILD_TOOLS}); err != nil {
+				t.Fatalf("recording must succeed: %v", err)
+			}
+			if len(*calls) != 1 {
+				t.Fatalf("level not recorded: %+v", *calls)
+			}
+			if got := len(execs) > 0; got != tc.wantExec {
+				t.Fatalf("run user provisioned = %v, want %v (execs %v)", got, tc.wantExec, execs)
+			}
+			if tc.wantExec && execs[0] != "alice-container" {
+				t.Errorf("exec on %q, want alice-container", execs[0])
+			}
+		})
+	}
+}
+
+// Clearing the level never touches the run user.
+func TestSetContainerToolAccess_ClearDoesNotProvision(t *testing.T) {
+	s, mock, _ := newToolAccessTestServer(t, map[string]*incus.ContainerInfo{
+		"alice-container": {Name: "alice-container", State: "Running"},
+	})
+	mock.ExecWithExitCodeFunc = func(string, []string) (string, string, int, error) {
+		t.Error("clearing a level must not exec in the box")
+		return "", "", 0, nil
+	}
+	if _, err := s.SetContainerToolAccess(testCtx(), &pb.SetContainerToolAccessRequest{Name: "alice", ToolAccess: pb.BoxToolAccess_BOX_TOOL_ACCESS_UNSPECIFIED}); err != nil {
+		t.Fatal(err)
 	}
 }

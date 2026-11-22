@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The run user is created when a tool-access level is recorded** (#3798). Recording a level on a running box (`SetContainerToolAccess`, or a recipe deploy with `tool_access`) now provisions `ctn-run` right away, so the box is "up, not signed in" before any run instead of the first platform run creating it and being refused. Idempotent and best effort: a failure is logged and the first run retries it, clearing a level never removes the user.
+
 ## [0.139.0] - 2026-11-18
 
 
