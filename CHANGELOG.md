@@ -7,12 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.140.1] - 2026-11-22
+## [0.141.0] - 2026-11-22
 
+
+### Added
+
+- **Run audit covers reads and searches** (#3802). With a command policy attached, an engine run's audit now also records the agent's `Read`, `Grep` and `Glob` calls: the file read or the search directory and pattern, in the same event feed as shell commands. These tools are observed, not decided, and their content is never recorded.
+- **Exclusive box runs** (#3805). `StartBoxRunRequest.exclusive` starts a run that is the only run on its box while it is live. A start that conflicts is refused with a typed reason (`OTHER_RUN_LIVE` or `EXCLUSIVE_RUN_LIVE`) in the error's details. Advertised as the `box_run_exclusive` capability.
 
 ### Fixed
 
-- **The Caddy release asset builds with fixed `go-jose`, `klauspost/compress` and `grpc`** (#3807). The v0.140.0 release build stopped at its scan of the Caddy asset (#3579), which found five HIGH findings in modules Caddy's own `go.mod` resolves too old, so v0.140.0 has no GitHub Release; its daemon image, sidecar images and PyPI package did publish. `make build-caddy` now replaces `go-jose/v4` with v4.1.6, `klauspost/compress` with v1.18.7 and `grpc` with v1.83.2. Use v0.140.1 rather than v0.140.0: it carries the same changes plus a Release.
+- **The Caddy release asset builds with fixed `go-jose`, `klauspost/compress` and `grpc`** (#3807). The v0.140.0 release build stopped at its scan of the Caddy asset (#3579), which found five HIGH findings in modules Caddy's own `go.mod` resolves too old, so v0.140.0 has no GitHub Release; its daemon image, sidecar images and PyPI package did publish. `make build-caddy` now replaces `go-jose/v4` with v4.1.6, `klauspost/compress` with v1.18.7 and `grpc` with v1.83.2. Use v0.141.0 rather than v0.140.0: it carries the same changes plus a Release (a v0.140.1 was prepared but never tagged).
 
 ## [0.140.0] - 2026-11-22
 
