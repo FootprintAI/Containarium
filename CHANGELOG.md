@@ -7,9 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.140.0] - 2026-11-22
+
+
 ### Changed
 
 - **The run user is prepared when a tool-access level is recorded** (#3798). Recording a level on a running box (`SetContainerToolAccess`) now creates `ctn-run`, applies its sudo grant and run directory, and stages the agent CLI into its home right away, as the first platform run would. The box is then "up, not signed in" and the run-user sign-in terminal has a CLI to run, instead of the first run creating the user and being refused. Idempotent and best effort: a failure or a slow box is logged and the first run retries it, and the RPC waits at most 30 seconds. Clearing a level never removes the user. A recipe deploy is unchanged.
+- **A headless run may run `git merge-base` (#3790).** A platform-started run could not compute where a branch forked from its base, so a run that compares a pull request's head with its base could not make that comparison. `git merge-base` (and its `-C <dir>` and `--git-dir=` forms) is now allowed at every tool-access level; it only reads history. No other git subcommand is added.
+
+### Added
+
+- **Read a structured run's stderr through the daemon API (#3757).** A run started with `structured_output` keeps its engine's stderr in a separate file, which no RPC served, so a run that failed before writing its result object (an expired sign-in, a network error, a crash) left an empty log and no way to see why. `TailBoxRunLog` now takes `stream: BOX_RUN_LOG_STREAM_STDERR` to read that file with the same offset, window, follow and `ended` rules, and the response names the log it read. `containarium code logs --stderr` and the MCP `code_logs` tool's `stream: "stderr"` use it. A run without a stderr log (any plain-text run) is `FAILED_PRECONDITION`; plain reads are unchanged. Advertised as `box_run_stderr` in `SystemInfo.capabilities`; against an older daemon, which would ignore the field and serve the run's log, the CLI and the MCP tool refuse the window instead of showing it as stderr.
+- **`BUILD_TOOLS` runs can install a Python repository's dependencies** (#3788).
+  `agent-python setup`, `agent-python test` and `agent-python venv` (each with an
+  optional directory) are now allowed at `BUILD_TOOLS` and `FULL_SUDO`; the
+  helper's `-- CMD` passthrough form is denied by rule at every level (including
+  quoted or tab-separated spellings of `--`), and plain
+  `pip` / `python3 -m pip` stay refused. Nothing changes at `NONE`. The helper
+  is present on agent-runtime boxes deployed with `toolchains=python`.
+
+### Security
+
+- **`containarium label list` escapes control characters in label keys and values** (#3343). A label set on a box could carry an escape sequence or a line break that cleared the terminal or forged a row in the table; such characters now print as visible escapes (`\x1b`, `\r\n`). Clean labels print unchanged. The CI check for unescaped tenant values now also covers label maps and `%-*s`-padded table columns.
+- **Tenant attribution uses only host-known box addresses** (#3774, follow-up to #3690). A box's own report of its IP no longer names it in the network-policy tenant map or in the source-IP map the telemetry collector uses. A box whose address the host does not know is unattributed until the host learns it, instead of being attributed to whatever address it claims. Core services keep their isolation tag when the host has no address for them. Without the eBPF network-policy enforcer, the source-IP map is now written empty, since its only address source is the host.
 
 ## [0.139.0] - 2026-11-18
 
