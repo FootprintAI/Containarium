@@ -23,6 +23,14 @@ const DefaultCheckInterval = 5 * time.Minute
 // ErrBoxNotFound is returned for a username with no box on this daemon.
 var ErrBoxNotFound = errors.New("box not found")
 
+// ErrHookBinaryNotStatic is the hook binary the daemon would pin into a box
+// not being a static Linux executable (#3823). It is permanent until the
+// operator builds the daemon static or names a static binary with
+// --guardrail-hook-binary, so callers can report it as a precondition instead
+// of an internal error. Errors that wrap it may name a host path; say only that
+// this sentinel occurred to anyone but the daemon's own log.
+var ErrHookBinaryNotStatic = errors.New("the hook binary is not a static Linux executable")
+
 // Options are the daemon's knobs; zero values take the defaults.
 type Options struct {
 	CheckInterval    time.Duration
@@ -171,14 +179,27 @@ func openHookBinary(path string) (io.ReadSeekCloser, error) {
 func requireStaticELF(r io.ReaderAt) error {
 	f, err := elf.NewFile(r)
 	if err != nil {
-		return errors.New("not a Linux ELF executable")
+		return fmt.Errorf("%w: not a Linux ELF executable", ErrHookBinaryNotStatic)
 	}
 	for _, p := range f.Progs {
 		if p.Type == elf.PT_INTERP {
-			return errors.New("dynamically linked, so it may not start on a box's libc")
+			return fmt.Errorf("%w: dynamically linked, so it may not start on a box's libc", ErrHookBinaryNotStatic)
 		}
 	}
 	return nil
+}
+
+// CheckHookBinary reports whether the binary the daemon would pin (path, or
+// the daemon's own executable when path is empty) can be pinned into a box. The
+// manager opens it only when a box is switched on, so without this a daemon
+// that can never install the hook would say so only on the first enable. The
+// daemon calls it at startup to warn the operator.
+func CheckHookBinary(path string) error {
+	f, err := openHookBinary(path)
+	if err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 func newManager(inst Instances, box Box, opts Options, open openBinary) (*Manager, error) {

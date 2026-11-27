@@ -142,7 +142,7 @@ build-bpf: ## Compile both eBPF objects for embedding (Linux; needs clang, kerne
 build: proto web-ui swagger-ui ## Build both containariumd (server, today's binary) and containarium (client) (includes Swagger UI)
 	@echo "==> Building containariumd..."
 	@mkdir -p $(BUILD_DIR)
-	@go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(DAEMON_BINARY_NAME) cmd/containariumd/main.go
+	@CGO_ENABLED=0 go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(DAEMON_BINARY_NAME) cmd/containariumd/main.go
 	@echo "==> Binary built: $(BUILD_DIR)/$(DAEMON_BINARY_NAME)"
 	@echo "==> Building containarium (client)..."
 	@CGO_ENABLED=0 go build $(GOFLAGS) -tags containarium_client $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) cmd/containarium/main.go
@@ -151,7 +151,7 @@ build: proto web-ui swagger-ui ## Build both containariumd (server, today's bina
 build-fast: proto ## Build both containariumd and containarium (skip Swagger UI download, uses CDN)
 	@echo "==> Building containariumd (fast mode - CDN fallback)..."
 	@mkdir -p $(BUILD_DIR)
-	@go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(DAEMON_BINARY_NAME) cmd/containariumd/main.go
+	@CGO_ENABLED=0 go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(DAEMON_BINARY_NAME) cmd/containariumd/main.go
 	@echo "==> Binary built: $(BUILD_DIR)/$(DAEMON_BINARY_NAME)"
 	@echo "==> Building containarium (client, fast mode)..."
 	@CGO_ENABLED=0 go build $(GOFLAGS) -tags containarium_client $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) cmd/containarium/main.go
@@ -160,7 +160,7 @@ build-fast: proto ## Build both containariumd and containarium (skip Swagger UI 
 build-linux: proto web-ui swagger-ui ## Build for Linux (for deployment to GCE, includes Swagger UI)
 	@echo "==> Building containariumd for Linux..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(DAEMON_BINARY_NAME)-linux-amd64 cmd/containariumd/main.go
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOFLAGS) $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(DAEMON_BINARY_NAME)-linux-amd64 cmd/containariumd/main.go
 	@echo "==> Binary built: $(BUILD_DIR)/$(DAEMON_BINARY_NAME)-linux-amd64"
 
 build-all: proto web-ui swagger-ui ## Build for all platforms (includes Swagger UI)
@@ -169,10 +169,13 @@ build-all: proto web-ui swagger-ui ## Build for all platforms (includes Swagger 
 	# containariumd-*: the server build (cmd/containariumd, $(GO_TAGS) so the
 	# eBPF object is embedded when present). What hosts install and the
 	# fleet's self-update chain fetches by name (#1779's releaseBinaryName).
-	# The daemon never ships for windows.
-	@GOOS=linux GOARCH=amd64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(DAEMON_BINARY_NAME)-linux-amd64 cmd/containariumd/main.go
-	@GOOS=darwin GOARCH=amd64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(DAEMON_BINARY_NAME)-darwin-amd64 cmd/containariumd/main.go
-	@GOOS=darwin GOARCH=arm64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(DAEMON_BINARY_NAME)-darwin-arm64 cmd/containariumd/main.go
+	# The daemon never ships for windows. CGO_ENABLED=0, so it is static like
+	# the client (#3823): the daemon pins its own executable into a box as the
+	# guardrail hook binary and refuses a dynamically linked one, and a native
+	# linux build would otherwise link glibc dynamically.
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(DAEMON_BINARY_NAME)-linux-amd64 cmd/containariumd/main.go
+	@CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(DAEMON_BINARY_NAME)-darwin-amd64 cmd/containariumd/main.go
+	@CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(GO_TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(DAEMON_BINARY_NAME)-darwin-arm64 cmd/containariumd/main.go
 	# containarium-*: the CLIENT build (#1784, design doc Rollout Phase 2) —
 	# cmd/containarium with a fixed -tags containarium_client (never
 	# $(GO_TAGS): repeated -tags flags don't merge, and the eBPF object is

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -24,6 +25,12 @@ func (f *fakeGuardrailHookManager) SetEnabled(username string, enabled bool) (gu
 	}
 	if username == "broken" {
 		return guardraildropin.BoxCoverage{}, errors.New("open /var/lib/secret/path: permission denied")
+	}
+	if username == "dynamic-daemon" {
+		// What the enable path returns when the daemon's own binary is
+		// dynamically linked (#3823), host path included.
+		return guardraildropin.BoxCoverage{}, fmt.Errorf("open hook binary: %w",
+			fmt.Errorf("hook binary /usr/local/bin/secret-daemon: %w", guardraildropin.ErrHookBinaryNotStatic))
 	}
 	f.set = append(f.set, enabled)
 	return guardraildropin.BoxCoverage{Username: username, Enabled: enabled}, nil
@@ -125,5 +132,23 @@ func TestGuardrailHookServerWithoutManager(t *testing.T) {
 	_, err := srv.ListGuardrailHookCoverage(adminCtx(), &pb.ListGuardrailHookCoverageRequest{})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("code = %v, want Unavailable", status.Code(err))
+	}
+}
+
+// #3823: a daemon that can never pin its hook binary answers with a
+// precondition, not a 500 a caller would retry, and still names no host path.
+func TestGuardrailHookServerReportsANonStaticHookBinaryAsAPrecondition(t *testing.T) {
+	srv := NewGuardrailHookServer()
+	srv.SetManager(&fakeGuardrailHookManager{})
+	_, err := srv.SetGuardrailHook(adminCtx(), &pb.SetGuardrailHookRequest{Username: "dynamic-daemon", Enabled: true})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition (err = %v)", status.Code(err), err)
+	}
+	msg := status.Convert(err).Message()
+	if strings.Contains(msg, "/usr/local") || strings.Contains(msg, "secret-daemon") {
+		t.Errorf("the message names a host path: %q", msg)
+	}
+	if !strings.Contains(msg, "CGO_ENABLED=0") || !strings.Contains(msg, "--guardrail-hook-binary") {
+		t.Errorf("the message does not say how to fix it: %q", msg)
 	}
 }

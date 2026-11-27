@@ -64,6 +64,12 @@ func (s *GuardrailHookServer) manager() (guardrailHookManager, error) {
 	return nil, status.Error(codes.Unavailable, "the guardrail hook drop-in needs the daemon's root path into a box, which this runtime does not have")
 }
 
+// guardrailHookNotStaticMessage is what a caller is told when this daemon can
+// never install the hook (#3823). Fixed text: the wrapped error names a host
+// path, and Get is open to a box's tenant.
+const guardrailHookNotStaticMessage = "guardrail hook: this daemon cannot pin its hook binary into a box because the binary is not a static Linux executable; " +
+	"build the daemon with CGO_ENABLED=0 or start it with --guardrail-hook-binary pointing at a static containarium binary"
+
 // guardrailHookError maps a manager error. The cause goes to the daemon's
 // log only: Get is open to a box's tenant, and an internal error can name
 // host paths.
@@ -72,6 +78,11 @@ func guardrailHookError(err error) error {
 		return status.Error(codes.NotFound, "box not found")
 	}
 	log.Printf("[guardrail-hook] request failed: %v", err)
+	if errors.Is(err, guardraildropin.ErrHookBinaryNotStatic) {
+		// Permanent until the operator changes the daemon: a precondition,
+		// so a caller does not retry it as if it were transient.
+		return status.Error(codes.FailedPrecondition, guardrailHookNotStaticMessage)
+	}
 	return status.Error(codes.Internal, "guardrail hook: internal error; see the daemon log")
 }
 

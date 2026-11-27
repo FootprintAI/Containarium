@@ -28,7 +28,7 @@
 #   ├── VERSION
 #   ├── CHECKSUMS.sha256
 #   ├── offline-install.sh
-#   ├── bin/{containarium,mcp-server,agent-box,actions-runner-*.tar.gz}
+#   ├── bin/{containariumd,mcp-server,agent-box,actions-runner-*.tar.gz}
 #   ├── sidecars/*.tar
 #   ├── toolchains/{go*,node*,pnpm*,buf*,golangci-lint*}
 #   ├── apt/*.deb                     # required; see BUNDLE_ALLOW_EMPTY_APT
