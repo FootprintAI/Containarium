@@ -15,8 +15,9 @@ import (
 // elfWith builds a minimal 64-bit little-endian ELF executable whose only
 // program header is of the given type: PT_INTERP is what a cgo build (a
 // dynamically linked binary) carries, PT_LOAD alone is what CGO_ENABLED=0
-// produces.
-func elfWith(t *testing.T, prog elf.ProgType) []byte {
+// produces. The type is the header's raw uint32, so callers pass a constant
+// (uint32(elf.PT_INTERP)) and no variable is narrowed.
+func elfWith(t *testing.T, prog uint32) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	hdr := elf.Header64{
@@ -35,7 +36,7 @@ func elfWith(t *testing.T, prog elf.ProgType) []byte {
 	if err := binary.Write(&buf, binary.LittleEndian, hdr); err != nil {
 		t.Fatal(err)
 	}
-	if err := binary.Write(&buf, binary.LittleEndian, elf.Prog64{Type: uint32(prog), Off: 120, Filesz: 1, Memsz: 1}); err != nil {
+	if err := binary.Write(&buf, binary.LittleEndian, elf.Prog64{Type: prog, Off: 120, Filesz: 1, Memsz: 1}); err != nil {
 		t.Fatal(err)
 	}
 	buf.WriteByte(0)
@@ -46,7 +47,7 @@ func elfWith(t *testing.T, prog elf.ProgType) []byte {
 // binary is dynamically linked can say "precondition" instead of "internal
 // error", through every layer that wraps it on the way to the API.
 func TestRequireStaticELF_RefusalIsTheTypedSentinel(t *testing.T) {
-	dynamic := elfWith(t, elf.PT_INTERP)
+	dynamic := elfWith(t, uint32(elf.PT_INTERP))
 	err := requireStaticELF(bytes.NewReader(dynamic))
 	if !errors.Is(err, ErrHookBinaryNotStatic) {
 		t.Fatalf("a dynamically linked ELF: err = %v, want ErrHookBinaryNotStatic", err)
@@ -66,7 +67,7 @@ func TestRequireStaticELF_RefusalIsTheTypedSentinel(t *testing.T) {
 }
 
 func TestRequireStaticELF_AcceptsAStaticExecutable(t *testing.T) {
-	if err := requireStaticELF(bytes.NewReader(elfWith(t, elf.PT_LOAD))); err != nil {
+	if err := requireStaticELF(bytes.NewReader(elfWith(t, uint32(elf.PT_LOAD)))); err != nil {
 		t.Fatalf("a static ELF was refused: %v", err)
 	}
 }
@@ -82,10 +83,10 @@ func TestCheckHookBinary(t *testing.T) {
 		}
 		return p
 	}
-	if err := CheckHookBinary(write("static", elfWith(t, elf.PT_LOAD))); err != nil {
+	if err := CheckHookBinary(write("static", elfWith(t, uint32(elf.PT_LOAD)))); err != nil {
 		t.Errorf("static binary: %v", err)
 	}
-	err := CheckHookBinary(write("dynamic", elfWith(t, elf.PT_INTERP)))
+	err := CheckHookBinary(write("dynamic", elfWith(t, uint32(elf.PT_INTERP))))
 	if !errors.Is(err, ErrHookBinaryNotStatic) {
 		t.Errorf("dynamic binary: err = %v, want ErrHookBinaryNotStatic", err)
 	}
