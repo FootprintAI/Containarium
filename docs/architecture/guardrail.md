@@ -319,10 +319,16 @@ a running box and again at every start while the switch is on:
    naming a command that does not run would block every tool. So:
    - the binary must be **statically linked** (`CGO_ENABLED=0`). A box has
      its own libc, which need not be the host's. The daemon refuses to pin
-     a dynamically linked file, its own executable included; point
-     `--guardrail-hook-binary` at a static `containarium` (the released
-     client binary is one) or build the daemon static. The copy costs the
-     binary's size on each box's disk;
+     a dynamically linked file, its own executable included. The released
+     `containariumd` is built static, so a stock install pins itself and
+     needs no flag (#3823; `scripts/test-release-artifacts.sh` keeps it
+     that way). A daemon built with cgo on has to be pointed at a static
+     `containarium` with `--guardrail-hook-binary` (the released client
+     binary is one); that pinned copy is not refreshed by an upgrade, which
+     swaps only the daemon. A daemon that cannot pin its binary logs a
+     warning at start, and `SetGuardrailHook` answers `FAILED_PRECONDITION`
+     instead of an internal error. The copy costs the binary's size on each
+     box's disk;
    - after the push, the daemon **runs it once in the box**, as the box
      user (`guardrail hook --help`), and writes the drop-in only if that
      works. If it does not, the box reports `NOT_COVERED_NOT_INSTALLED`

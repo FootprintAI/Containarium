@@ -3559,6 +3559,12 @@ func (ds *DualServer) Start(ctx context.Context) (err error) {
 			ds.guardrailHookServer.SetManager(hookMgr)
 			ds.containerServer.SetBoxStartedHook(hookMgr.BoxStarted)
 			hookMgr.Start(ctx)
+			// The manager opens the binary it pins only when a box is
+			// switched on, so check it now (#3823): a daemon that can never
+			// install the hook says so at start, not on the first enable.
+			if err := guardraildropin.CheckHookBinary(ds.config.GuardrailHook.HookBinary); err != nil {
+				log.Printf("[guardrail-hook] WARNING: switching the guardrail hook on will fail on this daemon: %v", err)
+			}
 		}
 	}
 

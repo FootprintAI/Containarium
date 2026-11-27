@@ -12,8 +12,10 @@
 #     `go version -m`), and must contain no symbols from the daemon-only
 #     packages that scripts/test-cli-split-deps.sh forbids.
 #   containariumd-{linux-amd64,darwin-amd64,darwin-arm64}
-#     must be the SERVER build: not client-tagged, and must still contain
-#     internal/server symbols. This is the positive control: if the symbol
+#     must be the SERVER build: not client-tagged, built with CGO_ENABLED=0
+#     (static: the daemon pins its own executable into boxes as the guardrail
+#     hook binary and refuses a dynamically linked one, #3823), and must still
+#     contain internal/server symbols. This is the positive control: if the symbol
 #     check could not see anything (stripped binary, broken `go tool nm`),
 #     the daemon check fails instead of the client check passing vacuously.
 #   No containariumd-windows-* artifact: the daemon never ships there.
@@ -102,6 +104,9 @@ for p in "${DAEMON_PLATFORMS[@]}"; do
     *,containarium_client,*) bad "$DAEMON-$p was built with the client tag (-tags=$tags)" ;;
     *) pass "$DAEMON-$p is not client-tagged (-tags='$tags')" ;;
   esac
+
+  cgo="$(build_setting "$f" CGO_ENABLED)"
+  if [ "$cgo" = "0" ]; then pass "$DAEMON-$p CGO_ENABLED=0 (static)"; else bad "$DAEMON-$p CGO_ENABLED='$cgo', want 0 (#3823)"; fi
 
   syms="$(symbols_file "$f")"; tmpfiles+=("$syms")
   if has_pkg_symbols "$syms" "$SERVER_MARKER"; then
