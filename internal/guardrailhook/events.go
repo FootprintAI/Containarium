@@ -38,6 +38,25 @@ var fileTools = map[string]fileTool{
 // shellTools run a command line, in the named input field.
 var shellTools = map[string]string{"Bash": "command", "PowerShell": "command"}
 
+// bashTool is the one shell tool whose command is wrapped: the prefix below
+// is POSIX shell.
+const bashTool = "Bash"
+
+// commandWrapper is put in front of a Bash command (#3765). A failed command
+// reaches the model as an error result, which the agent does not hand to
+// PostToolUse, so its output went to the model unredacted. The EXIT trap runs
+// however the command ends (`exit N` included, which a brace group does not
+// survive), prints the real status when it is not 0, and exits 0, so the
+// result takes the normal PostToolUse path and is redacted there. The line is
+// the same on every call, so a command that already starts with it is not
+// wrapped again. Not covered, because the trap does not run or is replaced:
+// a command that sets its own EXIT trap (its trap still runs), `exec` of
+// another program, and a shell killed by a signal. The status line goes to
+// the command's stdout, so a command that redirects its own stdout away
+// (`exec >/dev/null`) hides it. Applied only where Claude Code will run the
+// wrapped command (permissions.go).
+const commandWrapper = `trap '__containarium_rc=$?; trap - EXIT; if [ "$__containarium_rc" -ne 0 ]; then printf '"'"'\n[exit status %s]\n'"'"' "$__containarium_rc"; fi; exit 0' EXIT` + "\n"
+
 // webFetchTool hands the fetched page to the model from inside the tool,
 // before any hook sees it, so it cannot be redacted and is denied.
 const webFetchTool = "WebFetch"
@@ -55,7 +74,8 @@ const sessionContext = "A guardrail is active in this environment. Text of the f
 	"An edit, a write or a path that contains a marker for a secret is refused, and so is a marker this environment did not issue. " +
 	"Markers cannot be used as the text an edit replaces (old_string): quote surrounding text that has no marker instead. " +
 	"Markers are not turned back into values in shell commands, URLs, search queries or any other tool input. " +
-	"WebFetch is refused while the guardrail is active; fetch a page with a shell command instead."
+	"WebFetch is refused while the guardrail is active; fetch a page with a shell command instead. " +
+	"A shell command that exits with a non-zero status may end with a line [exit status N], added by the guardrail: the command exited with that status even though the tool call reports success. For most commands that is a failure; grep with no match and diff with differences also exit 1."
 
 func (c *call) sessionStart() (*hookOutput, error) {
 	if c.in.Source == "clear" {
@@ -115,10 +135,22 @@ func (c *call) preToolUse(ctx context.Context) (*hookOutput, error) {
 		return nil, err
 	}
 	if field, ok := shellTools[tool]; ok {
-		if cmd, ok := stringField(fields, field); ok && c.namesStateDir(cmd) {
+		cmd, ok := stringField(fields, field)
+		if ok && c.namesStateDir(cmd) {
 			return c.deny("this command names the guardrail's own state directory, which is not readable from a session.", "state directory named in a command")
 		}
-		return nil, nil
+		if !ok || !c.wrapsCommand(tool, fields, cmd) {
+			return nil, nil
+		}
+		b, err := marshalJSON(commandWrapper + cmd)
+		if err != nil {
+			return nil, err
+		}
+		fields[field] = b
+		// No permission decision, as for a restored path: the user's own
+		// rules decide about the call. The permission prompt shows the
+		// wrapped command.
+		return &hookOutput{HookSpecificOutput: &hookSpecific{HookEventName: c.eventName(), UpdatedInput: fields}}, nil
 	}
 	spec, ok := fileTools[tool]
 	if !ok {
@@ -171,6 +203,22 @@ func (c *call) preToolUse(ctx context.Context) (*hookOutput, error) {
 	// updatedInput with no permission decision: the user's own permission
 	// rules and mode decide about the call, as they would have without us.
 	return &hookOutput{HookSpecificOutput: &hookSpecific{HookEventName: c.eventName(), UpdatedInput: fields}}, nil
+}
+
+// wrapsCommand says whether PreToolUse puts commandWrapper in front of this
+// shell command. Not for a background command: its output is read later
+// through another tool call, which PostToolUse sees on its own.
+func (c *call) wrapsCommand(tool string, fields map[string]json.RawMessage, cmd string) bool {
+	if c.h.cfg.DisableCommandWrapper || tool != bashTool || strings.HasPrefix(cmd, commandWrapper) {
+		return false
+	}
+	var background bool
+	if raw, ok := fields["run_in_background"]; ok && json.Unmarshal(raw, &background) == nil && background {
+		return false
+	}
+	// Under narrower permission rules Claude Code refuses the wrapped
+	// command outright (permissions.go).
+	return c.claudeRunsWrapped()
 }
 
 var denyAdvice = map[string]string{

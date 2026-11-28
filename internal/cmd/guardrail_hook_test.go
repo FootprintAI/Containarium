@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/footprintai/containarium/internal/guardrail"
+	"github.com/footprintai/containarium/internal/guardrailhook"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -54,6 +55,18 @@ func runHook(t *testing.T, stdin string, args ...string) (stdout, stderr string,
 		f.Changed = false
 	})
 	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "xdg"))
+	// No real Claude Code settings, managed ones included: they decide
+	// whether Bash is wrapped (#3765). The only file read is
+	// $CLAUDE_CONFIG_DIR/settings.json; a test that wants rules sets
+	// CLAUDE_CONFIG_DIR first.
+	if os.Getenv("CLAUDE_CONFIG_DIR") == "" {
+		t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	}
+	prevSettings := guardrailHookSettingsFiles
+	guardrailHookSettingsFiles = func(string) []guardrailhook.SettingsFile {
+		return []guardrailhook.SettingsFile{{Path: filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "settings.json")}}
+	}
+	defer func() { guardrailHookSettingsFiles = prevSettings }()
 	prev := guardrailHookExit
 	guardrailHookExit = func(c int) { code = c }
 	defer func() { guardrailHookExit = prev }()
@@ -126,6 +139,36 @@ func TestGuardrailHook_PreToolUseDeniesWhenTheEngineIsStopped(t *testing.T) {
 	sock := serveEngineOnSocket(t)
 	if stdout, _, code := runHook(t, in, "PreToolUse", "--engine", sock); code != 0 || stdout != "" {
 		t.Errorf("with the engine up the call passes untouched: exit %d stdout %q", code, stdout)
+	}
+}
+
+// #3765: --wrap-failed-commands is on by default and, where the settings allow
+// all of Bash, rewrites a Bash command with the EXIT-trap prefix; =false
+// leaves the call untouched.
+func TestGuardrailHook_WrapFailedCommandsFlag(t *testing.T) {
+	cfg := t.TempDir()
+	must(t, os.WriteFile(filepath.Join(cfg, "settings.json"), []byte(`{"permissions":{"allow":["Bash"]}}`), 0o600))
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	in := `{"session_id":"s","hook_event_name":"PreToolUse","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"false"}}`
+	stdout, stderr, code := runHook(t, in, "PreToolUse")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	var out struct {
+		HookSpecificOutput struct {
+			UpdatedInput struct {
+				Command string `json:"command"`
+			} `json:"updatedInput"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("stdout is not one JSON object: %q: %v", stdout, err)
+	}
+	if cmd := out.HookSpecificOutput.UpdatedInput.Command; !strings.HasPrefix(cmd, "trap ") || !strings.HasSuffix(cmd, "\nfalse") {
+		t.Fatalf("by default the command must be wrapped, got %q", cmd)
+	}
+	if stdout, _, code := runHook(t, in, "PreToolUse", "--wrap-failed-commands=false"); code != 0 || stdout != "" {
+		t.Errorf("with the wrapper off the call passes untouched: exit %d stdout %q", code, stdout)
 	}
 }
 

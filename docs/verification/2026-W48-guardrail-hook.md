@@ -81,6 +81,14 @@ This is the first and only place either value appears in any request body
 outcome as the defect #3765 exists for; it is now observed on a live agent,
 not inferred.
 
+**Follow-up (#3840):** the hook now wraps a `Bash` command so a failed one
+takes the redacted path, where Claude Code's settings allow all of Bash or
+the session runs in `bypassPermissions`. Re-run with this harness and those
+settings, the same call came back `is_error: false` as markers plus
+`[exit status 1]`. Under narrower rules the wrapper is not applied and this
+step still fails; see "What the hooks do not cover" in
+`docs/architecture/guardrail.md`.
+
 ### 4. A number is left a number
 
 The stub scripted `Bash` with `echo 42; echo 3.14`. The result came back
