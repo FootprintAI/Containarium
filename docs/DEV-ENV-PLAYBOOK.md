@@ -20,10 +20,41 @@
 - A release was tagged and the dev environment must run **that exact
   commit** before verification starts (`/release-verify released --tag
   vX.Y.Z --env dev`).
-- A batched verification pass needs a box that runs one known commit.
+- A batched verification pass needs a box that runs one known commit, and the change cannot be proven at a cheaper tier (next section).
 - You are not shipping to prod. Prod is a separate, human-confirmed
   deploy of an already-verified tag; nothing in this playbook creates or
   deletes anything on a prod backend.
+
+## Pick the cheapest tier that proves the change
+
+A dev box on a control plane is the most expensive way to check a release.
+Most changes can be proven one tier down. Use the lowest tier whose
+"proves" column covers what changed, and say in the verification row which
+tier produced the evidence.
+
+| Tier | How | Proves | Does not prove |
+|------|-----|--------|----------------|
+| 0. Image smoke | `scripts/ci/slides-agent-smoke.sh <image>` (needs Docker; CI runs it on every slides-agent image build and before every publish). Same idea for any image: `docker run` it and exercise its entrypoints. | The image's tools run: the pinned framework builds a deck, the image's Chromium prints a PDF with embedded fonts. Seconds, no infrastructure. | Recipe-level behavior inside a box: bind mounts, the run user's uid, podman in a box |
+| 1. Daemon on kind | `images/daemon` plus the Helm chart on a local kind cluster (see [KIND-QUICKSTART.md](KIND-QUICKSTART.md), about 5 minutes) | The API, CLI and MCP against a real daemon, with boxes as pods | LXC, ZFS, eBPF, the sentinel path, and the daemon's own binary-swap upgrade |
+| 2. Incus in CI | A stock `ubuntu-latest` runner provisioned with Incus, the way `incus-create.yml` does it | Real LXC boxes, cheaply and on every PR | KVM and the production network path |
+| 3. Dev box on a control plane | Steps 0-9 below | Everything a box does on a real control plane | Nothing it cannot see, but it needs a live control plane and a human-owned login |
+
+Rules of thumb:
+
+- An **image-only** change (base distro, a package, a pinned framework) is
+  a Tier 0 change. Add the smoke to the image's CI job rather than a
+  verification row, so it gates the publish instead of waiting for a
+  human.
+- A change to **API, CLI or MCP behavior** is Tier 1.
+- A change to **LXC, storage, network or the recipe's box-level behavior**
+  is Tier 2 or 3.
+- A change to **the daemon's own upgrade path** (`backends upgrade`, the
+  watchdog, the binary swap) can only be proven at Tier 3, on a daemon that
+  actually restarts.
+
+A row verified at a lower tier is verified for what that tier proves. If
+the row's checks need more (a box-level check on a Tier 0 result), the
+remainder stays open as its own row rather than being recorded as passed.
 
 ## Principles
 
