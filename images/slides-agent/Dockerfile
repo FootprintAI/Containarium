@@ -32,6 +32,13 @@
 
 ARG NODE_IMAGE=docker.io/library/node:22.23.4-bookworm-slim
 ARG GO_IMAGE=docker.io/library/golang:1.26.11-bookworm
+# Minimum Debian chromium (bookworm-security) the runtime may ship. Chromium
+# gets a batch of HIGH CVEs most weeks and the Trivy gate blocks on them, so a
+# stale apt layer reused from the build cache fails the release. Bump this to
+# the current bookworm-security version when the gate flags chromium; changing
+# it also invalidates the cached apt layer below, and the build fails if apt
+# still resolves anything older.
+ARG CHROMIUM_MIN_VERSION=156.0.8078.114-1~deb12u1
 
 # --- the proxy binary -------------------------------------------------------
 # Caddy is built from source rather than copied from the upstream image: the
@@ -160,6 +167,7 @@ RUN mkdir -p node_modules/.open-slide node_modules/@open-slide/core/node_modules
 
 # --- runtime ----------------------------------------------------------------
 FROM ${NODE_IMAGE}
+ARG CHROMIUM_MIN_VERSION
 # apt-get upgrade: security patches that shipped since the base's last rebuild
 # (same reasoning as images/agent-box/Dockerfile). chromium: Debian's package,
 # for headless PDF/PNG rendering; fonts so text renders the same everywhere.
@@ -168,6 +176,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          ca-certificates curl \
          chromium fonts-liberation fonts-noto-core fonts-noto-color-emoji \
+    # Refuse a chromium older than the floor rather than ship known-HIGH CVEs.
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' chromium)" ge "${CHROMIUM_MIN_VERSION}" \
     && rm -rf /var/lib/apt/lists/* \
     # The runtime needs node only. The base image's bundled npm, npx, corepack
     # and yarn are package managers with their own dependency trees (and the
