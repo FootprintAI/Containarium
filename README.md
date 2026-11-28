@@ -2,6 +2,8 @@
 
 > **Open-source agent runtime** · SSH-native isolation · eBPF egress policy · Kubernetes + LXC · MCP-native CLI · GPU passthrough
 
+🌐 **Project site:** [containarium.dev](https://containarium.dev) · 🎬 **55s demo:** [youtu.be/IBDDD_tb8FY](https://youtu.be/IBDDD_tb8FY) · 🚀 **Live app:** [helloworld.demo.containarium.dev](https://helloworld.demo.containarium.dev)
+
 **The open-source, self-hostable agent runtime for AI agents.**
 Each agent gets a persistent, SSH-reachable box in an unprivileged container, with an opt-in per-tenant eBPF egress policy, audit-logged denials, and a model gateway that keeps provider API keys out of the box. What is on by default, and what each claim rests on, is in [`docs/security/CLAIMS.md`](docs/security/CLAIMS.md).
 
@@ -27,8 +29,6 @@ curl https://blog.example.com → hello world
 [![Stack Fingerprint](https://stackfingerprint.vercel.app/api/card?repo=FootprintAI/Containarium&theme=midnight&layout=classic)](https://stackfingerprint.vercel.app/?repo=FootprintAI/Containarium)
 
 [![Containarium quickstart: one command turns a fresh box into SSH + a wired agent + a live HTTPS app](docs/images/quickstart.gif)](https://youtu.be/IBDDD_tb8FY)
-
-🌐 **Project site:** [containarium.dev](https://containarium.dev) · 🎬 **55s demo:** [youtu.be/IBDDD_tb8FY](https://youtu.be/IBDDD_tb8FY) · 🚀 **Live app:** [helloworld.demo.containarium.dev](https://helloworld.demo.containarium.dev)
 
 ---
 
