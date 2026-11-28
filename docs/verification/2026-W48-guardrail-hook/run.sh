@@ -2,7 +2,9 @@
 # Runs inside a throwaway node:22-bookworm container. Synthetic values only.
 set -u
 npm install -g --silent @anthropic-ai/claude-code@2.1.332 >/out/npm.log 2>&1 || { echo "npm install failed"; exit 1; }
-install -m 0755 /in/containarium /usr/local/bin/containarium   # the v0.141.3 release asset containarium-linux-amd64
+# The v0.141.3 client release asset, at the path the daemon pins the hook
+# binary to inside a box (docs/architecture/guardrail.md, managed drop-in).
+install -D -m 0755 /in/containarium /usr/local/lib/containarium-guardrail/containarium
 mkdir -p /work /home/node/.claude && chown -R node:node /work /home/node/.claude
 printf 'AWS=AKIAIOSFODNN7EXAMPLE\nowner ann@example.com\n' > /work/.env
 cp /in/settings.json /home/node/.claude/settings.json

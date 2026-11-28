@@ -10,7 +10,9 @@ covered here; it needs a running daemon and a box, and is still open.
 - **Binary:** the `v0.141.3` release asset `containarium-linux-amd64`
   (tag commit `1e4dc101946ae1a4aa99997f887d47b5decff353`), sha256
   `6c1ce4cd84b45c09cbe4c437b2c3ace2fc2bc5572ee9cd0a1864506b4bf2052e`.
-  `containarium version` prints `Containarium v0.141.3`.
+  `containarium version` prints `Containarium v0.141.3`. Installed at
+  `/usr/local/lib/containarium-guardrail/containarium`, the path the
+  daemon pins the hook binary to inside a box.
 - **Agent:** Claude Code `2.1.332` (npm `@anthropic-ai/claude-code@2.1.332`),
   run headless: `claude -p "Follow the plan." --permission-mode acceptEdits
   --allowedTools "Read,Write,Bash"`, as an unprivileged user.
@@ -28,7 +30,8 @@ covered here; it needs a running daemon and a box, and is still open.
   [`run.sh`](2026-W48-guardrail-hook/run.sh).
 - **Data:** synthetic only. `/work/.env` held
   `AWS=AKIAIOSFODNN7EXAMPLE` and `owner ann@example.com`.
-- **Run:** 2026-11-28 13:38 UTC. 5 model requests logged.
+- **Run:** 2026-11-28 13:42 UTC, with exactly the committed `run.sh`,
+  `settings.json` and `stub.py`. 5 model requests logged.
 
 ## Results
 
@@ -44,8 +47,8 @@ covered here; it needs a running daemon and a box, and is still open.
 The stub scripted `Read /work/.env`. The next request's `tool_result` was:
 
 ```
-1	AWS=[[AWS_ACCESS_KEY_ID:a33f60f04546]]
-2	owner [[EMAIL:86d5bcd044d6]]
+1	AWS=[[AWS_ACCESS_KEY_ID:9db50ac75ee2]]
+2	owner [[EMAIL:bc274978ba46]]
 ```
 
 Neither `AKIAIOSFODNN7EXAMPLE` nor `ann@example.com` appears in requests 1
@@ -55,7 +58,7 @@ to 3. `findings.jsonl` has `REDACTED` rows for `AWS_ACCESS_KEY_ID` and
 ### 2. `PostToolUse` sees the rewritten input
 
 The stub scripted `Write /work/out.txt` with the content
-`owner [[EMAIL:86d5bcd044d6]]`, the marker taken from step 1's result. The
+`owner [[EMAIL:bc274978ba46]]`, the marker taken from step 1's result. The
 file on disk holds `owner ann@example.com`. `findings.jsonl` has **no**
 `GUARDRAIL_HOOK_OUTCOME_MARKER_IN_TOOL_INPUT` row, so `PostToolUse` received
 the rewritten input and the record stands as designed.

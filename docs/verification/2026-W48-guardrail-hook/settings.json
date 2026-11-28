@@ -5,7 +5,7 @@
     "hooks": [
      {
       "type": "command",
-      "command": "/usr/local/bin/containarium",
+      "command": "/usr/local/lib/containarium-guardrail/containarium",
       "args": [
        "guardrail",
        "hook",
@@ -23,7 +23,7 @@
     "hooks": [
      {
       "type": "command",
-      "command": "/usr/local/bin/containarium",
+      "command": "/usr/local/lib/containarium-guardrail/containarium",
       "args": [
        "guardrail",
        "hook",
@@ -41,7 +41,7 @@
     "hooks": [
      {
       "type": "command",
-      "command": "/usr/local/bin/containarium",
+      "command": "/usr/local/lib/containarium-guardrail/containarium",
       "args": [
        "guardrail",
        "hook",
@@ -58,7 +58,7 @@
     "hooks": [
      {
       "type": "command",
-      "command": "/usr/local/bin/containarium",
+      "command": "/usr/local/lib/containarium-guardrail/containarium",
       "args": [
        "guardrail",
        "hook",
@@ -75,7 +75,7 @@
     "hooks": [
      {
       "type": "command",
-      "command": "/usr/local/bin/containarium",
+      "command": "/usr/local/lib/containarium-guardrail/containarium",
       "args": [
        "guardrail",
        "hook",
@@ -92,7 +92,7 @@
     "hooks": [
      {
       "type": "command",
-      "command": "/usr/local/bin/containarium",
+      "command": "/usr/local/lib/containarium-guardrail/containarium",
       "args": [
        "guardrail",
        "hook",
