@@ -12486,6 +12486,10 @@
         "incusVersion": {
           "type": "string",
           "description": "Incus server version running on this backend (e.g. \"6.23\"), as reported\nby the Incus daemon itself. Empty when it could not be read (peer\nunreachable, or the peer's daemon predates this field). Lets an operator\naudit fleet Incus patch levels from one admin-only call instead of\nper-host shell access; deliberately NOT exposed on the unauthenticated\n/health endpoint."
+        },
+        "unhealthyReason": {
+          "$ref": "#/definitions/BackendUnhealthyReason",
+          "description": "Why the backend is unhealthy, or UNSPECIFIED when healthy is true.\nComputed where healthy is, so the two cannot disagree. A client of an\nolder daemon sees UNSPECIFIED on an unhealthy backend: the reason is\nthen unknown, not \"healthy\". See #3722."
         }
       },
       "description": "BackendInfo describes one backend in the fleet — the local daemon\nplus any tunnel-connected peers. Emitted by ListBackends (GET\n/v1/backends). The field shape is the wire contract the CLI and MCP\nclients consume; it supersedes the hand-coded /v1/backends handler\nthis RPC replaced (see #354)."
@@ -12511,6 +12515,17 @@
         }
       },
       "description": "BackendStorage describes the storage pool backing a backend's containers.\nSurfaced through ListBackends so an operator can answer \"which of my\nbackends can have one tenant stall another's fsync?\" from the product,\nrather than by reading a daemon startup log on each host. See #1209."
+    },
+    "BackendUnhealthyReason": {
+      "type": "string",
+      "enum": [
+        "BACKEND_UNHEALTHY_REASON_UNSPECIFIED",
+        "BACKEND_UNHEALTHY_REASON_NO_RECENT_HEARTBEAT",
+        "BACKEND_UNHEALTHY_REASON_NEVER_SEEN",
+        "BACKEND_UNHEALTHY_REASON_DRIVER_ERROR"
+      ],
+      "default": "BACKEND_UNHEALTHY_REASON_UNSPECIFIED",
+      "description": "BackendUnhealthyReason says why a backend in ListBackends is unhealthy.\nIt is derived from the same inputs as BackendInfo.healthy, so healthy is\ntrue exactly when the reason is UNSPECIFIED. See #3722.\n\n - BACKEND_UNHEALTHY_REASON_UNSPECIFIED: The backend is healthy, or the daemon predates this field.\n - BACKEND_UNHEALTHY_REASON_NO_RECENT_HEARTBEAT: A peer that was healthy before is no longer reported healthy: the\nsentinel's health checks stopped succeeding. last_seen_at is when it\nwas last healthy.\n - BACKEND_UNHEALTHY_REASON_NEVER_SEEN: A peer that has not been healthy once since this daemon started\ntracking it (for example a static --peers entry, which discovery does\nnot update, or a peer the sentinel lists as unhealthy from its first\nsighting). last_seen_at is empty.\n - BACKEND_UNHEALTHY_REASON_DRIVER_ERROR: The backend's container driver is failing: for the local backend, the\nIncus liveness probe failed or did not answer within its budget and no\nprobe succeeded within the grace window."
     },
     "BackupDestination": {
       "type": "string",

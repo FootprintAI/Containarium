@@ -82,16 +82,15 @@ func printPoolTable(members []backendInfo) {
 		fmt.Println("No pool members (this daemon is running standalone — no joined hosts).")
 		return
 	}
-	fmt.Printf("%-40s %-8s %-8s %-25s %-12s %s\n",
+	fmt.Printf("%-40s %-8s %-15s %-25s %-12s %s\n",
 		"MEMBER ID", "ROLE", "HEALTH", "HOSTNAME", "VERSION", "CONTAINERS")
-	fmt.Println(strings.Repeat("-", 105))
+	fmt.Println(strings.Repeat("-", 112))
 	healthy := 0
 	for _, m := range members {
-		health := "✗"
 		if m.Healthy {
-			health = "✓"
 			healthy++
 		}
+		health := formatBackendHealth(m)
 		hostname := m.Hostname
 		if hostname == "" {
 			hostname = "-"
@@ -100,7 +99,7 @@ func printPoolTable(members []backendInfo) {
 		if version == "" {
 			version = "-"
 		}
-		fmt.Printf("%-40s %-8s %-8s %-25s %-12s %d\n",
+		fmt.Printf("%-40s %-8s %-15s %-25s %-12s %d\n",
 			m.ID, m.Type, health, hostname, version, m.ContainerCount)
 	}
 	fmt.Printf("\nTotal: %d member(s), %d healthy\n", len(members), healthy)

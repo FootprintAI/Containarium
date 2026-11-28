@@ -72,6 +72,18 @@ An id is letters, digits, `.`, `_` or `-`, starting with a letter or digit, and 
 
 The daemon refuses to start on a malformed `id=` entry, two peers that share an id, one address listed under two ids, or an id equal to its own backend id. A blank entry (a trailing comma) is ignored, and an entry repeated exactly is collapsed. The port of an `id=` entry must be a number from 1 to 65535. Sentinel discovery never removes a static peer or rewrites its address, even if the sentinel lists the same id.
 
+## Backend Health
+
+`ListBackends` (`GET /v1/backends`, `containarium backends list`, the MCP `list_backends` tool) reports `healthy` for every backend and, when it is false, `unhealthy_reason` (#3722). Both come from the same inputs, so `healthy` is true exactly when the reason is `BACKEND_UNHEALTHY_REASON_UNSPECIFIED`.
+
+| Reason | Backend | Meaning | CLI `HEALTH` |
+|---|---|---|---|
+| `NO_RECENT_HEARTBEAT` | peer | The peer was healthy, and the sentinel's health checks no longer pass. `last_seen_at` is when it was last healthy. | `✗ no heartbeat` |
+| `NEVER_SEEN` | peer | The peer has not been healthy since this daemon started tracking it: the sentinel listed it as unhealthy from the start, or it is a static `--peers` entry, which discovery does not update. `last_seen_at` is empty. | `✗ never seen` |
+| `DRIVER_ERROR` | local | The Incus liveness probe failed or did not answer within `CONTAINARIUM_LOCAL_HEALTH_TIMEOUT`, and no probe succeeded within the grace window. See [the local health probe](CPU-CAPACITY-ADMISSION.md#the-local-health-probe-on-a-busy-host-2317). | `✗ driver error` |
+
+An unhealthy backend with no reason (a bare `✗` in the CLI) comes from a daemon that predates the field: the reason is unknown.
+
 ## Operation Routing
 
 All container operations follow the same pattern:

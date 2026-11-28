@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 	"github.com/spf13/cobra"
 )
 
@@ -22,6 +23,12 @@ var backendsListCmd = &cobra.Command{
 id, type (local/tunnel), health, hostname, Incus server version, container count, live
 host load (1-minute CPU load average against core count, plus memory
 and disk in use), and GPU inventory per backend.
+
+An unhealthy backend's HEALTH cell names why: "no heartbeat" (a peer that
+was healthy stopped passing the sentinel's health checks), "never seen" (a
+peer that has not been healthy since the daemon started tracking it) or
+"driver error" (the local Incus liveness probe is failing). A bare "✗" is a
+daemon that does not report a reason.
 
 Live load is measured on each host, including tunnel-connected BYOC
 hosts. A "-" means the daemon had no usable sample for that host —
@@ -46,7 +53,10 @@ type backendInfo struct {
 	ID      string `json:"id"`
 	Type    string `json:"type"`
 	Healthy bool   `json:"healthy"`
-	Version string `json:"version,omitempty"`
+	// UnhealthyReason is the BackendUnhealthyReason enum name protojson
+	// emits (#3722); empty from a daemon that predates it.
+	UnhealthyReason string `json:"unhealthyReason,omitempty"`
+	Version         string `json:"version,omitempty"`
 	// IncusVersion is the Incus server version on the backend; empty when
 	// the backend could not report it.
 	IncusVersion   string       `json:"incusVersion,omitempty"`
@@ -163,14 +173,11 @@ func printBackendsTable(backends []backendInfo) {
 		fmt.Println("No backends registered (running standalone, no peers).")
 		return
 	}
-	fmt.Printf("%-40s %-8s %-10s %-25s %-8s %-10s %-10s %-6s %-6s %-12s %s\n",
+	fmt.Printf("%-40s %-8s %-15s %-25s %-8s %-10s %-10s %-6s %-6s %-12s %s\n",
 		"BACKEND ID", "TYPE", "HEALTH", "HOSTNAME", "INCUS", "CONTAINERS", "CPU LOAD", "MEM", "DISK", "STORAGE", "GPUS")
-	fmt.Println(strings.Repeat("-", 164))
+	fmt.Println(strings.Repeat("-", 169))
 	for _, b := range backends {
-		health := "✓"
-		if !b.Healthy {
-			health = "✗"
-		}
+		health := formatBackendHealth(b)
 		gpus := "-"
 		if len(b.GPUs) > 0 {
 			parts := make([]string, 0, len(b.GPUs))
@@ -187,7 +194,7 @@ func printBackendsTable(backends []backendInfo) {
 		if incusVer == "" {
 			incusVer = "-"
 		}
-		fmt.Printf("%-40s %-8s %-10s %-25s %-8s %-10d %-10s %-6s %-6s %-12s %s\n",
+		fmt.Printf("%-40s %-8s %-15s %-25s %-8s %-10d %-10s %-6s %-6s %-12s %s\n",
 			b.ID, b.Type, health, hostname, incusVer, b.ContainerCount,
 			formatCPULoad(b.HostLoad),
 			formatUsedPercent(b.HostLoad, memoryUsage),
@@ -206,6 +213,26 @@ func printBackendsTable(backends []backendInfo) {
 		fmt.Printf("   Every tenant rootfs shares one filesystem journal, so one tenant's\n")
 		fmt.Printf("   writeback can stall another tenant's fsync. Idle benchmarks will not\n")
 		fmt.Printf("   show this. See docs/BACKEND-STORAGE-DRIVER.md and issue #1206.\n")
+	}
+}
+
+// formatBackendHealth renders the HEALTH cell: "✓" for a healthy backend, and
+// "✗" plus the daemon's reason for an unhealthy one (#3722). A bare "✗" is a
+// daemon that predates unhealthy_reason, or a reason this CLI does not know:
+// the reason is unknown, which is not the same as any of the named ones.
+func formatBackendHealth(b backendInfo) string {
+	if b.Healthy {
+		return "✓"
+	}
+	switch pb.BackendUnhealthyReason(pb.BackendUnhealthyReason_value[b.UnhealthyReason]) {
+	case pb.BackendUnhealthyReason_BACKEND_UNHEALTHY_REASON_NO_RECENT_HEARTBEAT:
+		return "✗ no heartbeat"
+	case pb.BackendUnhealthyReason_BACKEND_UNHEALTHY_REASON_NEVER_SEEN:
+		return "✗ never seen"
+	case pb.BackendUnhealthyReason_BACKEND_UNHEALTHY_REASON_DRIVER_ERROR:
+		return "✗ driver error"
+	default:
+		return "✗"
 	}
 }
 

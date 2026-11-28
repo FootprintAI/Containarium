@@ -658,8 +658,10 @@ func (s *Server) registerTools() {
 		{
 			Name: "list_backends",
 			Description: "List the cluster's backend hosts (the local daemon plus any " +
-				"tunnel-connected peers). Returns id, type (local/tunnel), health, " +
-				"hostname, OS, container count, GPU inventory, and live host load " +
+				"tunnel-connected peers). Returns id, type (local/tunnel), health " +
+				"(with the reason when unhealthy: no recent heartbeat, never seen, " +
+				"or driver error), hostname, OS, container count, GPU inventory, " +
+				"and live host load " +
 				"(hostLoad: 1/5/15-minute CPU load averages with the host's core " +
 				"count, plus memory and disk used vs total) per backend. Use " +
 				"this when the agent needs to reason about peer topology or current " +
@@ -3028,11 +3030,7 @@ func handleGetBackend(client API, args map[string]interface{}) (string, error) {
 // writeBackendDetail renders one Backend in the same shape used by both
 // list_backends and get_backend so the agent sees a consistent format.
 func writeBackendDetail(b *strings.Builder, bk *Backend) {
-	health := "✓ healthy"
-	if !bk.Healthy {
-		health = "✗ unhealthy"
-	}
-	fmt.Fprintf(b, "🖥️  %s  (%s, %s)\n", bk.ID, bk.Type, health)
+	fmt.Fprintf(b, "🖥️  %s  (%s, %s)\n", bk.ID, bk.Type, backendHealthText(bk))
 	if bk.Hostname != "" {
 		fmt.Fprintf(b, "   Hostname:   %s\n", bk.Hostname)
 	}
@@ -3061,6 +3059,26 @@ func writeBackendDetail(b *strings.Builder, bk *Backend) {
 			}
 			fmt.Fprintf(b, "     - %s %s%s\n", g.Vendor, g.ModelName, vram)
 		}
+	}
+}
+
+// backendHealthText is the health part of a backend's heading: healthy, or
+// unhealthy with the daemon's reason (#3722). Plain "✗ unhealthy" is a daemon
+// that predates unhealthy_reason (or a reason this build does not know), so
+// the agent is not told a cause the daemon never gave.
+func backendHealthText(bk *Backend) string {
+	if bk.Healthy {
+		return "✓ healthy"
+	}
+	switch pb.BackendUnhealthyReason(pb.BackendUnhealthyReason_value[bk.UnhealthyReason]) {
+	case pb.BackendUnhealthyReason_BACKEND_UNHEALTHY_REASON_NO_RECENT_HEARTBEAT:
+		return "✗ unhealthy: no recent heartbeat"
+	case pb.BackendUnhealthyReason_BACKEND_UNHEALTHY_REASON_NEVER_SEEN:
+		return "✗ unhealthy: never seen"
+	case pb.BackendUnhealthyReason_BACKEND_UNHEALTHY_REASON_DRIVER_ERROR:
+		return "✗ unhealthy: driver error"
+	default:
+		return "✗ unhealthy"
 	}
 }
 

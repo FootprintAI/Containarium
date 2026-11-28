@@ -3816,11 +3816,14 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 	// probe resolvePoolPlacement's local-backend auto-placement branch now
 	// gates on — single source of truth, so this listing and placement can
 	// no longer silently disagree about the local backend's health.
+	// unhealthy_reason is derived from the same verdict (#3722).
+	localHealthy := s.localBackendHealthy()
 	local := &pb.BackendInfo{
-		Id:      s.peerPool.LocalBackendID(),
-		Type:    "local",
-		Healthy: s.localBackendHealthy(),
-		Version: version.GetVersion(),
+		Id:              s.peerPool.LocalBackendID(),
+		Type:            "local",
+		Healthy:         localHealthy,
+		UnhealthyReason: localUnhealthyReason(localHealthy),
+		Version:         version.GetVersion(),
 	}
 	if !s.startTime.IsZero() {
 		local.UptimeSeconds = int64(time.Since(s.startTime).Seconds())
@@ -3856,16 +3859,20 @@ func (s *ContainerServer) ListBackends(ctx context.Context, _ *pb.ListBackendsRe
 	peerInfos := make([]*pb.BackendInfo, len(peers))
 	var wg sync.WaitGroup
 	for i, peer := range peers {
+		// Read health and last-seen once, so healthy, unhealthy_reason
+		// (#3722) and last_seen_at describe the same discovery result.
+		healthy, lastSeen := peer.Healthy, peer.LastSeenAt
 		pi := &pb.BackendInfo{
-			Id:      peer.ID,
-			Type:    "tunnel",
-			Healthy: peer.Healthy,
+			Id:              peer.ID,
+			Type:            "tunnel",
+			Healthy:         healthy,
+			UnhealthyReason: peerUnhealthyReason(healthy, lastSeen),
 		}
-		if !peer.LastSeenAt.IsZero() {
-			pi.LastSeenAt = peer.LastSeenAt.UTC().Format(time.RFC3339)
+		if !lastSeen.IsZero() {
+			pi.LastSeenAt = lastSeen.UTC().Format(time.RFC3339)
 		}
 		peerInfos[i] = pi
-		if !peer.Healthy {
+		if !healthy {
 			continue
 		}
 		wg.Add(1)
