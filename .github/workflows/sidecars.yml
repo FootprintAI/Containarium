@@ -534,6 +534,13 @@ jobs:
       - name: Pull the built image for scanning
         run: docker pull localhost:5000/containarium-slides-agent:scan
 
+      # Runs the image before anything publishes: the framework builds a deck
+      # and the image's Chromium prints it to a real PDF. The vulnerability scan
+      # below only reads the image; this proves it works. Same script the PR
+      # build runs (slides-agent-image.yml), on the exact pre-publish copy.
+      - name: Smoke the image (build a deck, print a PDF, before publish)
+        run: scripts/ci/slides-agent-smoke.sh localhost:5000/containarium-slides-agent:scan
+
       # Blocking gate BEFORE any publish or signature (#3578): a fixed
       # CRITICAL/HIGH finding fails the job while the image is still only on the
       # runner. Same flags as before, now on the pre-publish copy.

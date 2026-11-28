@@ -65,6 +65,16 @@ jobs:
             echo "entrypoint started without auth material" >&2; exit 1
           fi
 
+      - name: Build a deck and print it to PDF
+        # What the vulnerability scan cannot show: the pinned framework builds
+        # a deck and the image's headless Chromium prints it to a real
+        # 1920x1080 PDF with embedded fonts. A base-distro or Chromium change
+        # can break this while every scan stays green. The self-test first
+        # proves the PDF check rejects bad files.
+        run: |
+          scripts/ci/slides-agent-smoke.sh --self-test
+          scripts/ci/slides-agent-smoke.sh containarium-slides-agent:ci
+
       - name: Zero-click login through the running image (#3486)
         # The image as a box runs it: entrypoint, login helper, proxy and dev
         # server. A minted token redeems once for a session cookie distinct
