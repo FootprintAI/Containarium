@@ -47,10 +47,14 @@ const bashTool = "Bash"
 // PostToolUse, so its output went to the model unredacted. The EXIT trap runs
 // however the command ends (`exit N` included, which a brace group does not
 // survive), prints the real status when it is not 0, and exits 0, so the
-// result takes the normal PostToolUse path and is redacted there. A command
-// that sets its own EXIT trap replaces this one: its trap still runs, and a
-// failure then takes the old path. The line is the same on every call, so a
-// command that already starts with it is not wrapped again.
+// result takes the normal PostToolUse path and is redacted there. The line is
+// the same on every call, so a command that already starts with it is not
+// wrapped again. Not covered, because the trap does not run or is replaced:
+// a command that sets its own EXIT trap (its trap still runs), `exec` of
+// another program, and a shell killed by a signal. The status line goes to
+// the command's stdout, so a command that redirects its own stdout away
+// (`exec >/dev/null`) hides it. Applied only where Claude Code will run the
+// wrapped command (permissions.go).
 const commandWrapper = `trap '__containarium_rc=$?; trap - EXIT; if [ "$__containarium_rc" -ne 0 ]; then printf '"'"'\n[exit status %s]\n'"'"' "$__containarium_rc"; fi; exit 0' EXIT` + "\n"
 
 // webFetchTool hands the fetched page to the model from inside the tool,
@@ -71,7 +75,7 @@ const sessionContext = "A guardrail is active in this environment. Text of the f
 	"Markers cannot be used as the text an edit replaces (old_string): quote surrounding text that has no marker instead. " +
 	"Markers are not turned back into values in shell commands, URLs, search queries or any other tool input. " +
 	"WebFetch is refused while the guardrail is active; fetch a page with a shell command instead. " +
-	"A shell command that exits with a non-zero status ends with a line [exit status N]: the command failed, even though the tool call did not."
+	"A shell command that exits with a non-zero status may end with a line [exit status N], added by the guardrail: the command exited with that status even though the tool call reports success. For most commands that is a failure; grep with no match and diff with differences also exit 1."
 
 func (c *call) sessionStart() (*hookOutput, error) {
 	if c.in.Source == "clear" {
@@ -212,7 +216,9 @@ func (c *call) wrapsCommand(tool string, fields map[string]json.RawMessage, cmd 
 	if raw, ok := fields["run_in_background"]; ok && json.Unmarshal(raw, &background) == nil && background {
 		return false
 	}
-	return true
+	// Under narrower permission rules Claude Code refuses the wrapped
+	// command outright (permissions.go).
+	return c.claudeRunsWrapped()
 }
 
 var denyAdvice = map[string]string{

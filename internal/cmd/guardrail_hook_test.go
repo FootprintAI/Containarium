@@ -54,6 +54,12 @@ func runHook(t *testing.T, stdin string, args ...string) (stdout, stderr string,
 		f.Changed = false
 	})
 	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "xdg"))
+	// No real Claude Code settings: they decide whether Bash is wrapped
+	// (#3765). A test that wants rules sets CLAUDE_CONFIG_DIR first.
+	if os.Getenv("CLAUDE_CONFIG_DIR") == "" {
+		t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	}
+	t.Setenv("CLAUDE_PROJECT_DIR", t.TempDir())
 	prev := guardrailHookExit
 	guardrailHookExit = func(c int) { code = c }
 	defer func() { guardrailHookExit = prev }()
@@ -124,17 +130,18 @@ func TestGuardrailHook_PreToolUseDeniesWhenTheEngineIsStopped(t *testing.T) {
 		t.Fatalf("want deny, got %q", stdout)
 	}
 	sock := serveEngineOnSocket(t)
-	// With the engine up the call is not denied. (Bash is still rewritten by
-	// the failed-command wrapper, #3765, so stdout is not empty.)
-	stdout, _, code = runHook(t, in, "PreToolUse", "--engine", sock)
-	if code != 0 || decodeHookStdout(t, stdout).HookSpecificOutput.PermissionDecision != "" {
-		t.Errorf("with the engine up the call is not denied: exit %d stdout %q", code, stdout)
+	if stdout, _, code := runHook(t, in, "PreToolUse", "--engine", sock); code != 0 || stdout != "" {
+		t.Errorf("with the engine up the call passes untouched: exit %d stdout %q", code, stdout)
 	}
 }
 
-// #3765: --wrap-failed-commands is on by default and rewrites a Bash command
-// with the EXIT-trap prefix; =false leaves the call untouched.
+// #3765: --wrap-failed-commands is on by default and, where the settings allow
+// all of Bash, rewrites a Bash command with the EXIT-trap prefix; =false
+// leaves the call untouched.
 func TestGuardrailHook_WrapFailedCommandsFlag(t *testing.T) {
+	cfg := t.TempDir()
+	must(t, os.WriteFile(filepath.Join(cfg, "settings.json"), []byte(`{"permissions":{"allow":["Bash"]}}`), 0o600))
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
 	in := `{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"false"}}`
 	stdout, stderr, code := runHook(t, in, "PreToolUse")
 	if code != 0 {

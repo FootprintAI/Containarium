@@ -2,7 +2,9 @@ package guardrailhook
 
 import (
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -13,6 +15,25 @@ import (
 // docs/verification/2026-W48-guardrail-hook.md, step 3). PreToolUse now
 // prefixes a Bash command with an EXIT trap that prints the real exit status
 // and exits 0, so the result takes the normal, redacted PostToolUse path.
+
+// settingsWith writes one Claude Code settings file and returns its path.
+func settingsWith(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// newWrappingHandler is a handler whose settings allow every Bash command,
+// the case the wrapper is for.
+func newWrappingHandler(t *testing.T) *Handler {
+	t.Helper()
+	allow := settingsWith(t, `{"permissions":{"allow":["Bash"]}}`)
+	h, _ := newHandler(t, func(c *Config) { c.SettingsFiles = func(string) []string { return []string{allow} } })
+	return h
+}
 
 // wrappedCommand fires PreToolUse for a Bash call and returns the command the
 // agent would run, or "" when the handler left the call untouched.
@@ -60,7 +81,7 @@ func bashResponse(stdout string) string {
 // reaches the model as a marker plus a line naming exit status 3, and the
 // tool call does not report as failed.
 func TestPreToolUse_WrapsBashSoAFailedCommandIsRedacted(t *testing.T) {
-	h, _ := newHandler(t, nil)
+	h := newWrappingHandler(t)
 	original := "sh -c 'echo " + synthKey + "; exit 3'"
 	wrapped := wrappedCommand(t, h, `{"command":`+q(original)+`,"description":"x"}`)
 	if wrapped == "" {
@@ -95,7 +116,7 @@ func TestPreToolUse_WrapsBashSoAFailedCommandIsRedacted(t *testing.T) {
 // The wrapper survives what a brace group does not: `exit N` in the command
 // itself, and a failure in the middle of a `set -e` script.
 func TestPreToolUse_WrapperReportsEveryWayACommandCanFail(t *testing.T) {
-	h, _ := newHandler(t, nil)
+	h := newWrappingHandler(t)
 	for _, tc := range []struct {
 		name, command, status string
 	}{
@@ -118,7 +139,7 @@ func TestPreToolUse_WrapperReportsEveryWayACommandCanFail(t *testing.T) {
 
 // A command that succeeds is unchanged in what it prints: no status line.
 func TestPreToolUse_WrapperIsSilentOnSuccess(t *testing.T) {
-	h, _ := newHandler(t, nil)
+	h := newWrappingHandler(t)
 	stdout, code := runBash(t, wrappedCommand(t, h, `{"command":"echo hello"}`))
 	if code != 0 || stdout != "hello\n" {
 		t.Fatalf("want exit 0 and exactly %q, got %d %q", "hello\n", code, stdout)
@@ -129,7 +150,7 @@ func TestPreToolUse_WrapperIsSilentOnSuccess(t *testing.T) {
 // replaces ours, so such a command keeps the old behaviour on failure; that
 // limit is documented rather than worked around.
 func TestPreToolUse_CommandsOwnExitTrapStillRuns(t *testing.T) {
-	h, _ := newHandler(t, nil)
+	h := newWrappingHandler(t)
 	stdout, _ := runBash(t, wrappedCommand(t, h, `{"command":"trap 'echo mine' EXIT; echo body"}`))
 	if !strings.Contains(stdout, "body") || !strings.Contains(stdout, "mine") {
 		t.Fatalf("the command's own EXIT trap must still run, got %q", stdout)
@@ -141,7 +162,7 @@ func TestPreToolUse_CommandsOwnExitTrapStillRuns(t *testing.T) {
 // PowerShell is not wrapped either: the prefix is POSIX shell. A command
 // that is already wrapped is not wrapped twice. And the flag turns it off.
 func TestPreToolUse_WhatIsNotWrapped(t *testing.T) {
-	h, _ := newHandler(t, nil)
+	h := newWrappingHandler(t)
 	if got := wrappedCommand(t, h, `{"command":"sleep 30","run_in_background":true}`); got != "" {
 		t.Errorf("a background command must not be wrapped, got %q", got)
 	}
@@ -153,7 +174,10 @@ func TestPreToolUse_WhatIsNotWrapped(t *testing.T) {
 		t.Errorf("a wrapped command must not be wrapped twice, got %q", again)
 	}
 
-	off, _ := newHandler(t, func(c *Config) { c.DisableCommandWrapper = true })
+	off, _ := newHandler(t, func(c *Config) {
+		c.DisableCommandWrapper = true
+		c.SettingsFiles = h.cfg.SettingsFiles
+	})
 	if got := wrappedCommand(t, off, `{"command":"false"}`); got != "" {
 		t.Errorf("with the wrapper off, Bash must pass through untouched, got %q", got)
 	}
@@ -162,9 +186,52 @@ func TestPreToolUse_WhatIsNotWrapped(t *testing.T) {
 // The model is told what the status line means, so a failed command is not
 // read as a success.
 func TestSessionStart_ExplainsTheExitStatusLine(t *testing.T) {
-	h, _ := newHandler(t, nil)
+	h := newWrappingHandler(t)
 	out := fire(t, h, evSession, `{"session_id":"s1","source":"startup"}`)
 	if out.HookSpecificOutput == nil || !strings.Contains(out.HookSpecificOutput.AdditionalContext, "[exit status") {
 		t.Fatalf("the session context must explain the exit status line: %+v", out)
+	}
+}
+
+// The wrapper is refused by Claude Code's permission check under any rule
+// narrower than "all of Bash": its `trap` is shell code the check will not
+// approve, so every Bash call would be refused (found in review of #3840,
+// reproduced live with Claude Code 2.1.332). So a command is wrapped only
+// when the session's settings allow all of Bash, or it runs in
+// bypassPermissions, and no Bash ask rule applies. Each row matches a live
+// check: deny rules still deny a wrapped command; an ask rule that matches
+// turns the call into a refusal, so any Bash ask rule leaves commands alone.
+func TestPreToolUse_WrapsOnlyWhereClaudeCodeWillRunIt(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mode     string
+		settings []string
+		wrap     bool
+	}{
+		{"no settings, default mode", "default", nil, false},
+		{"scoped allow only", "default", []string{`{"permissions":{"allow":["Bash(git status *)","Bash(echo:*)"]}}`}, false},
+		{"allow Bash", "default", []string{`{"permissions":{"allow":["Bash"]}}`}, true},
+		{"allow Bash(*)", "acceptEdits", []string{`{"permissions":{"allow":["Read","Bash(*)"]}}`}, true},
+		{"allow Bash in one file, deny rm in another", "default", []string{`{"permissions":{"allow":["Bash"]}}`, `{"permissions":{"deny":["Bash(rm:*)"]}}`}, true},
+		{"bypassPermissions, no rules", "bypassPermissions", nil, true},
+		{"allow Bash with a Bash ask rule", "default", []string{`{"permissions":{"allow":["Bash"],"ask":["Bash(git push:*)"]}}`}, false},
+		{"bypassPermissions with a Bash ask rule", "bypassPermissions", []string{`{"permissions":{"ask":["Bash"]}}`}, false},
+		{"allow Bash, but another file is unreadable JSON", "default", []string{`{"permissions":{"allow":["Bash"]}}`, `{not json`}, false},
+		{"ask rule for another tool only", "default", []string{`{"permissions":{"allow":["Bash"],"ask":["WebSearch"]}}`}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var files []string
+			for _, body := range tc.settings {
+				files = append(files, settingsWith(t, body))
+			}
+			files = append(files, filepath.Join(t.TempDir(), "missing.json")) // a missing file is no rules
+			h, _ := newHandler(t, func(c *Config) { c.SettingsFiles = func(string) []string { return files } })
+			in := `{"session_id":"s1","cwd":"/w","hook_event_name":"PreToolUse","permission_mode":` + q(tc.mode) +
+				`,"tool_name":"Bash","tool_input":{"command":"false"}}`
+			out := fire(t, h, evPre, in)
+			if got := out.HookSpecificOutput != nil; got != tc.wrap {
+				t.Fatalf("wrapped=%v, want %v (%+v)", got, tc.wrap, out)
+			}
+		})
 	}
 }
