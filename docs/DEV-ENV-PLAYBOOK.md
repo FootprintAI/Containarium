@@ -1,14 +1,19 @@
 # Dev environment playbook: ship a release to a Containarium Cloud box
 
 > Operator playbook for standing up a **dev box** on a Containarium Cloud
-> control plane, shipping one committed version to it, proving the deploy
+> control plane (CP), shipping one committed version to it, proving the deploy
 > is healthy, and handing the box to the post-release verification pass.
 > It is the written form of the `/devops-deploy` → `/release-verify` →
 > `/qa-sprint-verify` chain. Every command here is the `containarium` CLI;
 > the MCP tool that does the same job is named beside it. Concrete cluster
 > and host names belong in a private operator runbook, never in this file:
-> placeholders below are `<cluster>.example.com`, `<sentinel-host>`,
+> placeholders below are `<cluster>.example.com`, `<cp-host>`, `<ssh-target>`,
 > `<box>`.
+>
+> **Dev is the control plane only: there is no sentinel in front of it.**
+> Boxes are reached directly, at the `ssh_host` the daemon reports or at the
+> box IP, never through a sentinel and sshpiper. Where a sentinel exists
+> (prod), its routing is a separate concern and out of scope here.
 
 ## When to use it
 
@@ -46,13 +51,11 @@ command succeeded in this session.
 | Control plane answers | list backends: at least one healthy | `containarium backends` / `list_backends` |
 | Containers listable | list boxes | `containarium list` / `list_containers` |
 | CLI matches the server | `containarium version --check` | n/a |
-| SSH config | `containarium ssh-config sync`, then `grep -c '^Host ' ~/.containarium/ssh_config` | `sync_ssh_config` |
-| Key directory | `~/.containarium/keys` exists with mode `0700` | n/a |
-| Sentinel reachable | `nc -z -w 5 <sentinel-host> 22` | n/a |
+| SSH config (optional, for plain `ssh <box>`) | `containarium ssh-config sync`, then `grep -c '^Host ' ~/.containarium/ssh_config` | `sync_ssh_config` |
 
-Every `ssh` or `scp` in this playbook carries `-o IdentitiesOnly=yes`.
-Without it ssh offers every key in `~/.ssh/`, and each rejected key counts
-toward the sentinel's failed-login ban for your IP.
+Reaching a box needs no key setup on your side: `containarium connect
+<box>` authorizes a managed key with the token you are logged in with.
+After step 2, `containarium get <box>` shows how the box is reached.
 
 ### If the control plane answers `401 invalid or expired token`
 
@@ -112,12 +115,26 @@ for "any healthy backend in the pool", `--backend-id` for a specific one
 (`containarium backends` lists IDs). Use `--isolation vm` only when the
 workload needs its own kernel and the backend has KVM.
 
-Confirm it is running and note its address:
+Confirm it is running and note how it is reached:
 
 ```bash
 containarium get verify-vX.Y.Z-${COMMIT:0:7}
-containarium ssh-config sync
 ```
+
+With no sentinel in front of dev, the daemon either reports an `ssh_host`
+or leaves it empty; an empty `ssh_host` means reach the box at its **IP**.
+Call that value `<ssh-target>` below. Shells and one-off commands need no
+key handling:
+
+```bash
+containarium connect <box> --exec 'uname -r'          # one command, output returned
+containarium connect <box> --session work             # stateful tmux session on the box
+```
+
+For plain `ssh <box>`, generate the config in the mode that matches dev:
+`containarium ssh-config sync` (LAN-reachable boxes) or `containarium
+ssh-config sync --jump-host <cp-host>` (reach the box through the control
+plane host's ssh port).
 
 If ssh or the box misbehaves, run `containarium debug <name>` (MCP
 `debug_container`) before reporting a failure: it surfaces host-side
@@ -129,7 +146,7 @@ A box that dies when the ssh session closes is not a deploy target. On a
 fresh box, once:
 
 ```bash
-ssh -o IdentitiesOnly=yes -i ~/.containarium/keys/<box> <box>@<sentinel-host> '
+containarium connect <box> --exec '
   set -e
   sudo loginctl enable-linger "$USER"          # user services outlive the ssh session
   sudo apt-get install -y --no-install-recommends tmux
@@ -138,7 +155,7 @@ ssh -o IdentitiesOnly=yes -i ~/.containarium/keys/<box> <box>@<sentinel-host> '
     || echo "unqualified-search-registries = [\"docker.io\"]" | sudo tee /etc/containers/registries.conf.d/10-docker.conf
 '
 # prove it
-ssh -o IdentitiesOnly=yes -i ~/.containarium/keys/<box> <box>@<sentinel-host> \
+containarium connect <box> --exec \
   'loginctl show-user "$USER" -p Linger; podman info >/dev/null && echo podman-ok; tmux -V'
 ```
 
@@ -147,10 +164,13 @@ Expected: `Linger=yes`, `podman-ok`, a tmux version.
 ## 4. Ship the committed state
 
 ```bash
-containarium push <box> .        # ships committed history; delta on later pushes
+containarium push <box> . --sentinel <ssh-target>   # ships committed history; delta on later pushes
 ```
 
-MCP: `push`. `push` refuses a dirty tree unless `--include-wip` is set; do
+`--sentinel` names the ssh endpoint to push to; with no sentinel in dev,
+pass the box's `ssh_host` or IP (or set `CONTAINARIUM_SENTINEL_HOST`). If
+it is missing, `push` stops with `sentinel host not set` and points at
+`containarium get`. MCP: `push`. `push` refuses a dirty tree unless `--include-wip` is set; do
 not set it for a deploy. `containarium sync <box>` mirrors the working
 directory including uncommitted files, so it is for iteration, never for a
 version that gets recorded.
@@ -158,8 +178,7 @@ version that gets recorded.
 Prove parity: the box's checkout must equal the commit.
 
 ```bash
-ssh -o IdentitiesOnly=yes -i ~/.containarium/keys/<box> <box>@<sentinel-host> \
-  'git -C ~/work rev-parse HEAD'      # must equal $COMMIT
+containarium connect <box> --exec 'git -C ~/work rev-parse HEAD'   # must equal $COMMIT
 ```
 
 A mismatch is a failed deploy. Diagnose with `debug`; never patch the box.
@@ -249,7 +268,8 @@ this procedure; on those, "release" means deploy the next version.
 | Symptom | Likely cause | Action |
 |---------|--------------|--------|
 | `401 invalid or expired token` | stale session | `containarium login` (human), rotate the MCP token file |
-| ssh refused after several tries | key spray hit the sentinel ban | add `-o IdentitiesOnly=yes`; wait out the ban |
+| `push` stops with `sentinel host not set` | dev has no sentinel; no ssh target given | pass `--sentinel <ssh_host-or-IP>` from `containarium get <box>` |
+| `connect` or ssh cannot reach the box | wrong target, or box not LAN-reachable | use the box IP from `containarium get`; for a remote CP use `ssh-config sync --jump-host <cp-host>` |
 | `push` refuses | dirty tree | commit or stash; do not use `--include-wip` for a deploy |
 | box HEAD != tag commit | push failed or wrong ref | `debug`; redeploy; never hand-patch |
 | `compose status` shows the service down | dev-only flag or secret missing | fix in git or the secret store, redeploy |
