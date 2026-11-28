@@ -30,15 +30,17 @@
 # Build context is the repo root:
 #   docker build -f images/slides-agent/Dockerfile -t containarium-slides-agent .
 
-ARG NODE_IMAGE=docker.io/library/node:22.23.4-bookworm-slim
+ARG NODE_IMAGE=docker.io/library/node:22.23.4-trixie-slim
 ARG GO_IMAGE=docker.io/library/golang:1.26.11-bookworm
-# Minimum Debian chromium (bookworm-security) the runtime may ship. Chromium
+# Minimum Debian chromium (trixie-security) the runtime may ship. Chromium
 # gets a batch of HIGH CVEs most weeks and the Trivy gate blocks on them, so a
 # stale apt layer reused from the build cache fails the release. Bump this to
-# the current bookworm-security version when the gate flags chromium; changing
+# the current trixie-security version when the gate flags chromium; changing
 # it also invalidates the cached apt layer below, and the build fails if apt
 # still resolves anything older.
-ARG CHROMIUM_MIN_VERSION=156.0.8078.114-1~deb12u1
+# The runtime is Debian 13 (trixie): bookworm's security archive lagged the
+# Debian tracker on this fix, so the image moved to the base that already ships it.
+ARG CHROMIUM_MIN_VERSION=156.0.8078.114-1~deb13u1
 
 # --- the proxy binary -------------------------------------------------------
 # Caddy is built from source rather than copied from the upstream image: the
