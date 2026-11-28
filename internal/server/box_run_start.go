@@ -603,6 +603,9 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 	if err := validateBoxRunWorkdir(req.GetWorkdir()); err != nil {
 		return nil, err
 	}
+	if err := validateBoxRunClientToken(req.GetClientToken()); err != nil {
+		return nil, err
+	}
 	if err := s.authorizeBoxRuns(ctx, req.GetUsername()); err != nil {
 		return nil, err
 	}
@@ -918,6 +921,7 @@ func (s *ContainerServer) StartBoxRun(ctx context.Context, req *pb.StartBoxRunRe
 		Workdir:     req.GetWorkdir(),
 		Resumed:     boxRunResumed(req),
 		Exclusive:   req.GetExclusive(),
+		ClientToken: req.GetClientToken(),
 	}
 	recordJSON, err := json.Marshal(record)
 	if err != nil {
@@ -1044,6 +1048,7 @@ func (s *ContainerServer) startBoxRunCommand(ctx context.Context, req *pb.StartB
 		StartedAt:   time.Now().UTC(),
 		Workdir:     req.GetWorkdir(),
 		Exclusive:   req.GetExclusive(),
+		ClientToken: req.GetClientToken(),
 	}
 	recordJSON, err := json.Marshal(record)
 	if err != nil {
@@ -1084,12 +1089,13 @@ const (
 	DaemonCapBoxRunStderr = "box_run_stderr"
 	// DaemonCapBoxFiles (the WriteBoxFile RPC, #3548) is declared in box_file_write.go,
 	// DaemonCapBoxFilesStream (WriteBoxFileStream) in box_file_stream.go,
-	// DaemonCapBoxFilesRunUser (#3678) in box_file_write.go.
+	// DaemonCapBoxFilesRunUser (#3678) in box_file_write.go,
+	// DaemonCapBoxRunClientToken (#3668) in box_run_client_token.go.
 )
 
 // daemonCapabilities is the list GetSystemInfo reports.
 func daemonCapabilities() []string {
-	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunToken, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxRunCommandPolicy, DaemonCapBoxRunWorkdir, DaemonCapBoxRunStderr, DaemonCapBoxRunExclusive, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream, DaemonCapBoxFilesRunUser, DaemonCapBoxBootstrap}
+	return []string{DaemonCapBoxRunName, DaemonCapBoxRunStructuredOutput, DaemonCapBoxRunModel, DaemonCapBoxRunToken, DaemonCapBoxRunCommand, DaemonCapRunUsage, DaemonCapBoxRunCommandPolicy, DaemonCapBoxRunWorkdir, DaemonCapBoxRunStderr, DaemonCapBoxRunExclusive, DaemonCapBoxRunClientToken, DaemonCapBoxSkillSets, DaemonCapBoxFiles, DaemonCapBoxFilesStream, DaemonCapBoxFilesRunUser, DaemonCapBoxBootstrap}
 }
 
 // boxRunNameCollidesWithDerivedFile reports whether name would alias a file or

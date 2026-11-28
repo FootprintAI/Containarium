@@ -126,6 +126,11 @@ type RunRecord struct {
 	// (StartBoxRunRequest.exclusive, #3805): no other run starts while it is
 	// live. Additive: older readers ignore it, and a record without it reads false.
 	Exclusive bool `json:"exclusive,omitempty"`
+	// ClientToken is the caller's own opaque identifier for the run
+	// (StartBoxRunRequest.client_token, #3668), stored as sent and never
+	// interpreted; empty for a run started without one. Additive: older readers
+	// ignore it, and a record without it reads empty.
+	ClientToken string `json:"client_token,omitempty"`
 
 	// Actor is the principal the caller says authorized this run, and
 	// DelegationChain the JSON-serialized auth.Actor chain behind it

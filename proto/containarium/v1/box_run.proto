@@ -71,6 +71,11 @@ message BoxRun {
   // in the home itself, and for a run from before the field. Capability
   // "box_run_workdir".
   string workdir = 12;
+  // The caller's own identifier for this run, exactly as sent in
+  // StartBoxRunRequest.client_token (#3668). Empty for a run started without
+  // one, which includes every run started from the CLI or over SSH, and for a
+  // run from before the field. Capability "box_run_client_token".
+  string client_token = 13;
 }
 
 // BoxRunTool is one tool the box's run wrapper found on the run's PATH. It says
@@ -267,6 +272,23 @@ message StartBoxRunRequest {
   // Capability "box_run_exclusive" in SystemInfo.capabilities: a caller must
   // not send exclusive to a daemon without it, since that daemon would ignore it.
   bool exclusive = 14;
+  // An opaque identifier the caller chooses for this run (#3668), so it can
+  // tell its own run from one a person started by hand under the same name,
+  // for example after it lost the StartBoxRun response to a crash or a network
+  // cut and the next start is refused because the run is still going. The
+  // daemon never interprets it: it is stored on the run record and returned as
+  // BoxRun.client_token by StartBoxRun, ListBoxRuns and StopBoxRun, also after
+  // a daemon restart, for as long as the record is kept. Empty sets none. At
+  // most 128 bytes of UTF-8 with no control character; anything else is
+  // INVALID_ARGUMENT before the box is touched. A start is never matched to an
+  // earlier run by its token: a second start with the same token is decided
+  // like any other start. It is not a secret (every caller that may list the
+  // box's runs reads it back) and not proof of who started a run (the record
+  // is kept in the box, where the run's user can write it). Capability
+  // "box_run_client_token" in SystemInfo.capabilities: a caller must not send
+  // client_token to a daemon without it, which drops the field over gRPC and
+  // refuses the request over REST.
+  string client_token = 15;
 }
 
 message StartBoxRunResponse {

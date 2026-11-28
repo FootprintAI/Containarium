@@ -968,7 +968,12 @@ type BoxRun struct {
 	// requested in StartBoxRunRequest.workdir (#3551). Empty when the run started
 	// in the home itself, and for a run from before the field. Capability
 	// "box_run_workdir".
-	Workdir       string `protobuf:"bytes,12,opt,name=workdir,proto3" json:"workdir,omitempty"`
+	Workdir string `protobuf:"bytes,12,opt,name=workdir,proto3" json:"workdir,omitempty"`
+	// The caller's own identifier for this run, exactly as sent in
+	// StartBoxRunRequest.client_token (#3668). Empty for a run started without
+	// one, which includes every run started from the CLI or over SSH, and for a
+	// run from before the field. Capability "box_run_client_token".
+	ClientToken   string `protobuf:"bytes,13,opt,name=client_token,json=clientToken,proto3" json:"client_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1083,6 +1088,13 @@ func (x *BoxRun) GetUsage() *RunUsage {
 func (x *BoxRun) GetWorkdir() string {
 	if x != nil {
 		return x.Workdir
+	}
+	return ""
+}
+
+func (x *BoxRun) GetClientToken() string {
+	if x != nil {
+		return x.ClientToken
 	}
 	return ""
 }
@@ -1321,7 +1333,24 @@ type StartBoxRunRequest struct {
 	// one per-box lock, so of two concurrent exclusive starts exactly one wins.
 	// Capability "box_run_exclusive" in SystemInfo.capabilities: a caller must
 	// not send exclusive to a daemon without it, since that daemon would ignore it.
-	Exclusive     bool `protobuf:"varint,14,opt,name=exclusive,proto3" json:"exclusive,omitempty"`
+	Exclusive bool `protobuf:"varint,14,opt,name=exclusive,proto3" json:"exclusive,omitempty"`
+	// An opaque identifier the caller chooses for this run (#3668), so it can
+	// tell its own run from one a person started by hand under the same name,
+	// for example after it lost the StartBoxRun response to a crash or a network
+	// cut and the next start is refused because the run is still going. The
+	// daemon never interprets it: it is stored on the run record and returned as
+	// BoxRun.client_token by StartBoxRun, ListBoxRuns and StopBoxRun, also after
+	// a daemon restart, for as long as the record is kept. Empty sets none. At
+	// most 128 bytes of UTF-8 with no control character; anything else is
+	// INVALID_ARGUMENT before the box is touched. A start is never matched to an
+	// earlier run by its token: a second start with the same token is decided
+	// like any other start. It is not a secret (every caller that may list the
+	// box's runs reads it back) and not proof of who started a run (the record
+	// is kept in the box, where the run's user can write it). Capability
+	// "box_run_client_token" in SystemInfo.capabilities: a caller must not send
+	// client_token to a daemon without it, which drops the field over gRPC and
+	// refuses the request over REST.
+	ClientToken   string `protobuf:"bytes,15,opt,name=client_token,json=clientToken,proto3" json:"client_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1452,6 +1481,13 @@ func (x *StartBoxRunRequest) GetExclusive() bool {
 		return x.Exclusive
 	}
 	return false
+}
+
+func (x *StartBoxRunRequest) GetClientToken() string {
+	if x != nil {
+		return x.ClientToken
+	}
+	return ""
 }
 
 type StartBoxRunResponse struct {
@@ -3743,7 +3779,7 @@ var File_containarium_v1_box_run_proto protoreflect.FileDescriptor
 
 const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\n" +
-	"\x1dcontainarium/v1/box_run.proto\x12\x0fcontainarium.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dcontainarium/v1/sandbox.proto\x1a\x1bcontainarium/v1/agent.proto\x1a\x1fcontainarium/v1/run_usage.proto\x1a)containarium/v1/agent_command_audit.proto\"\x8e\x04\n" +
+	"\x1dcontainarium/v1/box_run.proto\x12\x0fcontainarium.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dcontainarium/v1/sandbox.proto\x1a\x1bcontainarium/v1/agent.proto\x1a\x1fcontainarium/v1/run_usage.proto\x1a)containarium/v1/agent_command_audit.proto\"\xb1\x04\n" +
 	"\x06BoxRun\x12\x19\n" +
 	"\brun_name\x18\x01 \x01(\tR\arunName\x129\n" +
 	"\n" +
@@ -3759,7 +3795,8 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\x05model\x18\n" +
 	" \x01(\tR\x05model\x12/\n" +
 	"\x05usage\x18\v \x01(\v2\x19.containarium.v1.RunUsageR\x05usage\x12\x18\n" +
-	"\aworkdir\x18\f \x01(\tR\aworkdirB\f\n" +
+	"\aworkdir\x18\f \x01(\tR\aworkdir\x12!\n" +
+	"\fclient_token\x18\r \x01(\tR\vclientTokenB\f\n" +
 	"\n" +
 	"_exit_code\"\xc2\x01\n" +
 	"\n" +
@@ -3769,7 +3806,7 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\n" +
 	"provenance\x18\x03 \x01(\x0e2%.containarium.v1.BoxRunToolProvenanceR\n" +
 	"provenance\x12?\n" +
-	"\blocation\x18\x04 \x01(\x0e2#.containarium.v1.BoxRunToolLocationR\blocation\"\x93\x04\n" +
+	"\blocation\x18\x04 \x01(\x0e2#.containarium.v1.BoxRunToolLocationR\blocation\"\xb6\x04\n" +
 	"\x12StartBoxRunRequest\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x16\n" +
 	"\x06prompt\x18\x02 \x01(\tR\x06prompt\x12\x1d\n" +
@@ -3786,7 +3823,8 @@ const file_containarium_v1_box_run_proto_rawDesc = "" +
 	"\x0ecommand_policy\x18\v \x01(\v2#.containarium.v1.AgentCommandPolicyR\rcommandPolicy\x12=\n" +
 	"\bapproval\x18\f \x01(\v2!.containarium.v1.AgentRunApprovalR\bapproval\x12\x18\n" +
 	"\aworkdir\x18\r \x01(\tR\aworkdir\x12\x1c\n" +
-	"\texclusive\x18\x0e \x01(\bR\texclusive\"@\n" +
+	"\texclusive\x18\x0e \x01(\bR\texclusive\x12!\n" +
+	"\fclient_token\x18\x0f \x01(\tR\vclientToken\"@\n" +
 	"\x13StartBoxRunResponse\x12)\n" +
 	"\x03run\x18\x01 \x01(\v2\x17.containarium.v1.BoxRunR\x03run\"8\n" +
 	"\x1aGetBoxRunUserStatusRequest\x12\x1a\n" +

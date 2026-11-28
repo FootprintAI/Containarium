@@ -862,7 +862,7 @@ func TestBoxRunSpawnScript_FreshRunSnapshotsBeforeLaunch(t *testing.T) {
 
 func TestDaemonCapabilities(t *testing.T) {
 	got := daemonCapabilities()
-	want := map[string]bool{"box_run_name": true, "box_run_exclusive": true, "box_run_structured_output": true, "box_run_model": true, "box_run_command": true, "box_run_workdir": true, "box_run_stderr": true, "run_usage": true, "box_skill_sets": true}
+	want := map[string]bool{"box_run_name": true, "box_run_exclusive": true, "box_run_client_token": true, "box_run_structured_output": true, "box_run_model": true, "box_run_command": true, "box_run_workdir": true, "box_run_stderr": true, "run_usage": true, "box_skill_sets": true}
 	for _, c := range got {
 		delete(want, c)
 	}
