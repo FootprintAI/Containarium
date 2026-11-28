@@ -168,6 +168,8 @@ func TestWireFormat_ListBackends(t *testing.T) {
 	dead := resp.Backends[2]
 	assert.False(t, dead.Healthy)
 	assert.Equal(t, int32(0), dead.ContainerCount)
+	// Why it is unhealthy (#3722) arrives as the enum's protojson name.
+	assert.Equal(t, "BACKEND_UNHEALTHY_REASON_NO_RECENT_HEARTBEAT", dead.UnhealthyReason)
 }
 
 // TestWireFormat_AddRoute notes a known mismatch and documents it: our

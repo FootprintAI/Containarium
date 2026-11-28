@@ -160,3 +160,41 @@ func TestListBackends_IncusVersionDecodesAndRenders(t *testing.T) {
 		t.Errorf("backend with no Incus version must not render an Incus line:\n%s", withoutVer.String())
 	}
 }
+
+// An unhealthy backend's heading names the daemon's reason (#3722), so an
+// agent asking "is peer X healthy?" also learns why not. A daemon that
+// predates the field, or a reason this build does not know, renders as plain
+// "unhealthy" rather than a guessed cause.
+func TestListBackends_UnhealthyReasonDecodesAndRenders(t *testing.T) {
+	wire := `{"backends":[
+	  {"id":"local","type":"local","healthy":true,"unhealthyReason":"BACKEND_UNHEALTHY_REASON_UNSPECIFIED"},
+	  {"id":"stale","type":"tunnel","healthy":false,"unhealthyReason":"BACKEND_UNHEALTHY_REASON_NO_RECENT_HEARTBEAT","lastSeenAt":"2026-11-20T08:00:00Z"},
+	  {"id":"never","type":"tunnel","healthy":false,"unhealthyReason":"BACKEND_UNHEALTHY_REASON_NEVER_SEEN"},
+	  {"id":"driver","type":"local","healthy":false,"unhealthyReason":"BACKEND_UNHEALTHY_REASON_DRIVER_ERROR"},
+	  {"id":"older","type":"tunnel","healthy":false},
+	  {"id":"unknown","type":"tunnel","healthy":false,"unhealthyReason":"BACKEND_UNHEALTHY_REASON_FROM_THE_FUTURE"}
+	]}`
+	var resp ListBackendsResponse
+	if err := json.Unmarshal([]byte(wire), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := map[string]string{
+		"local":   "(local, ✓ healthy)",
+		"stale":   "(tunnel, ✗ unhealthy: no recent heartbeat)",
+		"never":   "(tunnel, ✗ unhealthy: never seen)",
+		"driver":  "(local, ✗ unhealthy: driver error)",
+		"older":   "(tunnel, ✗ unhealthy)",
+		"unknown": "(tunnel, ✗ unhealthy)",
+	}
+	if len(resp.Backends) != len(want) {
+		t.Fatalf("decoded %d backends, want %d", len(resp.Backends), len(want))
+	}
+	for i := range resp.Backends {
+		bk := &resp.Backends[i]
+		var out strings.Builder
+		writeBackendDetail(&out, bk)
+		if !strings.Contains(out.String(), want[bk.ID]+"\n") {
+			t.Errorf("%s: heading lacks %q:\n%s", bk.ID, want[bk.ID], out.String())
+		}
+	}
+}

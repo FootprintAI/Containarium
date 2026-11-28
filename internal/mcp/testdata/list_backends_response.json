@@ -27,6 +27,7 @@
       "id": "tunnel-gpu-node-b-gpu",
       "type": "tunnel",
       "healthy": false,
+      "unhealthyReason": "BACKEND_UNHEALTHY_REASON_NO_RECENT_HEARTBEAT",
       "lastSeenAt": "2026-05-10T18:42:00Z",
       "hostname": "gpu-node-b",
       "os": "Ubuntu 24.04.1 LTS",

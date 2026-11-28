@@ -2321,7 +2321,10 @@ type Backend struct {
 	ID      string `json:"id"`
 	Type    string `json:"type"` // "local" or "tunnel"
 	Healthy bool   `json:"healthy"`
-	Version string `json:"version,omitempty"`
+	// UnhealthyReason is the BackendUnhealthyReason enum name protojson
+	// emits (#3722); empty from a daemon that predates it.
+	UnhealthyReason string `json:"unhealthyReason,omitempty"`
+	Version         string `json:"version,omitempty"`
 	// IncusVersion is the Incus server version on the backend; absent when
 	// the backend could not report it.
 	IncusVersion   string       `json:"incusVersion,omitempty"`

@@ -218,3 +218,42 @@ func TestBackendInfo_DecodesIncusVersion(t *testing.T) {
 		t.Errorf("IncusVersion = %q, want empty when the backend reported none", got.Backends[1].IncusVersion)
 	}
 }
+
+// An unhealthy backend's HEALTH cell names the daemon's reason (#3722). The
+// wire shape is protojson's: the enum arrives as its name, and a healthy
+// backend carries UNSPECIFIED because the gateway emits unpopulated fields.
+// A daemon that predates the field sends nothing, and a reason this CLI does
+// not know reads as unknown; both render as a bare "✗", never as a guess.
+func TestFormatBackendHealth(t *testing.T) {
+	body := `{"backends":[
+		{"id":"local","type":"local","healthy":true,"unhealthyReason":"BACKEND_UNHEALTHY_REASON_UNSPECIFIED"},
+		{"id":"stale","type":"tunnel","healthy":false,"unhealthyReason":"BACKEND_UNHEALTHY_REASON_NO_RECENT_HEARTBEAT"},
+		{"id":"never","type":"tunnel","healthy":false,"unhealthyReason":"BACKEND_UNHEALTHY_REASON_NEVER_SEEN"},
+		{"id":"driver","type":"local","healthy":false,"unhealthyReason":"BACKEND_UNHEALTHY_REASON_DRIVER_ERROR"},
+		{"id":"older-daemon","type":"tunnel","healthy":false},
+		{"id":"newer-reason","type":"tunnel","healthy":false,"unhealthyReason":"BACKEND_UNHEALTHY_REASON_FROM_THE_FUTURE"}
+	]}`
+	var parsed backendsListResponse
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := map[string]string{
+		"local":        "✓",
+		"stale":        "✗ no heartbeat",
+		"never":        "✗ never seen",
+		"driver":       "✗ driver error",
+		"older-daemon": "✗",
+		"newer-reason": "✗",
+	}
+	if len(parsed.Backends) != len(want) {
+		t.Fatalf("decoded %d backends, want %d", len(parsed.Backends), len(want))
+	}
+	for _, b := range parsed.Backends {
+		if got := formatBackendHealth(b); got != want[b.ID] {
+			t.Errorf("%s: formatBackendHealth = %q, want %q", b.ID, got, want[b.ID])
+		}
+	}
+	if got := parsed.Backends[1].UnhealthyReason; got != "BACKEND_UNHEALTHY_REASON_NO_RECENT_HEARTBEAT" {
+		t.Errorf("UnhealthyReason = %q, want the enum name the daemon sent (kept for --format json)", got)
+	}
+}

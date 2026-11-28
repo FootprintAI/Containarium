@@ -883,6 +883,30 @@ enum BackendType {
   BACKEND_TYPE_TUNNEL = 2;
 }
 
+// BackendUnhealthyReason says why a backend in ListBackends is unhealthy.
+// It is derived from the same inputs as BackendInfo.healthy, so healthy is
+// true exactly when the reason is UNSPECIFIED. See #3722.
+enum BackendUnhealthyReason {
+  // The backend is healthy, or the daemon predates this field.
+  BACKEND_UNHEALTHY_REASON_UNSPECIFIED = 0;
+
+  // A peer that was healthy before is no longer reported healthy: the
+  // sentinel's health checks stopped succeeding. last_seen_at is when it
+  // was last healthy.
+  BACKEND_UNHEALTHY_REASON_NO_RECENT_HEARTBEAT = 1;
+
+  // A peer that has not been healthy once since this daemon started
+  // tracking it (for example a static --peers entry, which discovery does
+  // not update, or a peer the sentinel lists as unhealthy from its first
+  // sighting). last_seen_at is empty.
+  BACKEND_UNHEALTHY_REASON_NEVER_SEEN = 2;
+
+  // The backend's container driver is failing: for the local backend, the
+  // Incus liveness probe failed or did not answer within its budget and no
+  // probe succeeded within the grace window.
+  BACKEND_UNHEALTHY_REASON_DRIVER_ERROR = 3;
+}
+
 // BackendInfo describes one backend in the fleet — the local daemon
 // plus any tunnel-connected peers. Emitted by ListBackends (GET
 // /v1/backends). The field shape is the wire contract the CLI and MCP
@@ -955,6 +979,12 @@ message BackendInfo {
   // per-host shell access; deliberately NOT exposed on the unauthenticated
   // /health endpoint.
   string incus_version = 15;
+
+  // Why the backend is unhealthy, or UNSPECIFIED when healthy is true.
+  // Computed where healthy is, so the two cannot disagree. A client of an
+  // older daemon sees UNSPECIFIED on an unhealthy backend: the reason is
+  // then unknown, not "healthy". See #3722.
+  BackendUnhealthyReason unhealthy_reason = 16;
 }
 
 // HostLoad is a point-in-time sample of a backend host's real resource
