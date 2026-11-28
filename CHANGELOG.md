@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The release build pins every Caddy DNS provider plugin** (#3825). `make build-caddy` pinned Caddy (`CADDY_VERSION`) and `caddy-l4`, but built the nine `caddy-dns/*` providers unpinned, so each resolved to its newest release. When `caddy-dns/azure` v0.7.0 started requiring Caddy v2.11.9, the v0.141.1 release build stopped at the Caddy asset and published no GitHub Release (its images and Python distro did publish). Each provider is now pinned to the version the v0.141.0 asset was built with, and `TestCaddyModulesInSyncWithMakefile` fails on an unpinned one.
+
 ## [0.141.1] - 2026-11-28
 
 
