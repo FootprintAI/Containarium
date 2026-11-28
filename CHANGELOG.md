@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.141.3] - 2026-11-28
+
+
+### Fixed
+
+- **The `slides-agent` image builds again: Chromium CVEs cleared** (#3829). The v0.141.2 sidecar build failed its blocking vulnerability gate on 108 HIGH Chromium CVEs, so that release's `slides-agent` image was never published. The runtime now builds on Debian 13 (`node:22.23.4-trixie-slim`), whose security archive already carries the fixed Chromium, and a `CHROMIUM_MIN_VERSION` build argument fails the build if the installed Chromium is older than that floor. v0.141.2 is superseded by this release.
+
 ## [0.141.2] - 2026-11-28
 
 
