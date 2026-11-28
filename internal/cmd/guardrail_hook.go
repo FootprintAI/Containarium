@@ -33,7 +33,8 @@ timeout; it is not meant to be run by hand.
   PreToolUse          deny the call if the engine is not ready; deny WebFetch;
                       restore personal-data markers in file paths and in the
                       new content of Edit / Write / NotebookEdit; deny a
-                      secret marker or an unknown one
+                      secret marker or an unknown one; prefix a Bash command
+                      so a failed one is redacted too (--wrap-failed-commands)
   PostToolUse         replace the tool's result with a redacted copy
   PostToolBatch       rescan what is about to reach the model and record
                       anything still unredacted
@@ -85,6 +86,7 @@ var (
 	guardrailHookFullScanMax  int
 	guardrailHookSpoolMax     int64
 	guardrailHookBlockOnBatch bool
+	guardrailHookWrapCommands bool
 )
 
 func init() {
@@ -103,6 +105,7 @@ func init() {
 		return nil
 	})
 	f.Int64Var(&guardrailHookSpoolMax, "spool-max-bytes", guardrailhook.DefaultSpoolMaxBytes, "Size bound of the findings spool. Rows that would not fit are dropped")
+	f.BoolVar(&guardrailHookWrapCommands, "wrap-failed-commands", true, "Prefix each Bash command with an EXIT trap that reports a non-zero exit status and exits 0, so a failed command's output is redacted like any other result (#3765). The permission prompt shows the prefix. =false leaves commands as they are")
 	f.BoolVar(&guardrailHookBlockOnBatch, "block-on-batch-finding", false, "On a PostToolBatch finding, stop the turn and refuse later prompts in that session until /clear or a new session")
 }
 
@@ -133,6 +136,8 @@ func runGuardrailHook(cmd *cobra.Command, args []string) (code int) {
 		FullScanMaxBytes:    guardrailHookFullScanMax,
 		SpoolMaxBytes:       guardrailHookSpoolMax,
 		BlockOnBatchFinding: guardrailHookBlockOnBatch,
+		// The flag is on by default; the handler's zero value means on too.
+		DisableCommandWrapper: !guardrailHookWrapCommands,
 	}
 	if cfg.StateDir == "" {
 		if cfg.StateDir, err = guardrailhook.DefaultStateDir(); err != nil {

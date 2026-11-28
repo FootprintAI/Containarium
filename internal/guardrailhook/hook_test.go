@@ -295,8 +295,13 @@ func TestPreToolUse_RehydratesPIIOnlyInEditContent(t *testing.T) {
 func TestPreToolUse_NeverRehydratesOtherTools(t *testing.T) {
 	h, _ := newHandler(t, nil)
 	pii, _ := seedMarkers(t, h)
+	// Bash is rewritten by the command wrapper (#3765), but never rehydrated:
+	// the marker must still be in the command it will run.
+	if cmd := wrappedCommand(t, h, `{"command":`+q("echo "+pii)+`}`); cmd != "" &&
+		(!strings.Contains(cmd, pii) || strings.Contains(cmd, synthEmail)) {
+		t.Errorf("Bash: a marker in a command must never be rehydrated, got %q", cmd)
+	}
 	for _, tc := range []struct{ tool, input string }{
-		{"Bash", `{"command":` + q("echo "+pii) + `}`},
 		{"WebSearch", `{"query":` + q(pii) + `}`},
 		{"mcp__crm__lookup", `{"email":` + q(pii) + `,"file_path":` + q(pii) + `}`},
 		{"FutureTool", `{"content":` + q(pii) + `}`},

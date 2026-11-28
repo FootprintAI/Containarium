@@ -131,7 +131,7 @@ map all stay on the machine the agent runs on; no credential is read.
 | Event | What the handler does |
 | --- | --- |
 | `SessionStart` | Adds context for the model: what a marker is, that an edit with a secret marker is refused, and that a marker cannot be used as the text an edit replaces. |
-| `PreToolUse` | The gate. Denies the call when the engine does not answer within `--engine-wait` (3 s). Denies `WebFetch`. Denies a file tool or a command that names the handler's own state directory (best effort for commands). Restores **personal-data** markers in local file-path arguments and in the new content of `Edit` / `Write` / `NotebookEdit`, and returns the changed input with no permission decision, so the user's own permission rules decide. A **secret** marker, or one this machine did not issue, denies the call: a marker is never written literally into a file. No other tool input is ever restored. |
+| `PreToolUse` | The gate. Denies the call when the engine does not answer within `--engine-wait` (3 s). Denies `WebFetch`. Denies a file tool or a command that names the handler's own state directory (best effort for commands). Restores **personal-data** markers in local file-path arguments and in the new content of `Edit` / `Write` / `NotebookEdit`, and returns the changed input with no permission decision, so the user's own permission rules decide. A **secret** marker, or one this machine did not issue, denies the call: a marker is never written literally into a file. No other tool input is ever restored. Prefixes a `Bash` command with an `EXIT` trap that prints `[exit status N]` when the status is not 0 and then exits 0 (`--wrap-failed-commands`, on by default; #3765), so a failed command's output takes the `PostToolUse` path below instead of reaching the model as an error result no hook rewrites. Not for a background command (`run_in_background`; its output is read later through another tool call), not for `PowerShell`, and not twice. The permission prompt shows the wrapped command. |
 | `PostToolUse` | Replaces the tool's result with a redacted copy of the same shape. Every string is content, for every tool including ones the handler has never seen; only a short per-tool list of enum-like fields is skipped, and never a path. An array of strings is scanned joined, so a key held as lines is seen whole, and keeps its length. Redaction never changes a JSON type or an object's keys in the result's own structure, because the agent rejects a replacement of the wrong shape whole: a finding in a number or a key there is recorded and left. A result that is one JSON string (how MCP results arrive) is decoded first, and inside it numbers and keys are rewritten too. Binary and base64 strings are skipped and counted. |
 | `PostToolBatch` | Rescans what is about to reach the model, with no memory of `PostToolUse`, and records anything still unredacted. |
 | `UserPromptSubmit` | Blocks a prompt that has a finding, naming the type and never the value. A prompt cannot be rewritten. Background events (`<task-notification>`) arrive here too and are dropped whole. |
@@ -207,9 +207,14 @@ who owns the machine.
   from the conversation. `--block-on-batch-finding` (off by default, not yet
   proven against a live agent, #3765) stops the turn and then refuses later prompts
   in that session until `/clear` or a new session.
-- **A failing command's output** is redacted like any other result only where
-  the agent accepts a replacement for a failed call. Wrapping shell commands
-  so they report their exit status and always succeed is a follow-up (#3765).
+- **A failing command's output** reaches the model as an error result, which
+  the agent does not pass through `PostToolUse` (observed live,
+  `docs/verification/2026-W48-guardrail-hook.md`, step 3). The `Bash` wrapper
+  above turns it into a normal result, so it is redacted. Three cases stay
+  uncovered: a command that sets its own `EXIT` trap (its trap replaces the
+  wrapper's and still runs, and a failure then takes the old path), a
+  background command, and `--wrap-failed-commands=false`. The prefix is POSIX
+  shell; it was checked with `bash`.
 - **An edit that must match a redacted value** is not possible: the agent
   checks the text to replace against the file before any hook runs.
 - **Another hook's input rewrite can replace this one**, so a marker can end

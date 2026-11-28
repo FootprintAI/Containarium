@@ -84,6 +84,12 @@ type Config struct {
 	// refuse later prompts in that session until it is cleared. Off by
 	// default.
 	BlockOnBatchFinding bool
+	// DisableCommandWrapper leaves Bash commands as they are. By default
+	// PreToolUse prefixes each one with an EXIT trap that reports a non-zero
+	// exit status and exits 0, so a failed command's output takes the
+	// redacted PostToolUse path instead of reaching the model as an error
+	// result no hook rewrites (#3765). On unless this is set.
+	DisableCommandWrapper bool
 
 	// ReadFile reads an instruction file. Defaults to os.ReadFile.
 	ReadFile func(string) ([]byte, error)

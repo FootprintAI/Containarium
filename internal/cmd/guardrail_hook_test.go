@@ -124,8 +124,37 @@ func TestGuardrailHook_PreToolUseDeniesWhenTheEngineIsStopped(t *testing.T) {
 		t.Fatalf("want deny, got %q", stdout)
 	}
 	sock := serveEngineOnSocket(t)
-	if stdout, _, code := runHook(t, in, "PreToolUse", "--engine", sock); code != 0 || stdout != "" {
-		t.Errorf("with the engine up the call passes untouched: exit %d stdout %q", code, stdout)
+	// With the engine up the call is not denied. (Bash is still rewritten by
+	// the failed-command wrapper, #3765, so stdout is not empty.)
+	stdout, _, code = runHook(t, in, "PreToolUse", "--engine", sock)
+	if code != 0 || decodeHookStdout(t, stdout).HookSpecificOutput.PermissionDecision != "" {
+		t.Errorf("with the engine up the call is not denied: exit %d stdout %q", code, stdout)
+	}
+}
+
+// #3765: --wrap-failed-commands is on by default and rewrites a Bash command
+// with the EXIT-trap prefix; =false leaves the call untouched.
+func TestGuardrailHook_WrapFailedCommandsFlag(t *testing.T) {
+	in := `{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"false"}}`
+	stdout, stderr, code := runHook(t, in, "PreToolUse")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	var out struct {
+		HookSpecificOutput struct {
+			UpdatedInput struct {
+				Command string `json:"command"`
+			} `json:"updatedInput"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("stdout is not one JSON object: %q: %v", stdout, err)
+	}
+	if cmd := out.HookSpecificOutput.UpdatedInput.Command; !strings.HasPrefix(cmd, "trap ") || !strings.HasSuffix(cmd, "\nfalse") {
+		t.Fatalf("by default the command must be wrapped, got %q", cmd)
+	}
+	if stdout, _, code := runHook(t, in, "PreToolUse", "--wrap-failed-commands=false"); code != 0 || stdout != "" {
+		t.Errorf("with the wrapper off the call passes untouched: exit %d stdout %q", code, stdout)
 	}
 }
 
