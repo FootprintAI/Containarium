@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.141.1] - 2026-11-28
+
+
 ### Fixed
 
 - **The guardrail hook can be switched on with a stock release install** (#3823). The released `containariumd-linux-amd64` was built with cgo on, so it was dynamically linked, and the daemon refuses to pin a dynamically linked executable into a box as the hook binary; with no `--guardrail-hook-binary` (and nothing in the bundle to point it at), every `SetGuardrailHook` enable failed. Every `containariumd` build in the `Makefile` now sets `CGO_ENABLED=0` (the `embed_bpf` tag is kept), and `scripts/test-release-artifacts.sh` asserts `CGO_ENABLED=0` for the daemon artifacts as it already did for the client. A daemon that still cannot pin its hook binary now logs a warning at start, and an enable answers `FAILED_PRECONDITION` with how to fix it instead of a generic internal error; the message names no host path.
