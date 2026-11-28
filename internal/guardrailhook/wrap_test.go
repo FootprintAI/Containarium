@@ -259,3 +259,50 @@ func TestPreToolUse_WrapsOnlyWhereClaudeCodeWillRunIt(t *testing.T) {
 		})
 	}
 }
+
+// The default list of settings files (review of #3840): the user file comes
+// from CLAUDE_CONFIG_DIR, else ~/.claude; the project's shared and local
+// files follow; managed files, and only they, are marked Managed.
+func TestClaudeSettingsFiles_DefaultList(t *testing.T) {
+	has := func(files []SettingsFile, path string, managed bool) bool {
+		for _, f := range files {
+			if f.Path == path && f.Managed == managed {
+				return true
+			}
+		}
+		return false
+	}
+	cfg := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	files := claudeSettingsFiles("/proj")
+	for _, want := range []string{
+		filepath.Join(cfg, "settings.json"),
+		filepath.Join("/proj", ".claude", "settings.json"),
+		filepath.Join("/proj", ".claude", "settings.local.json"),
+	} {
+		if !has(files, want, false) {
+			t.Errorf("missing unmanaged %s in %+v", want, files)
+		}
+	}
+	for _, f := range files {
+		if f.Managed && (strings.HasPrefix(f.Path, cfg) || strings.HasPrefix(f.Path, "/proj")) {
+			t.Errorf("a user or project file is marked managed: %+v", f)
+		}
+		if !f.Managed && !strings.HasPrefix(f.Path, cfg) && !strings.HasPrefix(f.Path, "/proj") {
+			t.Errorf("a managed file is not marked managed: %+v", f)
+		}
+	}
+
+	home := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("HOME", home)
+	if files := claudeSettingsFiles(""); !has(files, filepath.Join(home, ".claude", "settings.json"), false) {
+		t.Errorf("without CLAUDE_CONFIG_DIR the user file is ~/.claude/settings.json, got %+v", files)
+	} else {
+		for _, f := range files {
+			if strings.Contains(f.Path, string(filepath.Separator)+".claude"+string(filepath.Separator)+"settings.local.json") {
+				t.Errorf("no project directory, no project files: %+v", f)
+			}
+		}
+	}
+}
