@@ -385,6 +385,38 @@ Send `exclusive` only to a daemon that lists `box_run_exclusive`: an older
 daemon would drop the field and start the run without the guarantee. This is
 daemon-side only; the CLI and MCP do not expose it yet.
 
+## Identifying your own run: `client_token`
+
+A caller that starts a run and then loses the `StartBoxRun` response (it
+crashed, a write on its side failed, or the connection dropped after the daemon
+accepted the start) cannot tell from the run name alone whether the run going
+under that name is its own or one a person started by hand. Matching on the
+name and a start-time window is not safe. `StartBoxRunRequest.client_token`
+(capability `box_run_client_token`) lets the caller label its run instead.
+
+- The token is an opaque string the caller chooses, for example a job id. The
+  daemon never interprets it. It is stored on the run record and returned as
+  `BoxRun.client_token` by `StartBoxRun`, `ListBoxRuns` and `StopBoxRun`,
+  including after a daemon restart, for as long as the record is kept (a run
+  rotated aside by a later run under the same name is no longer listed).
+- At most 128 bytes of UTF-8, with no control character (no line break, tab or
+  escape sequence). Anything else is `INVALID_ARGUMENT` before the box is
+  touched. Empty sets no token.
+- A run started without a token shows an empty one. That includes every run
+  started from the CLI (`code run`, over SSH or with `--run-token-file`) and by
+  the MCP tools, so a hand-started run never shows a caller's token.
+- The daemon does not deduplicate on it: a second start with the same token is
+  decided like any other start, so it is still refused while a run under the
+  same name is going. The caller lists the box's runs and matches on the token
+  itself.
+- It is not a secret and not proof of who started a run. Every caller that may
+  list the box's runs reads it back, and the record is kept in the box, where
+  the run's user can write it.
+
+Send `client_token` only to a daemon that lists `box_run_client_token`: an older
+daemon drops the field over gRPC and refuses the request over REST. This is
+daemon-side only; the CLI and MCP do not set it.
+
 ## Per-run token: `run_token`
 
 `run_token` is the platform credential for one run. The caller mints it; the
@@ -609,21 +641,16 @@ which the typed HTTP client maps to `UNIMPLEMENTED`. From the shell:
 ## Feature detection
 
 The REST gateway rejects request fields it does not know, so a caller must not
-send `run_name`, `structured_output`, `model`, `command` or `workdir` to a
-daemon that predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the
-optional features a daemon supports: `box_run_name`, `box_run_structured_output`,
-`box_run_model`, `box_run_command`, `box_run_command_policy`, `box_run_workdir`,
-`box_run_exclusive`,
-
-send `run_name`, `structured_output`, `model` or `command` to a daemon that
-predates them. `GetSystemInfo` (`SystemInfo.capabilities`) lists the optional
-features a daemon supports: `box_run_name`, `box_run_structured_output`,
-`box_run_model`, `box_run_token`, `box_run_command`, `box_run_command_policy`,
-`box_files`, `box_files_stream` and `box_files_run_user`. An older daemon does
-not send the field at all; treat a missing name as unsupported. Names are only
-added. `GetSystemInfo` requires an admin principal. A caller that cannot read it
-can gate on the daemon version instead: the first release that contains these
-fields (see the changelog entry).
+send `run_name`, `structured_output`, `model`, `command`, `workdir`,
+`exclusive` or `client_token` to a daemon that predates them. `GetSystemInfo`
+(`SystemInfo.capabilities`) lists the optional features a daemon supports:
+`box_run_name`, `box_run_structured_output`, `box_run_model`, `box_run_token`,
+`box_run_command`, `box_run_command_policy`, `box_run_workdir`,
+`box_run_exclusive`, `box_run_client_token`, `box_files`, `box_files_stream`
+and `box_files_run_user`. An older daemon does not send the field at all; treat
+a missing name as unsupported. Names are only added. `GetSystemInfo` requires an
+admin principal. A caller that cannot read it can gate on the daemon version
+instead: the first release that contains these fields (see the changelog entry).
 
 ## Answering permission requests: the `code:answer` scope
 

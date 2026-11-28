@@ -309,6 +309,7 @@ func boxRunProto(name, dir string, r agentbox.RunRecord, outcome agentbox.RunOut
 	}
 	run.Model = r.Model
 	run.Workdir = r.Workdir
+	run.ClientToken = r.ClientToken
 	run.Usage = unavailableRunUsage()
 	if r.ExitCode != nil {
 		code := int32(*r.ExitCode) // #nosec G115 -- a process exit status fits in int32

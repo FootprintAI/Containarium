@@ -12828,6 +12828,10 @@
         "workdir": {
           "type": "string",
           "description": "The directory the run was started in, relative to the run's home, as\nrequested in StartBoxRunRequest.workdir (#3551). Empty when the run started\nin the home itself, and for a run from before the field. Capability\n\"box_run_workdir\"."
+        },
+        "clientToken": {
+          "type": "string",
+          "description": "The caller's own identifier for this run, exactly as sent in\nStartBoxRunRequest.client_token (#3668). Empty for a run started without\none, which includes every run started from the CLI or over SSH, and for a\nrun from before the field. Capability \"box_run_client_token\"."
         }
       },
       "description": "BoxRun is one current run record on a box."
@@ -23366,6 +23370,10 @@
         "exclusive": {
           "type": "boolean",
           "description": "The run excludes every other run on the box (#3805). Refused with\nFAILED_PRECONDITION (PreconditionFailure type OTHER_RUN_LIVE) while any\nother run is live; while this run is live, every other start on the box is\nrefused the same way with EXCLUSIVE_RUN_LIVE. Checked and recorded under\none per-box lock, so of two concurrent exclusive starts exactly one wins.\nCapability \"box_run_exclusive\" in SystemInfo.capabilities: a caller must\nnot send exclusive to a daemon without it, since that daemon would ignore it."
+        },
+        "clientToken": {
+          "type": "string",
+          "description": "An opaque identifier the caller chooses for this run (#3668), so it can\ntell its own run from one a person started by hand under the same name,\nfor example after it lost the StartBoxRun response to a crash or a network\ncut and the next start is refused because the run is still going. The\ndaemon never interprets it: it is stored on the run record and returned as\nBoxRun.client_token by StartBoxRun, ListBoxRuns and StopBoxRun, also after\na daemon restart, for as long as the record is kept. Empty sets none. At\nmost 128 bytes of UTF-8 with no control character; anything else is\nINVALID_ARGUMENT before the box is touched. A start is never matched to an\nearlier run by its token: a second start with the same token is decided\nlike any other start. It is not a secret (every caller that may list the\nbox's runs reads it back) and not proof of who started a run (the record\nis kept in the box, where the run's user can write it). Capability\n\"box_run_client_token\" in SystemInfo.capabilities: a caller must not send\nclient_token to a daemon without it, which drops the field over gRPC and\nrefuses the request over REST."
         }
       },
       "description": "StartBoxRunRequest starts (or resumes) a coding-agent run on a box through\nthe daemon API — no SSH client, no agent-box RPC (#2193): the daemon\nroot-execs the same on-disk contract `containarium code run` leaves via\nagent-box's process_start, so ListBoxRuns and TailBoxRunLog read a\ndaemon-started run exactly like one `code run` started.\n\nThe engine and its credential source are never request fields: they come\nfrom the box's own ~/.containarium/code.json (`code install`, #1727) —\nthis RPC names WHAT TO SAY, never HOW TO RUN. Interactive sign-in is out of\nscope by the same rule #2030 settled for `code install`: this starts or\nresumes an already-authenticated session only."
