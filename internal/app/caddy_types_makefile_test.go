@@ -69,13 +69,20 @@ func TestCaddyModulesInSyncWithMakefile(t *testing.T) {
 		}
 		found := false
 		for _, want := range AllDNSProviderModules() {
-			if mod == want {
+			if base == want {
 				found = true
 				break
 			}
 		}
 		if !found {
 			t.Errorf("Makefile's build-caddy target has --with %s, which is no longer in dnsProviderModules — remove it or re-add the provider", mod)
+			continue
+		}
+		// DNS provider plugins float the same way caddy-l4 did: v0.141.1's
+		// release build failed when caddy-dns/azure v0.7.0 started requiring
+		// Caddy v2.11.9 (CADDY_VERSION is v2.11.4). Every plugin is pinned.
+		if !pinned || version == "" {
+			t.Errorf("Makefile's build-caddy lists --with %s without a version; an unpinned plugin breaks the release build whenever it moves ahead of CADDY_VERSION (#3714)", mod)
 		}
 	}
 	// The release asset is built from the same Caddy source as the images, which

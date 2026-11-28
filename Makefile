@@ -357,6 +357,13 @@ CADDY_VERSION=v2.11.4
 # Keep it at the newest caddy-l4 whose go.mod requires CADDY_VERSION or older,
 # and bump the two together, deliberately.
 CADDY_L4_VERSION=v0.1.2
+# The caddy-dns/* providers in build-caddy are pinned for the same reason, each
+# to the version the v0.141.0 release asset was built with (read back from that
+# binary with `go version -m`): v0.141.1's release build failed when
+# caddy-dns/azure v0.7.0 started requiring Caddy v2.11.9. Bump a provider only
+# to a release whose go.mod requires CADDY_VERSION or older, and run
+# `make build-caddy` before tagging. TestCaddyModulesInSyncWithMakefile fails on
+# an unpinned one.
 # CADDY_XNET_VERSION replaces golang.org/x/net in the Caddy build, matching the
 # image builds (sshpiper, slides-agent): Caddy's own go.mod resolves an x/net
 # older than the golang.org/x/net/html fix (#3579). The release build scans the
@@ -379,15 +386,15 @@ build-caddy: ## Build the pre-configured Caddy release binary (caddy-l4 + every 
 	    --replace github.com/klauspost/compress=github.com/klauspost/compress@$(CADDY_COMPRESS_VERSION) \
 	    --replace google.golang.org/grpc=google.golang.org/grpc@$(CADDY_GRPC_VERSION) \
 	    --with github.com/mholt/caddy-l4@$(CADDY_L4_VERSION) \
-	    --with github.com/caddy-dns/azure \
-	    --with github.com/caddy-dns/cloudflare \
-	    --with github.com/caddy-dns/digitalocean \
-	    --with github.com/caddy-dns/duckdns \
-	    --with github.com/caddy-dns/godaddy \
-	    --with github.com/caddy-dns/googleclouddns \
-	    --with github.com/caddy-dns/namecheap \
-	    --with github.com/caddy-dns/route53 \
-	    --with github.com/caddy-dns/vultr \
+	    --with github.com/caddy-dns/azure@v0.6.0 \
+	    --with github.com/caddy-dns/cloudflare@v0.2.4 \
+	    --with github.com/caddy-dns/digitalocean@v0.0.0-20250606074528-04bde2867106 \
+	    --with github.com/caddy-dns/duckdns@v0.5.0 \
+	    --with github.com/caddy-dns/godaddy@v1.2.0 \
+	    --with github.com/caddy-dns/googleclouddns@v1.1.0 \
+	    --with github.com/caddy-dns/namecheap@v1.0.0 \
+	    --with github.com/caddy-dns/route53@v1.6.3 \
+	    --with github.com/caddy-dns/vultr@v0.0.0-20250723121531-55bf3e9768be \
 	    --output $(BUILD_DIR)/caddy-linux-amd64
 	@cd $(BUILD_DIR) && shasum -a 256 caddy-linux-amd64 >> SHA256SUMS.txt
 	@echo "==> caddy-linux-amd64 built: $$(du -h $(BUILD_DIR)/caddy-linux-amd64 | cut -f1)"
