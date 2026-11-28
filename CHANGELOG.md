@@ -7,8 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.141.2] - 2026-11-28
+
+
 ### Fixed
 
+- **This release supersedes v0.141.1, which was tagged but never released** (#3825). Its release build stopped at the Caddy asset (the entry below), so v0.141.1 has no GitHub Release and no binaries; its daemon image, sidecar images and Python distro did publish. Everything listed under [0.141.1] ships here, most importantly **the guardrail hook can be switched on with a stock release install** (#3823): the released linux daemon is built static, and a daemon that still cannot pin its hook binary warns at start and answers `FAILED_PRECONDITION`.
 - **The release build pins every Caddy DNS provider plugin** (#3825). `make build-caddy` pinned Caddy (`CADDY_VERSION`) and `caddy-l4`, but built the nine `caddy-dns/*` providers unpinned, so each resolved to its newest release. When `caddy-dns/azure` v0.7.0 started requiring Caddy v2.11.9, the v0.141.1 release build stopped at the Caddy asset and published no GitHub Release (its images and Python distro did publish). Each provider is now pinned to the version the v0.141.0 asset was built with, and `TestCaddyModulesInSyncWithMakefile` fails on an unpinned one.
 
 ## [0.141.1] - 2026-11-28
