@@ -94,7 +94,7 @@ type Config struct {
 	// rules decide whether a Bash command may be wrapped, given the project
 	// directory. A missing file holds no rules. Defaults to the managed, user
 	// and project files (claudeSettingsFiles).
-	SettingsFiles func(projectDir string) []string
+	SettingsFiles func(projectDir string) []SettingsFile
 
 	// ReadFile reads an instruction file. Defaults to os.ReadFile.
 	ReadFile func(string) ([]byte, error)
@@ -157,8 +157,8 @@ type hookInput struct {
 	SessionID string `json:"session_id"`
 	AgentID   string `json:"agent_id"`
 	CWD       string `json:"cwd"`
-	// PermissionMode is the session's mode: default, acceptEdits, plan or
-	// bypassPermissions.
+	// PermissionMode is the session's mode: default, acceptEdits, plan,
+	// bypassPermissions, dontAsk or auto.
 	PermissionMode string `json:"permission_mode"`
 
 	ToolName     string          `json:"tool_name"`

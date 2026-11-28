@@ -42,7 +42,7 @@ const (
 func newHandler(t *testing.T, mut func(*Config)) (*Handler, string) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "state")
-	cfg := Config{StateDir: dir, Engine: guardrail.RulesEngine{}, SettingsFiles: func(string) []string { return nil }}
+	cfg := Config{StateDir: dir, Engine: guardrail.RulesEngine{}, SettingsFiles: func(string) []SettingsFile { return nil }}
 	if mut != nil {
 		mut(&cfg)
 	}

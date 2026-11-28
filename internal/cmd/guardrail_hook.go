@@ -73,6 +73,11 @@ Examples:
 // guardrailHookExit is os.Exit, replaceable in tests.
 var guardrailHookExit = os.Exit
 
+// guardrailHookSettingsFiles replaces the Claude Code settings files the hook
+// reads, in tests only, so they never read the machine's managed settings.
+// nil means the handler's default.
+var guardrailHookSettingsFiles func(projectDir string) []guardrailhook.SettingsFile
+
 // guardrailHookFailed is the exit status for every internal error. Never 1
 // and never 0: an agent treats 2 as "block", and reads exit 0 with unusable
 // output as "go ahead" even when the hook is configured to block on failure.
@@ -106,7 +111,7 @@ func init() {
 		return nil
 	})
 	f.Int64Var(&guardrailHookSpoolMax, "spool-max-bytes", guardrailhook.DefaultSpoolMaxBytes, "Size bound of the findings spool. Rows that would not fit are dropped")
-	f.BoolVar(&guardrailHookWrapCommands, "wrap-failed-commands", true, "Prefix each Bash command with an EXIT trap that reports a non-zero exit status and exits 0, so a failed command's output is redacted like any other result (#3765). Applied only when the Claude Code settings allow all of Bash (\"Bash\" or \"Bash(*)\") or the session runs in bypassPermissions, and no Bash ask rule is set: under narrower rules Claude Code refuses the wrapped command. The permission prompt shows the prefix. =false never wraps")
+	f.BoolVar(&guardrailHookWrapCommands, "wrap-failed-commands", true, "Prefix each Bash command with an EXIT trap that reports a non-zero exit status and exits 0, so a failed command's output is redacted like any other result (#3765). Applied only in bypassPermissions, or in default, acceptEdits or dontAsk mode when the Claude Code settings allow all of Bash (\"Bash\" or \"Bash(*)\"), and no Bash ask rule is set: under narrower rules, and in plan or auto mode, Claude Code does not run the wrapped command. The permission prompt shows the prefix. =false never wraps")
 	f.BoolVar(&guardrailHookBlockOnBatch, "block-on-batch-finding", false, "On a PostToolBatch finding, stop the turn and refuse later prompts in that session until /clear or a new session")
 }
 
@@ -139,6 +144,7 @@ func runGuardrailHook(cmd *cobra.Command, args []string) (code int) {
 		BlockOnBatchFinding: guardrailHookBlockOnBatch,
 		// The flag is on by default; the handler's zero value means on too.
 		DisableCommandWrapper: !guardrailHookWrapCommands,
+		SettingsFiles:         guardrailHookSettingsFiles,
 	}
 	if cfg.StateDir == "" {
 		if cfg.StateDir, err = guardrailhook.DefaultStateDir(); err != nil {

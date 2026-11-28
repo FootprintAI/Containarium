@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/footprintai/containarium/internal/guardrail"
+	"github.com/footprintai/containarium/internal/guardrailhook"
 	pb "github.com/footprintai/containarium/pkg/pb/containarium/v1"
 )
 
@@ -54,12 +55,18 @@ func runHook(t *testing.T, stdin string, args ...string) (stdout, stderr string,
 		f.Changed = false
 	})
 	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "xdg"))
-	// No real Claude Code settings: they decide whether Bash is wrapped
-	// (#3765). A test that wants rules sets CLAUDE_CONFIG_DIR first.
+	// No real Claude Code settings, managed ones included: they decide
+	// whether Bash is wrapped (#3765). The only file read is
+	// $CLAUDE_CONFIG_DIR/settings.json; a test that wants rules sets
+	// CLAUDE_CONFIG_DIR first.
 	if os.Getenv("CLAUDE_CONFIG_DIR") == "" {
 		t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	}
-	t.Setenv("CLAUDE_PROJECT_DIR", t.TempDir())
+	prevSettings := guardrailHookSettingsFiles
+	guardrailHookSettingsFiles = func(string) []guardrailhook.SettingsFile {
+		return []guardrailhook.SettingsFile{{Path: filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "settings.json")}}
+	}
+	defer func() { guardrailHookSettingsFiles = prevSettings }()
 	prev := guardrailHookExit
 	guardrailHookExit = func(c int) { code = c }
 	defer func() { guardrailHookExit = prev }()
@@ -142,7 +149,7 @@ func TestGuardrailHook_WrapFailedCommandsFlag(t *testing.T) {
 	cfg := t.TempDir()
 	must(t, os.WriteFile(filepath.Join(cfg, "settings.json"), []byte(`{"permissions":{"allow":["Bash"]}}`), 0o600))
 	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
-	in := `{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"false"}}`
+	in := `{"session_id":"s","hook_event_name":"PreToolUse","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"false"}}`
 	stdout, stderr, code := runHook(t, in, "PreToolUse")
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr)

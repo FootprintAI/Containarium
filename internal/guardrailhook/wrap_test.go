@@ -31,7 +31,9 @@ func settingsWith(t *testing.T, body string) string {
 func newWrappingHandler(t *testing.T) *Handler {
 	t.Helper()
 	allow := settingsWith(t, `{"permissions":{"allow":["Bash"]}}`)
-	h, _ := newHandler(t, func(c *Config) { c.SettingsFiles = func(string) []string { return []string{allow} } })
+	h, _ := newHandler(t, func(c *Config) {
+		c.SettingsFiles = func(string) []SettingsFile { return []SettingsFile{{Path: allow}} }
+	})
 	return h
 }
 
@@ -39,7 +41,8 @@ func newWrappingHandler(t *testing.T) *Handler {
 // agent would run, or "" when the handler left the call untouched.
 func wrappedCommand(t *testing.T, h *Handler, toolInput string) string {
 	t.Helper()
-	out := fire(t, h, evPre, preInput("Bash", toolInput))
+	in := `{"session_id":"s1","cwd":"/w","hook_event_name":"PreToolUse","permission_mode":"default","tool_name":"Bash","tool_input":` + toolInput + `}`
+	out := fire(t, h, evPre, in)
 	if out.HookSpecificOutput == nil {
 		return ""
 	}
@@ -202,30 +205,51 @@ func TestSessionStart_ExplainsTheExitStatusLine(t *testing.T) {
 // check: deny rules still deny a wrapped command; an ask rule that matches
 // turns the call into a refusal, so any Bash ask rule leaves commands alone.
 func TestPreToolUse_WrapsOnlyWhereClaudeCodeWillRunIt(t *testing.T) {
+	type file struct {
+		body    string
+		managed bool
+	}
+	user := func(body string) file { return file{body: body} }
+	managed := func(body string) file { return file{body: body, managed: true} }
+	allowBash := `{"permissions":{"allow":["Bash"]}}`
 	for _, tc := range []struct {
 		name     string
 		mode     string
-		settings []string
+		settings []file
 		wrap     bool
 	}{
 		{"no settings, default mode", "default", nil, false},
-		{"scoped allow only", "default", []string{`{"permissions":{"allow":["Bash(git status *)","Bash(echo:*)"]}}`}, false},
-		{"allow Bash", "default", []string{`{"permissions":{"allow":["Bash"]}}`}, true},
-		{"allow Bash(*)", "acceptEdits", []string{`{"permissions":{"allow":["Read","Bash(*)"]}}`}, true},
-		{"allow Bash in one file, deny rm in another", "default", []string{`{"permissions":{"allow":["Bash"]}}`, `{"permissions":{"deny":["Bash(rm:*)"]}}`}, true},
+		{"scoped allow only", "default", []file{user(`{"permissions":{"allow":["Bash(git status *)","Bash(echo:*)"]}}`)}, false},
+		{"allow Bash", "default", []file{user(`{"permissions":{"allow":["Bash"]}}`)}, true},
+		{"allow Bash(*)", "acceptEdits", []file{user(`{"permissions":{"allow":["Read","Bash(*)"]}}`)}, true},
+		{"allow Bash in one file, deny rm in another", "default", []file{user(`{"permissions":{"allow":["Bash"]}}`), user(`{"permissions":{"deny":["Bash(rm:*)"]}}`)}, true},
 		{"bypassPermissions, no rules", "bypassPermissions", nil, true},
-		{"allow Bash with a Bash ask rule", "default", []string{`{"permissions":{"allow":["Bash"],"ask":["Bash(git push:*)"]}}`}, false},
-		{"bypassPermissions with a Bash ask rule", "bypassPermissions", []string{`{"permissions":{"ask":["Bash"]}}`}, false},
-		{"allow Bash, but another file is unreadable JSON", "default", []string{`{"permissions":{"allow":["Bash"]}}`, `{not json`}, false},
-		{"ask rule for another tool only", "default", []string{`{"permissions":{"allow":["Bash"],"ask":["WebSearch"]}}`}, true},
+		{"allow Bash with a Bash ask rule", "default", []file{user(`{"permissions":{"allow":["Bash"],"ask":["Bash(git push:*)"]}}`)}, false},
+		{"bypassPermissions with a Bash ask rule", "bypassPermissions", []file{user(`{"permissions":{"ask":["Bash"]}}`)}, false},
+		{"allow Bash, but another file is unreadable JSON", "default", []file{user(`{"permissions":{"allow":["Bash"]}}`), user(`{not json`)}, false},
+		{"ask rule for another tool only", "default", []file{user(`{"permissions":{"allow":["Bash"],"ask":["WebSearch"]}}`)}, true},
+		// Modes: wrap only in the ones checked live. In plan and auto the
+		// wrapped command is not run (review of #3840); an absent or unknown
+		// mode is not trusted either.
+		{"dontAsk with allow Bash", "dontAsk", []file{user(allowBash)}, true},
+		{"plan with allow Bash", "plan", []file{user(allowBash)}, false},
+		{"auto with allow Bash", "auto", []file{user(allowBash)}, false},
+		{"no mode in the input", "", []file{user(allowBash)}, false},
+		{"a mode this hook does not know", "someFutureMode", []file{user(allowBash)}, false},
+		// allowManagedPermissionRulesOnly: Claude Code ignores every allow
+		// rule outside managed settings, so a user allow does not count.
+		{"managed-only, allow Bash in user settings", "default", []file{managed(`{"allowManagedPermissionRulesOnly":true}`), user(allowBash)}, false},
+		{"managed-only under permissions, allow Bash in user settings", "default", []file{managed(`{"permissions":{"allowManagedPermissionRulesOnly":true}}`), user(allowBash)}, false},
+		{"managed-only, allow Bash in managed settings", "default", []file{managed(`{"allowManagedPermissionRulesOnly":true,"permissions":{"allow":["Bash"]}}`)}, true},
+		{"managed allow Bash, no restriction", "default", []file{managed(allowBash)}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var files []string
-			for _, body := range tc.settings {
-				files = append(files, settingsWith(t, body))
+			var files []SettingsFile
+			for _, f := range tc.settings {
+				files = append(files, SettingsFile{Path: settingsWith(t, f.body), Managed: f.managed})
 			}
-			files = append(files, filepath.Join(t.TempDir(), "missing.json")) // a missing file is no rules
-			h, _ := newHandler(t, func(c *Config) { c.SettingsFiles = func(string) []string { return files } })
+			files = append(files, SettingsFile{Path: filepath.Join(t.TempDir(), "missing.json")}) // a missing file is no rules
+			h, _ := newHandler(t, func(c *Config) { c.SettingsFiles = func(string) []SettingsFile { return files } })
 			in := `{"session_id":"s1","cwd":"/w","hook_event_name":"PreToolUse","permission_mode":` + q(tc.mode) +
 				`,"tool_name":"Bash","tool_input":{"command":"false"}}`
 			out := fire(t, h, evPre, in)
