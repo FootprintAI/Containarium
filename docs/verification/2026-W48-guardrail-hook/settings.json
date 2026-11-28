@@ -1,0 +1,108 @@
+{
+ "hooks": {
+  "SessionStart": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/usr/local/bin/containarium",
+      "args": [
+       "guardrail",
+       "hook",
+       "SessionStart"
+      ],
+      "onFailure": "block",
+      "timeout": 15
+     }
+    ]
+   }
+  ],
+  "PreToolUse": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/usr/local/bin/containarium",
+      "args": [
+       "guardrail",
+       "hook",
+       "PreToolUse"
+      ],
+      "onFailure": "block",
+      "timeout": 15
+     }
+    ]
+   }
+  ],
+  "PostToolUse": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/usr/local/bin/containarium",
+      "args": [
+       "guardrail",
+       "hook",
+       "PostToolUse"
+      ],
+      "onFailure": "block",
+      "timeout": 15
+     }
+    ]
+   }
+  ],
+  "PostToolBatch": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/usr/local/bin/containarium",
+      "args": [
+       "guardrail",
+       "hook",
+       "PostToolBatch"
+      ],
+      "onFailure": "block",
+      "timeout": 15
+     }
+    ]
+   }
+  ],
+  "UserPromptSubmit": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/usr/local/bin/containarium",
+      "args": [
+       "guardrail",
+       "hook",
+       "UserPromptSubmit"
+      ],
+      "onFailure": "block",
+      "timeout": 15
+     }
+    ]
+   }
+  ],
+  "InstructionsLoaded": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/usr/local/bin/containarium",
+      "args": [
+       "guardrail",
+       "hook",
+       "InstructionsLoaded"
+      ],
+      "onFailure": "block",
+      "timeout": 15
+     }
+    ]
+   }
+  ]
+ }
+}
